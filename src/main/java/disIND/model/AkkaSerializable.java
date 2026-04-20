@@ -1,4 +1,4 @@
-package model;
+package disIND.model;
 
 import java.io.Serializable;
 

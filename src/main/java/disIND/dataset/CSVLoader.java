@@ -1,13 +1,16 @@
-package dataset;
+package disIND.dataset;
 
-import model.RawEvent;
+import disIND.model.RawEvent;
 import org.apache.commons.csv.*;
 
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class CSVLoader {
+    private static final Logger log = LoggerFactory.getLogger(CSVLoader.class);
 
     private static final Set<String> NULL_TOKENS =
             Set.of("", "null", "NULL", "N/A", "n/a", "NA", "na", "none", "None", "NONE", "-");

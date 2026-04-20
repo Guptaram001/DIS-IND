@@ -1,10 +1,11 @@
+package disIND;
+
 import akka.actor.typed.ActorSystem;
 import akka.actor.typed.javadsl.Behaviors;
 import com.typesafe.config.ConfigFactory;
-import dataset.CSVLoader;
-import model.RawEvent;
+import disIND.dataset.CSVLoader;
+import disIND.model.RawEvent;
 import java.util.List;
-import java.util.Scanner;
 import java.util.concurrent.TimeUnit;
 
 public class DisINDMain {

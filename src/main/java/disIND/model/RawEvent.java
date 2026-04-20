@@ -1,4 +1,4 @@
-package model;
+package disIND.model;
 
 
 public sealed interface RawEvent extends AkkaSerializable permits RawEvent.Insert, RawEvent.Delete{
