@@ -1,11 +1,21 @@
 package disIND;
 
+import akka.actor.typed.Props;
+import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
 import akka.actor.typed.javadsl.Behaviors;
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.Entity;
+import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
+
+import akka.cluster.sharding.typed.ShardingEnvelope;
 import com.typesafe.config.ConfigFactory;
+import disIND.actors.InputReaderActor;
+import disIND.actors.ValueOwnerActor;
 import disIND.dataset.CSVLoader;
 import disIND.model.RawEvent;
 import java.util.List;
+
 import java.util.concurrent.TimeUnit;
 
 public class DisINDMain {
@@ -25,7 +35,7 @@ public class DisINDMain {
     }
 
     private static void runCSV(ActorSystem<Void> system) throws Exception {
-        String path = "/Users/gupta/Documents/DIS-IND/data/sample_data.csv";
+        String path="/Users/gupta/Documents/DIS-IND/data/sample_data.csv";
         if (!CSVLoader.validate(path)) {
             System.out.println("  File not found or invalid CSV: " + path);
             return;
@@ -34,15 +44,41 @@ public class DisINDMain {
         run(system, (short) r.attrNames().length, r.attrNames(), r.batches());
     }
 
-    private static void run(ActorSystem<Void> system,
-                            short numAttrs,
-                            String[] attrNames,
+
+    private static void run(ActorSystem<Void> system, short numAttrs, String[] attrNames,
                             List<RawEvent.Batch> batches) throws Exception {
 
-        System.out.println(" Starting " + numAttrs + " attributes batches");
-        System.out.println(" Starting " + batches.size() + " batches");
+        String runId = String.valueOf(System.currentTimeMillis());
+
+        ClusterSharding sharding = ClusterSharding.get(system);
+
+        EntityTypeKey<ValueOwnerActor.Command> valueKey =
+                EntityTypeKey.create(
+                        ValueOwnerActor.Command.class,
+                        "ValueOwner-" + runId
+                );
+
+        ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion =
+                sharding.init(
+                        Entity.of(
+                                valueKey,
+                                ctx -> ValueOwnerActor.create(ctx.getEntityId())
+                        )
+                );
+
+        ActorRef<InputReaderActor.Command> inputReader =
+                system.systemActorOf(
+                        InputReaderActor.create(valueRegion),
+                        "inputReader-" + runId,
+                        Props.empty()
+                );
+
         for (RawEvent.Batch batch : batches) {
-            System.out.print(batch);
+            inputReader.tell(new InputReaderActor.SubmitBatch(batch));
         }
+
+        system.getWhenTerminated().toCompletableFuture().get();
+
     }
+
 }
