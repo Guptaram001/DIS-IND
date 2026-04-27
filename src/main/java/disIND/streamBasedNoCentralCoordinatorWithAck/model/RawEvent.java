@@ -1,4 +1,4 @@
-package disIND.streamBasedNoCentralCoordinator.model;
+package disIND.streamBasedNoCentralCoordinatorWithAck.model;
 
 
 import disIND.prototypeModel.model.AkkaSerializable;
