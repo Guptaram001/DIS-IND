@@ -1,4 +1,4 @@
-package disIND.actors;
+package disIND.prototypeModel.actors;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
@@ -6,10 +6,9 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
-import disIND.model.AkkaSerializable;
+import disIND.prototypeModel.model.AkkaSerializable;
 import java.util.HashMap;
 import java.util.Map;
-
 public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     public interface Command extends AkkaSerializable {}

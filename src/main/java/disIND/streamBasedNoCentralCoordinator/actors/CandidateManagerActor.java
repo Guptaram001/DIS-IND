@@ -1,10 +1,9 @@
-package disIND.actors;
+package disIND.streamBasedNoCentralCoordinator.actors;
 
-import akka.actor.AbstractActor;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
-import disIND.model.AkkaSerializable;
+import disIND.streamBasedNoCentralCoordinator.model.AkkaSerializable;
 
 public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActor.Command> {
     public CandidateManagerActor(ActorContext context) {

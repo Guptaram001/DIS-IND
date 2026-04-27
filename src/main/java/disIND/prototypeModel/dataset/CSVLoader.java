@@ -1,6 +1,6 @@
-package disIND.dataset;
+package disIND.prototypeModel.dataset;
 
-import disIND.model.RawEvent;
+import disIND.prototypeModel.model.RawEvent;
 import org.apache.commons.csv.*;
 
 import java.io.*;

@@ -1,4 +1,4 @@
-package disIND.actors;
+package disIND.prototypeModel.actors;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
@@ -7,8 +7,8 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.ShardingEnvelope;
-import disIND.model.AkkaSerializable;
-import disIND.model.RawEvent;
+import disIND.prototypeModel.model.AkkaSerializable;
+import disIND.prototypeModel.model.RawEvent;
 public class InputReaderActor extends AbstractBehavior<InputReaderActor.Command> {
 
     public interface Command extends AkkaSerializable {}

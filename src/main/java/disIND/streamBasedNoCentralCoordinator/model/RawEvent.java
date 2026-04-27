@@ -1,4 +1,4 @@
-package disIND.model;
+package disIND.streamBasedNoCentralCoordinator.model;
 
 
 public sealed interface RawEvent extends AkkaSerializable permits RawEvent.Insert, RawEvent.Delete{
