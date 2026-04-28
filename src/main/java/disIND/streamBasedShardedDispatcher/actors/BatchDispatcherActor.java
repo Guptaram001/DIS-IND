@@ -21,91 +21,94 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
             ActorRef<Done> replyTo
     ) implements Command {}
 
-    public record ValueAck(
-            long batchId,
-            String entityId
-    ) implements Command {}
+    private record WrappedAck(int batchId, String source) implements Command {}
+    private final ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion;
+    private final ActorRef<ShardingEnvelope<SketchActor.Command>> sketchRegion;
 
-    private static class PendingBatch {
-        final ActorRef<Done> replyTo;
-        final Set<String> waitingEntities;
-
-        PendingBatch(ActorRef<Done> replyTo, Set<String> waitingEntities) {
-            this.replyTo = replyTo;
-            this.waitingEntities = waitingEntities;
-        }
-    }
+    private final Map<Integer, Integer> pendingAcks = new HashMap<>();
+    private final Map<Integer, ActorRef<Done>> replyMap = new HashMap<>();
 
     private final String dispatcherId;
-    private final ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion;
-
-    private final Map<Long, PendingBatch> pending = new HashMap<>();
 
     public static Behavior<Command> create(
             String dispatcherId,
-            ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion
+            ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion,
+            ActorRef<ShardingEnvelope<SketchActor.Command>> sketchRegion
     ) {
         return Behaviors.setup(ctx ->
-                new BatchDispatcherActor(ctx, dispatcherId, valueRegion)
+                new BatchDispatcherActor(ctx, dispatcherId, valueRegion, sketchRegion)
         );
     }
 
     private BatchDispatcherActor(
             ActorContext<Command> ctx,
             String dispatcherId,
-            ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion
+            ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion,
+            ActorRef<ShardingEnvelope<SketchActor.Command>> sketchRegion
     ) {
         super(ctx);
         this.dispatcherId = dispatcherId;
         this.valueRegion = valueRegion;
+        this.sketchRegion = sketchRegion;
     }
 
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(ProcessBatch.class, this::onProcessBatch)
-                .onMessage(ValueAck.class, this::onValueAck)
+                .onMessage(WrappedAck.class, this::onAck)
                 .build();
     }
 
     private Behavior<Command> onProcessBatch(ProcessBatch cmd) {
 
-        RawEvent.Batch batch = cmd.batch();
+        int batchId = (int)cmd.batch().batchId();
 
-        Map<String, Map<Short, Integer>> grouped =
-                aggregateBatch(batch.events());
+        var entityUpdates = aggregateBatch(cmd.batch().events());
+        var sketchUpdates = aggregateSketch(cmd.batch().events());
 
-        if (grouped.isEmpty()) {
-            cmd.replyTo().tell(Done.getInstance());
-            return this;
-        }
+        int expected = entityUpdates.size() + sketchUpdates.size();
 
-        Set<String> waiting = new HashSet<>(grouped.keySet());
+        pendingAcks.put(batchId, expected);
+        replyMap.put(batchId, cmd.replyTo());
 
-        pending.put(
-                batch.batchId(),
-                new PendingBatch(cmd.replyTo(), waiting)
-        );
+        ActorRef<Ack> ackAdapter =
+                getContext().messageAdapter(
+                        Ack.class,
+                        ack -> new WrappedAck(ack.batchId(),ack.source())
+                );
 
         getContext().getLog().info(
-                "Dispatcher {} processing batch={} entities={}",
+                "Dispatcher {} processing batch={} entities={} sketches={}",
                 dispatcherId,
-                batch.batchId(),
-                waiting.size()
+                batchId,
+                entityUpdates.size(),
+                sketchUpdates.size()
         );
 
-        for (Map.Entry<String, Map<Short, Integer>> e : grouped.entrySet()) {
-            String entityId = e.getKey();
-            Map<Short, Integer> attrCounts = e.getValue();
-
+        for (var e : entityUpdates.entrySet()) {
             valueRegion.tell(
                     new ShardingEnvelope<>(
-                            entityId,
-                            new ValueOwnerActor.ApplyUpdate(
-                                    batch.batchId(),
-                                    entityId,
-                                    attrCounts,
-                                    getContext().getSelf()
+                            e.getKey(),
+                            new ValueOwnerActor.BatchUpdate(
+                                    batchId,
+                                    "value",
+                                    e.getValue(),
+                                    ackAdapter
+                            )
+                    )
+            );
+        }
+
+        for (var e : sketchUpdates.entrySet()) {
+            sketchRegion.tell(
+                    new ShardingEnvelope<>(
+                            String.valueOf(e.getKey()),
+                            new SketchActor.UpdateSketch(
+                                    batchId,
+                                    "sketch",
+                                    e.getValue(),
+                                    ackAdapter
                             )
                     )
             );
@@ -114,30 +117,52 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         return this;
     }
 
-    private Behavior<Command> onValueAck(ValueAck ack) {
+    private Behavior<Command> onAck(WrappedAck ack) {
 
-        PendingBatch p = pending.get(ack.batchId());
+        int batchId = ack.batchId();
 
-        if (p == null) {
+        Integer current = pendingAcks.get(batchId);
+        if (current == null) {
+            getContext().getLog().warn(
+                    "Dispatcher {} received late/duplicate ACK batch={} source={}",
+                    dispatcherId,
+                    batchId,
+                    ack.source()
+            );
             return this;
         }
 
-        p.waitingEntities.remove(ack.entityId());
+        int remaining = current - 1;
 
-        if (p.waitingEntities.isEmpty()) {
-            pending.remove(ack.batchId());
+        getContext().getLog().info(
+                "Dispatcher {} received ACK batch={} source={} remaining={}",
+                dispatcherId,
+                batchId,
+                ack.source(),
+                remaining
+        );
 
+        if (remaining == 0) {
             getContext().getLog().info(
-                    "Dispatcher {} batch={} fully ACKed",
+                    "Dispatcher {} batch={} fully ACKed value+sketch",
                     dispatcherId,
-                    ack.batchId()
+                    batchId
             );
 
-            p.replyTo.tell(Done.getInstance());
+            pendingAcks.remove(batchId);
+
+            ActorRef<Done> replyTo = replyMap.remove(batchId);
+            if (replyTo != null) {
+                replyTo.tell(Done.getInstance());
+            }
+
+        } else {
+            pendingAcks.put(batchId, remaining);
         }
 
         return this;
     }
+
 
     private static Map<String, Map<Short, Integer>> aggregateBatch(
             List<RawEvent> events
@@ -152,6 +177,22 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
                 grouped
                         .computeIfAbsent(entityId, k -> new HashMap<>())
                         .merge(ins.attrId(), 1, Integer::sum);
+            }
+        }
+
+        return grouped;
+    }
+
+    private static Map<Short, List<String>> aggregateSketch(
+            List<RawEvent> events
+    ) {
+        Map<Short, List<String>> grouped = new HashMap<>();
+
+        for (RawEvent event : events) {
+            if (event instanceof RawEvent.Insert ins) {
+                grouped
+                        .computeIfAbsent(ins.attrId(), k -> new ArrayList<>())
+                        .add(ins.valueStr());
             }
         }
 

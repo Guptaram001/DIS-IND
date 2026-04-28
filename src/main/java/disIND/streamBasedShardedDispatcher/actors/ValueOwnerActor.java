@@ -14,12 +14,30 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     public interface Command extends AkkaSerializable {}
 
-    public record ApplyUpdate(
-            long batchId,
-            String entityId,
+    public record BatchUpdate(
+            int batchId,
+            String source,
             Map<Short, Integer> attrCounts,
-            ActorRef<BatchDispatcherActor.Command> ackTo
+            ActorRef<Ack> replyTo
     ) implements Command {}
+
+    private Behavior<Command> onBatchUpdate(BatchUpdate cmd) {
+        for (Map.Entry<Short, Integer> e : cmd.attrCounts().entrySet()) {
+            counts.merge(e.getKey(), e.getValue(), Integer::sum);
+        }
+
+        getContext().getLog().info(
+                "ValueOwner {} batch={} update={} state={}",
+                entityId,
+                cmd.batchId(),
+                cmd.attrCounts(),
+                counts
+        );
+
+        cmd.replyTo().tell(new Ack(cmd.batchId(),cmd.source()));
+
+        return this;
+    }
 
     private final String entityId;
     private final Map<Short, Integer> counts = new HashMap<>();
@@ -36,31 +54,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
-                .onMessage(ApplyUpdate.class, this::onApplyUpdate)
+                .onMessage(BatchUpdate.class, this::onBatchUpdate)
                 .build();
     }
 
-    private Behavior<Command> onApplyUpdate(ApplyUpdate cmd) {
-
-        for (Map.Entry<Short, Integer> e : cmd.attrCounts().entrySet()) {
-            counts.merge(e.getKey(), e.getValue(), Integer::sum);
-        }
-
-        getContext().getLog().info(
-                "ValueOwner {} batch={} update={} state={}",
-                entityId,
-                cmd.batchId(),
-                cmd.attrCounts(),
-                counts
-        );
-
-        cmd.ackTo().tell(
-                new BatchDispatcherActor.ValueAck(
-                        cmd.batchId(),
-                        cmd.entityId()
-                )
-        );
-
-        return this;
-    }
 }

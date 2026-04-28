@@ -11,6 +11,7 @@ import akka.stream.javadsl.Sink;
 import akka.stream.javadsl.Source;
 import com.typesafe.config.ConfigFactory;
 import disIND.streamBasedShardedDispatcher.actors.BatchDispatcherActor;
+import disIND.streamBasedShardedDispatcher.actors.SketchActor;
 import disIND.streamBasedShardedDispatcher.actors.ValueOwnerActor;
 import disIND.streamBasedShardedDispatcher.dataset.CSVStreamingSource;
 import disIND.streamBasedShardedDispatcher.model.RawEvent;
@@ -53,13 +54,29 @@ public class StreamingShardedDispatcher {
                         "BatchDispatcher"
                 );
 
+        EntityTypeKey<SketchActor.Command> sketchKey =
+                EntityTypeKey.create(
+                        SketchActor.Command.class,
+                        "SketchActor"
+                );
+
+        var sketchRegion =
+                sharding.init(
+                        Entity.of(
+                                sketchKey,
+                                ctx -> SketchActor.create(ctx.getEntityId())
+                        )
+                );
+
+
         var dispatcherRegion =
                 sharding.init(
                         Entity.of(
                                 dispatcherKey,
                                 ctx -> BatchDispatcherActor.create(
                                         ctx.getEntityId(),
-                                        valueRegion
+                                        valueRegion,
+                                        sketchRegion
                                 )
                         )
                 );
