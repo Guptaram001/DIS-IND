@@ -25,16 +25,18 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
     private final LongOpenHashSet cqfLike = new LongOpenHashSet();
     private final LongOpenHashSet distinct = new LongOpenHashSet();
     private final Map<String, Integer> topK = new HashMap<>();
+    private final ActorRef<AppraisalActor.Command> appraisalActor;
 
     private static final int TOP_K_LIMIT = 10;
 
-    public static Behavior<Command> create(String attrId) {
-        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId)));
+    public static Behavior<Command> create(String attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
+        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId),appraisalActor));
     }
 
-    private SketchActor(ActorContext<Command> ctx, long attrId) {
+    private SketchActor(ActorContext<Command> ctx, long attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
         super(ctx);
         this.attrId = attrId;
+        this.appraisalActor = appraisalActor;
     }
 
     @Override
@@ -71,6 +73,21 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
                 topK.keySet()
         );
         cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.attrId(), WorkType.SKETCH));
+
+        boolean shouldPublish = cmd.batchId() % 10 == 0;
+        if (shouldPublish) {
+
+            appraisalActor.tell(
+                    new AppraisalActor.UpdateSummary(
+                            new AppraisalActor.SketchSummary(
+                                    attrId,
+                                    distinct.size(),
+                                    new HashSet<>(topK.keySet()),
+                                    cqfLike.size()
+                            )
+                    )
+            );
+        }
         return this;
     }
 

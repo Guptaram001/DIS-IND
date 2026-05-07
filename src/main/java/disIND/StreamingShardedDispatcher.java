@@ -2,6 +2,8 @@ package disIND;
 
 import akka.Done;
 import akka.NotUsed;
+import akka.actor.typed.Props;
+import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
 import akka.actor.typed.javadsl.AskPattern;
 import akka.actor.typed.javadsl.Behaviors;
@@ -10,6 +12,7 @@ import akka.cluster.sharding.typed.javadsl.*;
 import akka.stream.javadsl.Sink;
 import akka.stream.javadsl.Source;
 import com.typesafe.config.ConfigFactory;
+import disIND.streamBasedShardedDispatcher.actors.AppraisalActor;
 import disIND.streamBasedShardedDispatcher.actors.BatchDispatcherActor;
 import disIND.streamBasedShardedDispatcher.actors.SketchActor;
 import disIND.streamBasedShardedDispatcher.actors.ValueOwnerActor;
@@ -30,6 +33,13 @@ public class StreamingShardedDispatcher {
                         Behaviors.empty(),
                         "disIND",
                         ConfigFactory.load()
+                );
+
+        ActorRef<AppraisalActor.Command> appraisalActor =
+                system.systemActorOf(
+                        AppraisalActor.create(),
+                        "appraisal-actor",
+                        Props.empty()
                 );
 
         ClusterSharding sharding = ClusterSharding.get(system);
@@ -64,10 +74,12 @@ public class StreamingShardedDispatcher {
                 sharding.init(
                         Entity.of(
                                 sketchKey,
-                                ctx -> SketchActor.create(ctx.getEntityId())
+                                ctx -> SketchActor.create(
+                                        ctx.getEntityId(),
+                                        appraisalActor
+                                )
                         )
                 );
-
 
         var dispatcherRegion =
                 sharding.init(

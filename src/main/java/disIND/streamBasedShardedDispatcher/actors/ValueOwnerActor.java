@@ -10,6 +10,7 @@ import disIND.streamBasedShardedDispatcher.model.Ack;
 import disIND.streamBasedShardedDispatcher.model.AkkaSerializable;
 import disIND.streamBasedShardedDispatcher.model.WorkType;
 
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Map;
 public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
@@ -26,6 +27,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private Behavior<Command> onBatchUpdate(BatchUpdate cmd) {
         for (Map.Entry<Short, Integer> e : cmd.attrCounts().entrySet()) {
             counts.merge(e.getKey(), e.getValue(), Integer::sum);
+            attrsContainingValue.set(e.getKey());
         }
 
         getContext().getLog().info(
@@ -42,6 +44,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     }
 
     private final String entityId;
+    private final BitSet attrsContainingValue = new BitSet();
     private final Map<Short, Integer> counts = new HashMap<>();
 
     public static Behavior<Command> create(String entityId) {
