@@ -6,7 +6,9 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import disIND.streamBasedShardedDispatcher.model.Ack;
 import disIND.streamBasedShardedDispatcher.model.AkkaSerializable;
+import disIND.streamBasedShardedDispatcher.model.WorkType;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -16,7 +18,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     public record BatchUpdate(
             int batchId,
-            String source,
+            long entityHash,
             Map<Short, Integer> attrCounts,
             ActorRef<Ack> replyTo
     ) implements Command {}
@@ -34,7 +36,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                 counts
         );
 
-        cmd.replyTo().tell(new Ack(cmd.batchId(),cmd.source()));
+        cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.entityHash(), WorkType.VALUE));
 
         return this;
     }

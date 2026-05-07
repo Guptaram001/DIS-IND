@@ -8,8 +8,12 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.ShardingEnvelope;
+import disIND.streamBasedShardedDispatcher.model.Ack;
 import disIND.streamBasedShardedDispatcher.model.AkkaSerializable;
 import disIND.streamBasedShardedDispatcher.model.RawEvent;
+import disIND.streamBasedShardedDispatcher.model.WorkType;
+import it.unimi.dsi.fastutil.longs.*;
+
 
 import java.util.*;
 public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.Command> {
@@ -21,12 +25,17 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
             ActorRef<Done> replyTo
     ) implements Command {}
 
-    private record WrappedAck(int batchId, String source) implements Command {}
+    private final Long2ObjectOpenHashMap<LongOpenHashSet> pendingWork = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<ActorRef<Done>> replyMap = new Long2ObjectOpenHashMap<>();
+
+    private record WrappedAck(
+            long batchId,
+            long targetId,
+            WorkType type
+    ) implements Command {}
+
     private final ActorRef<ShardingEnvelope<ValueOwnerActor.Command>> valueRegion;
     private final ActorRef<ShardingEnvelope<SketchActor.Command>> sketchRegion;
-
-    private final Map<Integer, Integer> pendingAcks = new HashMap<>();
-    private final Map<Integer, ActorRef<Done>> replyMap = new HashMap<>();
 
     private final String dispatcherId;
 
@@ -62,37 +71,45 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
 
     private Behavior<Command> onProcessBatch(ProcessBatch cmd) {
 
-        int batchId = (int)cmd.batch().batchId();
+        long batchId = cmd.batch().batchId();
 
         var entityUpdates = aggregateBatch(cmd.batch().events());
         var sketchUpdates = aggregateSketch(cmd.batch().events());
+        LongOpenHashSet workSet = new LongOpenHashSet();
 
-        int expected = entityUpdates.size() + sketchUpdates.size();
+        for (var e : entityUpdates.entrySet()) {
+            long wid = workId(batchId, e.getKey(), WorkType.VALUE);
+            workSet.add(wid);
+        }
 
-        pendingAcks.put(batchId, expected);
+        for (var e : sketchUpdates.entrySet()) {
+            short attrId = e.getKey();
+            long wid = workId(batchId, attrId, WorkType.SKETCH);
+            workSet.add(wid);
+        }
+        pendingWork.put(batchId, workSet);
         replyMap.put(batchId, cmd.replyTo());
 
         ActorRef<Ack> ackAdapter =
-                getContext().messageAdapter(
-                        Ack.class,
-                        ack -> new WrappedAck(ack.batchId(),ack.source())
-                );
+                getContext().messageAdapter(Ack.class, this::onAckAdapter);
 
         getContext().getLog().info(
-                "Dispatcher {} processing batch={} entities={} sketches={}",
+                "Dispatcher {} batch={} workItems={}",
                 dispatcherId,
                 batchId,
-                entityUpdates.size(),
-                sketchUpdates.size()
+                workSet.size()
         );
 
         for (var e : entityUpdates.entrySet()) {
+            long entityHash = e.getKey();
+            String entityId = Long.toUnsignedString(entityHash, 16);
+
             valueRegion.tell(
                     new ShardingEnvelope<>(
-                            e.getKey(),
+                            entityId,
                             new ValueOwnerActor.BatchUpdate(
-                                    batchId,
-                                    "value",
+                                    (int) batchId,
+                                    entityHash,
                                     e.getValue(),
                                     ackAdapter
                             )
@@ -101,12 +118,14 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         }
 
         for (var e : sketchUpdates.entrySet()) {
+            long attrId =e.getKey();
+            String shardKey = Long.toString(attrId);
             sketchRegion.tell(
                     new ShardingEnvelope<>(
-                            String.valueOf(e.getKey()),
+                            shardKey,
                             new SketchActor.UpdateSketch(
-                                    batchId,
-                                    "sketch",
+                                    (int) batchId,
+                                    attrId,
                                     e.getValue(),
                                     ackAdapter
                             )
@@ -117,65 +136,56 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         return this;
     }
 
+    private Command onAckAdapter(Ack ack) {
+        return new WrappedAck(
+                ack.batchId(),
+                ack.targetId(),
+                ack.type()
+        );
+    }
+
     private Behavior<Command> onAck(WrappedAck ack) {
+        long batchId = ack.batchId();
+        LongOpenHashSet workSet = pendingWork.get(batchId);
+        long wid = workId(batchId, ack.targetId(), ack.type());
+        if (workSet == null) return this;
 
-        int batchId = ack.batchId();
+        boolean removed = workSet.remove(wid);
 
-        Integer current = pendingAcks.get(batchId);
-        if (current == null) {
+        if (!removed) {
             getContext().getLog().warn(
-                    "Dispatcher {} received late/duplicate ACK batch={} source={}",
-                    dispatcherId,
+                    "Duplicate or unknown ACK batch={} target={} type={}",
                     batchId,
-                    ack.source()
+                    ack.targetId(),
+                    ack.type()
             );
             return this;
         }
 
-        int remaining = current - 1;
-
-        getContext().getLog().info(
-                "Dispatcher {} received ACK batch={} source={} remaining={}",
-                dispatcherId,
-                batchId,
-                ack.source(),
-                remaining
-        );
-
-        if (remaining == 0) {
+        if (workSet.isEmpty()) {
             getContext().getLog().info(
-                    "Dispatcher {} batch={} fully ACKed value+sketch",
+                    "Dispatcher {} batch={} fully ACKed",
                     dispatcherId,
                     batchId
             );
-
-            pendingAcks.remove(batchId);
-
-            ActorRef<Done> replyTo = replyMap.remove(batchId);
-            if (replyTo != null) {
-                replyTo.tell(Done.getInstance());
+            pendingWork.remove(batchId);
+            ActorRef<Done> reply = replyMap.remove(batchId);
+            if (reply != null) {
+                reply.tell(Done.getInstance());
             }
-
-        } else {
-            pendingAcks.put(batchId, remaining);
         }
-
         return this;
     }
 
 
-    private static Map<String, Map<Short, Integer>> aggregateBatch(
-            List<RawEvent> events
-    ) {
-        Map<String, Map<Short, Integer>> grouped = new HashMap<>();
+    private static Map<Long, Map<Short, Integer>> aggregateBatch(List<RawEvent> events) {
+        Map<Long, Map<Short, Integer>> grouped = new HashMap<>();
+
 
         for (RawEvent event : events) {
             if (event instanceof RawEvent.Insert ins) {
-                String entityId =
-                        Long.toUnsignedString(hashValue(ins.valueStr()), 16);
-
-                grouped
-                        .computeIfAbsent(entityId, k -> new HashMap<>())
+                long entityHash = hashValue(ins.valueStr());
+                grouped.computeIfAbsent(entityHash, k -> new HashMap<>())
                         .merge(ins.attrId(), 1, Integer::sum);
             }
         }
@@ -183,9 +193,7 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         return grouped;
     }
 
-    private static Map<Short, List<String>> aggregateSketch(
-            List<RawEvent> events
-    ) {
+    private static Map<Short, List<String>> aggregateSketch(List<RawEvent> events) {
         Map<Short, List<String>> grouped = new HashMap<>();
 
         for (RawEvent event : events) {
@@ -210,5 +218,10 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         }
 
         return hash;
+    }
+
+    private long workId(long batchId, long targetHash, WorkType type) {
+        long h = batchId * 31 + targetHash;
+        return (h << 2) | type.ordinal();
     }
 }

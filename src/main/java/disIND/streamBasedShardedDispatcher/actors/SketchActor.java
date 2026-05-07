@@ -1,9 +1,11 @@
 package disIND.streamBasedShardedDispatcher.actors;
 
-
 import akka.actor.typed.Behavior;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.javadsl.*;
+import disIND.streamBasedShardedDispatcher.model.Ack;
+import disIND.streamBasedShardedDispatcher.model.WorkType;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.*;
 
@@ -13,24 +15,24 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
 
     public record UpdateSketch(
             int batchId,
-            String source,
+            long attrId,
             List<String> values,
             ActorRef<Ack> replyTo
     ) implements Command {}
 
-    private final String attrId;
+    private final long attrId;
 
-    private final Set<Long> cqfLike = new HashSet<>();   // simulate CQF
-    private final Set<Long> distinct = new HashSet<>();  // simulate HLL
+    private final LongOpenHashSet cqfLike = new LongOpenHashSet();
+    private final LongOpenHashSet distinct = new LongOpenHashSet();
     private final Map<String, Integer> topK = new HashMap<>();
 
     private static final int TOP_K_LIMIT = 10;
 
     public static Behavior<Command> create(String attrId) {
-        return Behaviors.setup(ctx -> new SketchActor(ctx, attrId));
+        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId)));
     }
 
-    private SketchActor(ActorContext<Command> ctx, String attrId) {
+    private SketchActor(ActorContext<Command> ctx, long attrId) {
         super(ctx);
         this.attrId = attrId;
     }
@@ -68,7 +70,7 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
                 distinct.size(),
                 topK.keySet()
         );
-        cmd.replyTo().tell(new Ack(cmd.batchId(),cmd.source()));
+        cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.attrId(), WorkType.SKETCH));
         return this;
     }
 
