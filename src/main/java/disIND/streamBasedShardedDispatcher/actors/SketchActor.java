@@ -5,6 +5,7 @@ import akka.actor.typed.ActorRef;
 import akka.actor.typed.javadsl.*;
 import disIND.streamBasedShardedDispatcher.model.Ack;
 import disIND.streamBasedShardedDispatcher.model.WorkType;
+import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.*;
@@ -30,7 +31,7 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
     private static final int TOP_K_LIMIT = 10;
 
     public static Behavior<Command> create(String attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
-        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId),appraisalActor));
+        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId), appraisalActor));
     }
 
     private SketchActor(ActorContext<Command> ctx, long attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
@@ -72,22 +73,17 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
                 distinct.size(),
                 topK.keySet()
         );
+
+        Set<Long> sample = new HashSet<>();
+        LongIterator it = distinct.iterator();
+        int k = 0;
+        while (it.hasNext() && k < 5) {
+            sample.add(it.nextLong());
+            k++;
+        }
+        appraisalActor.tell(new AppraisalActor.SketchSummary(attrId, distinct.size(), sample));
         cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.attrId(), WorkType.SKETCH));
 
-        boolean shouldPublish = cmd.batchId() % 10 == 0;
-        if (shouldPublish) {
-
-            appraisalActor.tell(
-                    new AppraisalActor.UpdateSummary(
-                            new AppraisalActor.SketchSummary(
-                                    attrId,
-                                    distinct.size(),
-                                    new HashSet<>(topK.keySet()),
-                                    cqfLike.size()
-                            )
-                    )
-            );
-        }
         return this;
     }
 

@@ -5,7 +5,9 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import akka.actor.typed.ActorRef;
 
+import java.util.*;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -16,45 +18,62 @@ public class AppraisalActor extends AbstractBehavior<AppraisalActor.Command> {
 
     public record SketchSummary(
             long attrId,
-            long distinctCount,
-            Set<String> topK,
-            long sketchSize
-    ) {}
-
-    public record UpdateSummary(
-            SketchSummary summary
+            int distinctCount,
+            Set<Long> sampleHashes
     ) implements Command {}
 
-    private final Map<Long, SketchSummary> summaries =
-            new HashMap<>();
 
-    public static Behavior<Command> create() {
-        return Behaviors.setup(AppraisalActor::new);
+    private final Map<Long, SketchSummary> summaries = new HashMap<>();
+
+    private final ActorRef<CandidateManagerActor.Command> candidateManager;
+
+    public static Behavior<Command> create(ActorRef<CandidateManagerActor.Command> candidateManager) {
+        return Behaviors.setup(ctx -> new AppraisalActor(ctx, candidateManager));
     }
 
-    private AppraisalActor(ActorContext<Command> ctx) {
+    private AppraisalActor(ActorContext<Command> ctx,ActorRef<CandidateManagerActor.Command> candidateManager) {
         super(ctx);
+        this.candidateManager = candidateManager;
     }
 
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
-                .onMessage(UpdateSummary.class, this::onSummary)
+                .onMessage(SketchSummary.class, this::onSketchSummary)
                 .build();
     }
 
-    private Behavior<Command> onSummary(UpdateSummary cmd) {
-
-        summaries.put(cmd.summary().attrId(), cmd.summary());
+    private Behavior<Command> onSketchSummary(SketchSummary incoming) {
 
         getContext().getLog().info(
                 "Received sketch summary attr={} distinct={}",
-                cmd.summary().attrId(),
-                cmd.summary().distinctCount()
+                incoming.attrId(),
+                incoming.distinctCount()
         );
 
-        // candidate generation logic here
+        for (SketchSummary existing : summaries.values()) {
+            if (existing.attrId() == incoming.attrId()) {
+                continue;
+            }
+            if (looksPromising(existing, incoming)) {
+                candidateManager.tell(new CandidateManagerActor.ActivatePair(existing.attrId(), incoming.attrId()));
+            }
+        }
+        summaries.put(incoming.attrId(), incoming);
 
         return this;
+    }
+
+    private boolean looksPromising(SketchSummary a, SketchSummary b) {
+        //dummy ratio 0.8 threshold
+        int minDistinct = Math.min(a.distinctCount(), b.distinctCount());
+        int maxDistinct = Math.max(a.distinctCount(), b.distinctCount());
+        double ratio = (double) minDistinct / maxDistinct;
+        if (ratio < 0.8) {
+            return false;
+        }
+        Set<Long> overlap = new HashSet<>(a.sampleHashes());
+        overlap.retainAll(b.sampleHashes());
+        return !overlap.isEmpty();
     }
 }
