@@ -39,6 +39,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         );
 
         cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.entityHash(), WorkType.VALUE));
+        candidateManager.tell(new CandidateManagerActor.ChangePropagate(cmd.entityHash(), (BitSet) attrsContainingValue.clone()));
 
         return this;
     }
@@ -46,14 +47,16 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final String entityId;
     private final BitSet attrsContainingValue = new BitSet();
     private final Map<Short, Integer> counts = new HashMap<>();
+    private final ActorRef<CandidateManagerActor.Command> candidateManager;
 
-    public static Behavior<Command> create(String entityId) {
-        return Behaviors.setup(ctx -> new ValueOwnerActor(ctx, entityId));
+    public static Behavior<Command> create(String entityId,ActorRef<CandidateManagerActor.Command> candidateManager) {
+        return Behaviors.setup(ctx -> new ValueOwnerActor(ctx, entityId, candidateManager));
     }
 
-    private ValueOwnerActor(ActorContext<Command> ctx, String entityId) {
+    private ValueOwnerActor(ActorContext<Command> ctx, String entityId, ActorRef<CandidateManagerActor.Command> candidateManager) {
         super(ctx);
         this.entityId = entityId;
+        this.candidateManager = candidateManager;
     }
 
     @Override

@@ -32,7 +32,7 @@ public class StreamingShardedDispatcher {
         ClusterSharding sharding = ClusterSharding.get(system);
 
         EntityTypeKey<ValueOwnerActor.Command> valueKey = EntityTypeKey.create(ValueOwnerActor.Command.class, "ValueOwner");
-        var valueRegion = sharding.init(Entity.of(valueKey,ctx -> ValueOwnerActor.create(ctx.getEntityId())));
+        var valueRegion = sharding.init(Entity.of(valueKey,ctx -> ValueOwnerActor.create(ctx.getEntityId(),candidateManager)));
 
         EntityTypeKey<BatchDispatcherActor.Command> dispatcherKey = EntityTypeKey.create(BatchDispatcherActor.Command.class, "BatchDispatcher");
         EntityTypeKey<SketchActor.Command> sketchKey =EntityTypeKey.create(SketchActor.Command.class, "SketchActor");
