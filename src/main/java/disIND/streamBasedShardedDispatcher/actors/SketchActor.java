@@ -3,10 +3,12 @@ package disIND.streamBasedShardedDispatcher.actors;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.javadsl.*;
+import akka.cluster.sharding.typed.ShardingEnvelope;
 import disIND.streamBasedShardedDispatcher.model.Ack;
 import disIND.streamBasedShardedDispatcher.model.WorkType;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import scala.App;
 
 import java.util.*;
 
@@ -26,18 +28,18 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
     private final LongOpenHashSet cqfLike = new LongOpenHashSet();
     private final LongOpenHashSet distinct = new LongOpenHashSet();
     private final Map<String, Integer> topK = new HashMap<>();
-    private final ActorRef<AppraisalActor.Command> appraisalActor;
+    private final ActorRef<ShardingEnvelope<AppraisalActor.Command>> appraisalRegion;
 
     private static final int TOP_K_LIMIT = 10;
 
-    public static Behavior<Command> create(String attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
-        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId), appraisalActor));
+    public static Behavior<Command> create(String attrId,ActorRef<ShardingEnvelope<AppraisalActor.Command>> appraisalRegion) {
+        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId), appraisalRegion));
     }
 
-    private SketchActor(ActorContext<Command> ctx, long attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
+    private SketchActor(ActorContext<Command> ctx, long attrId,ActorRef<ShardingEnvelope<AppraisalActor.Command>> appraisalRegion) {
         super(ctx);
         this.attrId = attrId;
-        this.appraisalActor = appraisalActor;
+        this.appraisalRegion = appraisalRegion;
     }
 
     @Override
@@ -81,7 +83,16 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
             sample.add(it.nextLong());
             k++;
         }
-        appraisalActor.tell(new AppraisalActor.SketchSummary(attrId, distinct.size(), sample));
+        appraisalRegion.tell(
+                new ShardingEnvelope<>(
+                        String.valueOf(attrId),
+                        new AppraisalActor.SketchSummary(
+                                attrId,
+                                distinct.size(),
+                                sample
+                        )
+                )
+        );
         cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.attrId(), WorkType.SKETCH));
 
         return this;

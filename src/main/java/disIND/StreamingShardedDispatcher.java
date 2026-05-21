@@ -26,24 +26,32 @@ public class StreamingShardedDispatcher {
 
         ActorSystem<Void> system = ActorSystem.create(Behaviors.empty(), "disIND", ConfigFactory.load());
 
-        ActorRef<CandidateManagerActor.Command> candidateManager = system.systemActorOf(CandidateManagerActor.create(), "candidate-manager",akka.actor.typed.Props.empty());
-        ActorRef<AppraisalActor.Command> appraisalActor = system.systemActorOf(AppraisalActor.create(candidateManager), "appraisal-actor",akka.actor.typed.Props.empty());
+        //ActorRef<CandidateManagerActor.Command> candidateManager = system.systemActorOf(CandidateManagerActor.create(), "candidate-manager",akka.actor.typed.Props.empty());
+        //ActorRef<AppraisalActor.Command> appraisalActor = system.systemActorOf(AppraisalActor.create(candidateManager), "appraisal-actor",akka.actor.typed.Props.empty());
 
         ClusterSharding sharding = ClusterSharding.get(system);
 
+        EntityTypeKey<CandidateManagerActor.Command> candidateKey = EntityTypeKey.create(CandidateManagerActor.Command.class, "CandidateManager");
+        var candidateRegion = sharding.init(Entity.of(candidateKey,ctx -> CandidateManagerActor.create()));
+
+
+        EntityTypeKey<AppraisalActor.Command> appraisalKey = EntityTypeKey.create(AppraisalActor.Command.class, "AppraisalActor");
+        var appraisalRegion = sharding.init(Entity.of(appraisalKey,ctx -> AppraisalActor.create(candidateRegion)));
+
+
         EntityTypeKey<ValueOwnerActor.Command> valueKey = EntityTypeKey.create(ValueOwnerActor.Command.class, "ValueOwner");
-        var valueRegion = sharding.init(Entity.of(valueKey,ctx -> ValueOwnerActor.create(ctx.getEntityId(),candidateManager)));
+        var valueRegion = sharding.init(Entity.of(valueKey,ctx -> ValueOwnerActor.create(ctx.getEntityId(),
+                candidateRegion)));
+
+        EntityTypeKey<SketchActor.Command> sketchKey =EntityTypeKey.create(SketchActor.Command.class, "SketchActor");
+        var sketchRegion = sharding.init(Entity.of(sketchKey, ctx -> SketchActor.create(ctx.getEntityId(),
+                appraisalRegion)));
 
         EntityTypeKey<BatchDispatcherActor.Command> dispatcherKey = EntityTypeKey.create(BatchDispatcherActor.Command.class, "BatchDispatcher");
-        EntityTypeKey<SketchActor.Command> sketchKey =EntityTypeKey.create(SketchActor.Command.class, "SketchActor");
-
-        var sketchRegion = sharding.init(Entity.of(sketchKey, ctx -> SketchActor.create(ctx.getEntityId(),
-                                        appraisalActor)));
-
         var dispatcherRegion = sharding.init(Entity.of(dispatcherKey, ctx -> BatchDispatcherActor.create(
-                                        ctx.getEntityId(),
-                                        valueRegion,
-                                        sketchRegion)));
+                ctx.getEntityId(),
+                valueRegion,
+                sketchRegion)));
 
         Source<RawEvent.Batch, NotUsed> source = CSVStreamingSource.stream("/Users/gupta/Documents/DIS-IND/data/sample_data.csv", 4);
 

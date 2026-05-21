@@ -6,6 +6,7 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.ActorRef;
+import akka.cluster.sharding.typed.ShardingEnvelope;
 
 import java.util.*;
 import java.util.HashMap;
@@ -25,15 +26,15 @@ public class AppraisalActor extends AbstractBehavior<AppraisalActor.Command> {
 
     private final Map<Long, SketchSummary> summaries = new HashMap<>();
 
-    private final ActorRef<CandidateManagerActor.Command> candidateManager;
+    private final ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion;
 
-    public static Behavior<Command> create(ActorRef<CandidateManagerActor.Command> candidateManager) {
-        return Behaviors.setup(ctx -> new AppraisalActor(ctx, candidateManager));
+    public static Behavior<Command> create(ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion) {
+        return Behaviors.setup(ctx -> new AppraisalActor(ctx, candidateRegion));
     }
 
-    private AppraisalActor(ActorContext<Command> ctx,ActorRef<CandidateManagerActor.Command> candidateManager) {
+    private AppraisalActor(ActorContext<Command> ctx,ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion) {
         super(ctx);
-        this.candidateManager = candidateManager;
+        this.candidateRegion = candidateRegion;
     }
 
     @Override
@@ -56,7 +57,15 @@ public class AppraisalActor extends AbstractBehavior<AppraisalActor.Command> {
                 continue;
             }
             if (looksPromising(existing, incoming)) {
-                candidateManager.tell(new CandidateManagerActor.ActivatePair(existing.attrId(), incoming.attrId()));
+                candidateRegion.tell(
+                        new ShardingEnvelope<>(
+                                String.valueOf(existing.attrId()),
+                                new CandidateManagerActor.ActivatePair(
+                                        existing.attrId(),
+                                        incoming.attrId()
+                                )
+                        )
+                );
             }
         }
         summaries.put(incoming.attrId(), incoming);
