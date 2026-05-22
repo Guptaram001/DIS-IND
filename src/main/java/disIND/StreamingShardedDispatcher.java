@@ -32,20 +32,21 @@ public class StreamingShardedDispatcher {
         ClusterSharding sharding = ClusterSharding.get(system);
 
         EntityTypeKey<CandidateManagerActor.Command> candidateKey = EntityTypeKey.create(CandidateManagerActor.Command.class, "CandidateManager");
-        var candidateRegion = sharding.init(Entity.of(candidateKey,ctx -> CandidateManagerActor.create()));
+        var candidateRegion = sharding.init(Entity.of(candidateKey,ctx -> CandidateManagerActor.create(ctx.getEntityId())));
 
 
-        EntityTypeKey<AppraisalActor.Command> appraisalKey = EntityTypeKey.create(AppraisalActor.Command.class, "AppraisalActor");
-        var appraisalRegion = sharding.init(Entity.of(appraisalKey,ctx -> AppraisalActor.create(candidateRegion)));
-
+        //EntityTypeKey<AppraisalActor.Command> appraisalKey = EntityTypeKey.create(AppraisalActor.Command.class, "AppraisalActor");
+        //var appraisalRegion = sharding.init(Entity.of(appraisalKey,ctx -> AppraisalActor.create(candidateRegion)));
+        ActorRef<AppraisalActor.Command> appraisalActor = system.systemActorOf(AppraisalActor.create(candidateRegion), "appraisal-actor",akka.actor.typed.Props.empty());
 
         EntityTypeKey<ValueOwnerActor.Command> valueKey = EntityTypeKey.create(ValueOwnerActor.Command.class, "ValueOwner");
         var valueRegion = sharding.init(Entity.of(valueKey,ctx -> ValueOwnerActor.create(ctx.getEntityId(),
                 candidateRegion)));
 
         EntityTypeKey<SketchActor.Command> sketchKey =EntityTypeKey.create(SketchActor.Command.class, "SketchActor");
-        var sketchRegion = sharding.init(Entity.of(sketchKey, ctx -> SketchActor.create(ctx.getEntityId(),
-                appraisalRegion)));
+        //var sketchRegion = sharding.init(Entity.of(sketchKey, ctx -> SketchActor.create(ctx.getEntityId(), appraisalRegion)));
+        var sketchRegion = sharding.init(Entity.of(sketchKey, ctx -> SketchActor.create(ctx.getEntityId(), appraisalActor)));
+
 
         EntityTypeKey<BatchDispatcherActor.Command> dispatcherKey = EntityTypeKey.create(BatchDispatcherActor.Command.class, "BatchDispatcher");
         var dispatcherRegion = sharding.init(Entity.of(dispatcherKey, ctx -> BatchDispatcherActor.create(

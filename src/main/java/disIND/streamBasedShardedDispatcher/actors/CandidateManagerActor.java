@@ -13,68 +13,152 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
 
     public interface Command extends AkkaSerializable {}
     public record ChangePropagate(long valueHash, BitSet attrs) implements Command {}
+    public record Change(
+            long valueHash,
+            short changedAttr,
+            boolean added
+    ) implements Command {}
+    public record SemanticTransition(
+            long valueHash,
+            BitSet before,
+            BitSet after
+    ) implements Command {}
 
-    public record ActivatePair(long lhsAttr, long rhsAttr) implements Command {}
+    //activation received from AA
+    public record ActivatePair(short lhsAttr, short rhsAttr) implements Command {}
 
     private final Set<String> activePairs = new HashSet<>();
+    private final Set<Short> rhsCandidates = new HashSet<>();
 
     private final Set<String> activeCandidates = new HashSet<>();
-    private final Map<String, Integer> violationCounts = new HashMap<>();
+    private final Map<Short, Long> violationCounts = new HashMap<>();
+    private final short lhsAttr;
     private final Map<String, Long> witnesses = new HashMap<>();
     private static final int MAX_VIOLATIONS = 10;
 
-    public static Behavior<Command> create() {
-        return Behaviors.setup(CandidateManagerActor::new);
+    public static Behavior<Command> create(String lhsAttr) {
+        return Behaviors.setup(ctx ->
+        new CandidateManagerActor(ctx, Short.parseShort(lhsAttr)));
     }
 
-    private CandidateManagerActor(ActorContext<Command> ctx) {
+    private final Map<Short, Long> witness = new HashMap<>();
+
+    private CandidateManagerActor(ActorContext<Command> ctx,short lhsAttr) {
         super(ctx);
+        this.lhsAttr = lhsAttr;
     }
 
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(ActivatePair.class, this::onActivatePair)
-                .onMessage(ChangePropagate.class, this::onChange)
+                .onMessage(ChangePropagate.class, this::onChangePropagate)
+                .onMessage(SemanticTransition.class, this::onSemanticTransition)
+                .onMessage(Change.class, this::onChange)
                 .build();
     }
 
     private Behavior<Command> onActivatePair(ActivatePair cmd) {
-        String key = cmd.lhsAttr() + "->" + cmd.rhsAttr();
-        if (activeCandidates.add(key)) {
-            getContext().getLog().info("Activated candidate IND {}", key);
-            violationCounts.put(key, 0);
+        if (cmd.lhsAttr() != lhsAttr) {
+            getContext().getLog().warn(
+                    "Wrong shard. shard={} pair={}⊆{}",
+                    lhsAttr,
+                    cmd.lhsAttr(),
+                    cmd.rhsAttr()
+            );
+            return this;
         }
+
+        if (rhsCandidates.add(cmd.rhsAttr())) {
+
+            violationCounts.put(cmd.rhsAttr(), 0L);
+
+            getContext().getLog().info(
+                    "Activated IND {}⊆{}",
+                    cmd.lhsAttr(),
+                    cmd.rhsAttr()
+            );
+        }
+
         return this;
     }
 
-    private Behavior<Command> onChange(ChangePropagate cmd) {
+    private Behavior<Command> onSemanticTransition(SemanticTransition cmd) {
+        BitSet before = cmd.before();
+        BitSet after = cmd.after();
 
-        BitSet attrs = cmd.attrs();
-        Set<String> toRemove = new HashSet<>();
-        for (String candidate : activeCandidates) {
-            String[] parts = candidate.split("->");
-            short lhs = Short.parseShort(parts[0]);
-            short rhs = Short.parseShort(parts[1]);
-            boolean lhsPresent = attrs.get(lhs);
-            boolean rhsPresent = attrs.get(rhs);
+        for (short rhs : rhsCandidates) {
+            boolean beforeViolation =
+                    before.get(lhsAttr) && !before.get(rhs);
 
-            if (lhsPresent && !rhsPresent) {
-                int violations = violationCounts.merge(candidate, 1, Integer::sum);
-                witnesses.put(candidate, cmd.valueHash());
-                getContext().getLog().info("IND violation {} witness={} count={}", candidate, Long.toUnsignedString(
-                                cmd.valueHash(),
-                                16),
-                        violations
+            boolean afterViolation =
+                    after.get(lhsAttr) && !after.get(rhs);
+
+            if (!beforeViolation && afterViolation) {
+                long count = violationCounts.merge(rhs, 1L,Long::sum);
+                witness.put(rhs, cmd.valueHash());
+
+                getContext().getLog().info(
+                        "IND violation CREATED {}⊆{} value={} count={}",
+                        lhsAttr,
+                        rhs,
+                        Long.toUnsignedString(cmd.valueHash(), 16),
+                        count
                 );
+            }
 
-                if (violations >= MAX_VIOLATIONS) {
-                    toRemove.add(candidate);
-                    getContext().getLog().info("IND {} deactivated after violations", candidate);
+            if (beforeViolation && !afterViolation) {
+                long count = violationCounts.merge(rhs, -1L, Long::sum);
+                if (count < 0) {
+                    violationCounts.put(rhs, 0L);
+                    count = 0;
                 }
+
+                getContext().getLog().info(
+                        "IND violation RESOLVED {}⊆{} value={} count={}",
+                        lhsAttr,
+                        rhs,
+                        Long.toUnsignedString(cmd.valueHash(), 16),
+                        count
+                );
             }
         }
-        activeCandidates.removeAll(toRemove);
+
+        return this;
+    }
+
+    private Behavior<Command> onChange(Change cmd) {
+
+        return this;
+    }
+
+    private Behavior<Command> onChangePropagate(ChangePropagate cmd) {
+
+//        BitSet attrs = cmd.attrs();
+//        Set<String> toRemove = new HashSet<>();
+//        for (String candidate : activeCandidates) {
+//            String[] parts = candidate.split("->");
+//            short lhs = Short.parseShort(parts[0]);
+//            short rhs = Short.parseShort(parts[1]);
+//            boolean lhsPresent = attrs.get(lhs);
+//            boolean rhsPresent = attrs.get(rhs);
+//
+//            if (lhsPresent && !rhsPresent) {
+//                int violations = violationCounts.merge(candidate, 1, Integer::sum);
+//                witnesses.put(candidate, cmd.valueHash());
+//                getContext().getLog().info("IND violation {} witness={} count={}", candidate, Long.toUnsignedString(
+//                                cmd.valueHash(),
+//                                16),
+//                        violations
+//                );
+//
+//                if (violations >= MAX_VIOLATIONS) {
+//                    toRemove.add(candidate);
+//                    getContext().getLog().info("IND {} deactivated after violations", candidate);
+//                }
+//            }
+//        }
+//        activeCandidates.removeAll(toRemove);
         return this;
     }
 }

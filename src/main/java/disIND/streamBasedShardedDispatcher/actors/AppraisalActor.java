@@ -18,13 +18,14 @@ public class AppraisalActor extends AbstractBehavior<AppraisalActor.Command> {
     public interface Command {}
 
     public record SketchSummary(
-            long attrId,
+            short attrId,
             int distinctCount,
             Set<Long> sampleHashes
     ) implements Command {}
 
 
-    private final Map<Long, SketchSummary> summaries = new HashMap<>();
+    private final Map<Short, SketchSummary> summaries = new HashMap<>();
+    private final Set<String> activated = new HashSet<>();
 
     private final ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion;
 
@@ -52,20 +53,32 @@ public class AppraisalActor extends AbstractBehavior<AppraisalActor.Command> {
                 incoming.distinctCount()
         );
 
+//        for (SketchSummary existing : summaries.values()) {
+//            if (existing.attrId() == incoming.attrId()) {
+//                continue;
+//            }
+//            if (looksPromising(existing, incoming)) {
+//                candidateRegion.tell(
+//                        new ShardingEnvelope<>(
+//                                String.valueOf(existing.attrId()),
+//                                new CandidateManagerActor.ActivatePair(
+//                                        existing.attrId(),
+//                                        incoming.attrId()
+//                                )
+//                        )
+//                );
+//            }
+//        }
+//        summaries.put(incoming.attrId(), incoming);
         for (SketchSummary existing : summaries.values()) {
-            if (existing.attrId() == incoming.attrId()) {
-                continue;
-            }
+            if (existing.attrId() == incoming.attrId()) continue;
+
             if (looksPromising(existing, incoming)) {
-                candidateRegion.tell(
-                        new ShardingEnvelope<>(
-                                String.valueOf(existing.attrId()),
-                                new CandidateManagerActor.ActivatePair(
-                                        existing.attrId(),
-                                        incoming.attrId()
-                                )
-                        )
-                );
+                activate(existing.attrId(), incoming.attrId());
+            }
+
+            if (looksPromising(incoming, existing)) {
+                activate(incoming.attrId(), existing.attrId());
             }
         }
         summaries.put(incoming.attrId(), incoming);
@@ -73,12 +86,32 @@ public class AppraisalActor extends AbstractBehavior<AppraisalActor.Command> {
         return this;
     }
 
+    private void activate(short lhs, short rhs) {
+        String key = lhs + "->" + rhs;
+
+        if (!activated.add(key)) {
+            return;
+        }
+        candidateRegion.tell(
+                new ShardingEnvelope<>(
+                        String.valueOf(lhs),
+                        new CandidateManagerActor.ActivatePair(lhs, rhs)
+                )
+        );
+
+        getContext().getLog().info(
+                "Appraisal activated candidate {} ⊆ {}",
+                lhs,
+                rhs
+        );
+    }
+
     private boolean looksPromising(SketchSummary a, SketchSummary b) {
         //dummy ratio 0.8 threshold
         int minDistinct = Math.min(a.distinctCount(), b.distinctCount());
         int maxDistinct = Math.max(a.distinctCount(), b.distinctCount());
         double ratio = (double) minDistinct / maxDistinct;
-        if (ratio < 0.8) {
+        if (ratio < 0.2) {
             return false;
         }
         Set<Long> overlap = new HashSet<>(a.sampleHashes());

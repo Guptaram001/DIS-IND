@@ -28,18 +28,18 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
     private final LongOpenHashSet cqfLike = new LongOpenHashSet();
     private final LongOpenHashSet distinct = new LongOpenHashSet();
     private final Map<String, Integer> topK = new HashMap<>();
-    private final ActorRef<ShardingEnvelope<AppraisalActor.Command>> appraisalRegion;
+    private final ActorRef<AppraisalActor.Command> appraisalActor;
 
     private static final int TOP_K_LIMIT = 10;
 
-    public static Behavior<Command> create(String attrId,ActorRef<ShardingEnvelope<AppraisalActor.Command>> appraisalRegion) {
-        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId), appraisalRegion));
+    public static Behavior<Command> create(String attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
+        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId), appraisalActor));
     }
 
-    private SketchActor(ActorContext<Command> ctx, long attrId,ActorRef<ShardingEnvelope<AppraisalActor.Command>> appraisalRegion) {
+    private SketchActor(ActorContext<Command> ctx, long attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
         super(ctx);
         this.attrId = attrId;
-        this.appraisalRegion = appraisalRegion;
+        this.appraisalActor = appraisalActor;
     }
 
     @Override
@@ -83,16 +83,17 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
             sample.add(it.nextLong());
             k++;
         }
-        appraisalRegion.tell(
-                new ShardingEnvelope<>(
-                        String.valueOf(attrId),
-                        new AppraisalActor.SketchSummary(
-                                attrId,
-                                distinct.size(),
-                                sample
-                        )
-                )
-        );
+//        appraisalRegion.tell(
+//                new ShardingEnvelope<>(
+//                        String.valueOf(attrId),
+//                        new AppraisalActor.SketchSummary(
+//                                (short)attrId,
+//                                distinct.size(),
+//                                sample
+//                        )
+//                )
+//        );
+        appraisalActor.tell(new AppraisalActor.SketchSummary((short)attrId, distinct.size(), sample));
         cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.attrId(), WorkType.SKETCH));
 
         return this;

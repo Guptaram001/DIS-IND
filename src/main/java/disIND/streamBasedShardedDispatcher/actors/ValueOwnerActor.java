@@ -44,18 +44,26 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
         BitSet after = (BitSet) attrsContainingValue.clone();
 
+        if (!before.equals(after)) {
+            propagateTransition(cmd.entityHash(), before, after);
+        }
+
         BitSet addedAttrs = (BitSet) after.clone();
         addedAttrs.andNot(before);       // 0 -> 1
 
         BitSet removedAttrs = (BitSet) before.clone();
         removedAttrs.andNot(after);      // 1 -> 0
 
+        cmd.replyTo().tell(new Ack(cmd.batchId(), cmd.entityHash(), WorkType.VALUE));
+
         if (!addedAttrs.isEmpty()) {
-            propagateAddedChange(cmd.entityHash(), after, addedAttrs);
+            //propagateAddedChange(cmd.entityHash(), after, addedAttrs);
+            //propagateAddedChange(cmd.entityHash(), addedAttrs);
         }
 
         if (!removedAttrs.isEmpty()) {
-            propagateRemovedChange(cmd.entityHash(), after, removedAttrs);
+            //propagateRemovedChange(cmd.entityHash(), after, removedAttrs);
+            //propagateRemovedChange(cmd.entityHash(), removedAttrs);
         }
         getContext().getLog().info(
                 "ValueOwner {} batch={} update={} state={}",
@@ -68,16 +76,20 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         return this;
     }
 
-    private void propagateAddedChange(long valueHash, BitSet after, BitSet addedAttrs) {
-        for (int lhs = addedAttrs.nextSetBit(0);
-             lhs >= 0;
-             lhs = addedAttrs.nextSetBit(lhs + 1)) {
+    private void propagateTransition(long valueHash, BitSet before, BitSet after) {
+        BitSet touched = (BitSet) before.clone();
+        touched.or(after);
+
+        for (int attr = touched.nextSetBit(0);
+             attr >= 0;
+             attr = touched.nextSetBit(attr + 1)) {
 
             candidateRegion.tell(
                     new ShardingEnvelope<>(
-                            String.valueOf(lhs),
-                            new CandidateManagerActor.ChangePropagate(
+                            String.valueOf(attr),
+                            new CandidateManagerActor.SemanticTransition(
                                     valueHash,
+                                    (BitSet) before.clone(),
                                     (BitSet) after.clone()
                             )
                     )
@@ -85,22 +97,77 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
 
-    private void propagateRemovedChange(long valueHash, BitSet after, BitSet removedAttrs) {
-        for (int lhs = after.nextSetBit(0);
-             lhs >= 0;
-             lhs = after.nextSetBit(lhs + 1)) {
-
-            candidateRegion.tell(
-                    new ShardingEnvelope<>(
-                            String.valueOf(lhs),
-                            new CandidateManagerActor.ChangePropagate(
-                                    valueHash,
-                                    (BitSet) after.clone()
-                            )
-                    )
-            );
-        }
-    }
+//    private void propagateAddedChange(long valueHash, BitSet after, BitSet addedAttrs) {
+//        for (int lhs = addedAttrs.nextSetBit(0);
+//             lhs >= 0;
+//             lhs = addedAttrs.nextSetBit(lhs + 1)) {
+//
+//            candidateRegion.tell(
+//                    new ShardingEnvelope<>(
+//                            String.valueOf(lhs),
+//                            new CandidateManagerActor.ChangePropagate(
+//                                    valueHash,
+//                                    (BitSet) after.clone()
+//                            )
+//                    )
+//            );
+//        }
+//    }
+//
+//    private void propagateAddedChange(long valueHash, BitSet addedAttrs) {
+//
+//        for (int attr = addedAttrs.nextSetBit(0);
+//             attr >= 0;
+//             attr = addedAttrs.nextSetBit(attr + 1)) {
+//
+//            candidateRegion.tell(
+//                    new ShardingEnvelope<>(
+//                            String.valueOf(attr),
+//                            new CandidateManagerActor.Change(
+//                                    valueHash,
+//                                    (short) attr,
+//                                    true
+//                            )
+//                    )
+//            );
+//        }
+//    }
+//
+//    private void propagateRemovedChange(long valueHash, BitSet after, BitSet removedAttrs) {
+//        for (int lhs = after.nextSetBit(0);
+//             lhs >= 0;
+//             lhs = after.nextSetBit(lhs + 1)) {
+//
+//            candidateRegion.tell(
+//                    new ShardingEnvelope<>(
+//                            String.valueOf(lhs),
+//                            new CandidateManagerActor.ChangePropagate(
+//                                    valueHash,
+//                                    (BitSet) after.clone()
+//                            )
+//                    )
+//            );
+//        }
+//    }
+//
+//    private void propagateRemovedChange(long valueHash, BitSet removedAttrs) {
+//
+//        for (int attr = removedAttrs.nextSetBit(0);
+//             attr >= 0;
+//             attr = removedAttrs.nextSetBit(attr + 1)) {
+//
+//            candidateRegion.tell(
+//                    new ShardingEnvelope<>(
+//                            String.valueOf(attr),
+//                            new CandidateManagerActor.Change(
+//                                    valueHash,
+//                                    (short) attr,
+//                                    false
+//                            )
+//                    )
+//            );
+//        }
+//    }
 
     private final String entityId;
     private final BitSet attrsContainingValue = new BitSet();
