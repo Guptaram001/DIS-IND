@@ -1,7 +1,9 @@
 package disIND.streamBasedShardedDispatcher.actors;
 
+import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.*;
+import akka.cluster.sharding.typed.ShardingEnvelope;
 import disIND.streamBasedShardedDispatcher.model.AkkaSerializable;
 
 import java.util.*;
@@ -23,6 +25,7 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
             BitSet before,
             BitSet after
     ) implements Command {}
+    public record WrappedRebuildResult(RebuildActor.CandidateCheckResult result) implements Command {}
 
     //activation received from AA
     public record ActivatePair(short lhsAttr, short rhsAttr) implements Command {}
@@ -30,22 +33,24 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
     private final Set<String> activePairs = new HashSet<>();
     private final Set<Short> rhsCandidates = new HashSet<>();
 
-    private final Set<String> activeCandidates = new HashSet<>();
+    private final Set<Short> activeCandidates = new HashSet<>();
     private final Map<Short, Long> violationCounts = new HashMap<>();
     private final short lhsAttr;
     private final Map<String, Long> witnesses = new HashMap<>();
     private static final int MAX_VIOLATIONS = 10;
 
-    public static Behavior<Command> create(String lhsAttr) {
+    public static Behavior<Command> create(String lhsAttr, ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion) {
         return Behaviors.setup(ctx ->
-        new CandidateManagerActor(ctx, Short.parseShort(lhsAttr)));
+        new CandidateManagerActor(ctx, Short.parseShort(lhsAttr),rebuildRegion));
     }
 
     private final Map<Short, Long> witness = new HashMap<>();
+    private final ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion;
 
-    private CandidateManagerActor(ActorContext<Command> ctx,short lhsAttr) {
+    private CandidateManagerActor(ActorContext<Command> ctx,short lhsAttr, ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion) {
         super(ctx);
         this.lhsAttr = lhsAttr;
+        this.rebuildRegion = rebuildRegion;
     }
 
     @Override
@@ -55,31 +60,36 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
                 .onMessage(ChangePropagate.class, this::onChangePropagate)
                 .onMessage(SemanticTransition.class, this::onSemanticTransition)
                 .onMessage(Change.class, this::onChange)
+                .onMessage(WrappedRebuildResult.class, this::onWrappedRebuildResult)
                 .build();
     }
 
     private Behavior<Command> onActivatePair(ActivatePair cmd) {
+        short lhs = cmd.lhsAttr();
+        short rhs = cmd.rhsAttr();
         if (cmd.lhsAttr() != lhsAttr) {
-            getContext().getLog().warn(
-                    "Wrong shard. shard={} pair={}⊆{}",
-                    lhsAttr,
-                    cmd.lhsAttr(),
-                    cmd.rhsAttr()
-            );
+            getContext().getLog().warn("Wrong shard. shard={} pair={}⊆{}", lhsAttr, cmd.lhsAttr(), cmd.rhsAttr());
             return this;
         }
-
-        if (rhsCandidates.add(cmd.rhsAttr())) {
-
-            violationCounts.put(cmd.rhsAttr(), 0L);
-
-            getContext().getLog().info(
-                    "Activated IND {}⊆{}",
-                    cmd.lhsAttr(),
-                    cmd.rhsAttr()
-            );
+        if (activeCandidates.add (rhs)) {
+            getContext().getLog().info("Activated IND {}⊆{}", lhs, rhs);
         }
+        ActorRef<RebuildActor.CandidateCheckResult> rebuildAdapter =
+                getContext().messageAdapter(
+                        RebuildActor.CandidateCheckResult.class,
+                        WrappedRebuildResult::new
+                );
 
+        rebuildRegion.tell(
+                new ShardingEnvelope<>(
+                        String.valueOf(lhs),
+                        new RebuildActor.CheckCandidate(
+                                lhs,
+                                rhs,
+                                rebuildAdapter
+                        )
+                )
+        );
         return this;
     }
 
@@ -159,6 +169,17 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
 //            }
 //        }
 //        activeCandidates.removeAll(toRemove);
+        return this;
+    }
+    private Behavior<Command> onWrappedRebuildResult(WrappedRebuildResult msg) {
+        RebuildActor.CandidateCheckResult result = msg.result();
+        getContext().getLog().info(
+                "Rebuild result {}⊆{} violations={} witness={}",
+                result.lhs(),
+                result.rhs(),
+                result.violationCount(),
+                result.witnessValue()
+        );
         return this;
     }
 }

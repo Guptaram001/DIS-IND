@@ -59,11 +59,13 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         if (!addedAttrs.isEmpty()) {
             //propagateAddedChange(cmd.entityHash(), after, addedAttrs);
             //propagateAddedChange(cmd.entityHash(), addedAttrs);
+            updateRebuildActor((int) cmd.entityHash(), addedAttrs, true);
         }
 
         if (!removedAttrs.isEmpty()) {
             //propagateRemovedChange(cmd.entityHash(), after, removedAttrs);
             //propagateRemovedChange(cmd.entityHash(), removedAttrs);
+            updateRebuildActor((int) cmd.entityHash(), removedAttrs, false);
         }
         getContext().getLog().info(
                 "ValueOwner {} batch={} update={} state={}",
@@ -75,6 +77,21 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
         return this;
     }
+
+    private void updateRebuildActor(int valueId, BitSet attrs, boolean added) {
+        for (int attr = attrs.nextSetBit(0); attr >= 0; attr = attrs.nextSetBit(attr + 1)) {
+            rebuildRegion.tell(
+                    new ShardingEnvelope<>(
+                            String.valueOf(attr),
+                            new RebuildActor.UpdateMembership(
+                                    valueId,
+                                    added
+                            )
+                    )
+            );
+        }
+    }
+
 
     private void propagateTransition(long valueHash, BitSet before, BitSet after) {
         BitSet touched = (BitSet) before.clone();
@@ -173,15 +190,19 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final BitSet attrsContainingValue = new BitSet();
     private final Map<Short, Integer> counts = new HashMap<>();
     private final ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion;
+    private final ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion;
 
-    public static Behavior<Command> create(String entityId,ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion) {
-        return Behaviors.setup(ctx -> new ValueOwnerActor(ctx, entityId, candidateRegion));
+    public static Behavior<Command> create(String entityId,ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion
+            ,ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion) {
+        return Behaviors.setup(ctx -> new ValueOwnerActor(ctx, entityId, candidateRegion,rebuildRegion));
     }
 
-    private ValueOwnerActor(ActorContext<Command> ctx, String entityId, ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion) {
+    private ValueOwnerActor(ActorContext<Command> ctx, String entityId, ActorRef<ShardingEnvelope<CandidateManagerActor.Command>> candidateRegion,
+                            ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion) {
         super(ctx);
         this.entityId = entityId;
         this.candidateRegion = candidateRegion;
+        this.rebuildRegion=rebuildRegion;
     }
 
     @Override

@@ -31,8 +31,11 @@ public class StreamingShardedDispatcher {
 
         ClusterSharding sharding = ClusterSharding.get(system);
 
+        EntityTypeKey<RebuildActor.Command> rebuildKey = EntityTypeKey.create(RebuildActor.Command.class, "RebuildActor");
+        var rebuildRegion = sharding.init(Entity.of(rebuildKey,ctx -> RebuildActor.create(ctx.getEntityId())));
+
         EntityTypeKey<CandidateManagerActor.Command> candidateKey = EntityTypeKey.create(CandidateManagerActor.Command.class, "CandidateManager");
-        var candidateRegion = sharding.init(Entity.of(candidateKey,ctx -> CandidateManagerActor.create(ctx.getEntityId())));
+        var candidateRegion = sharding.init(Entity.of(candidateKey,ctx -> CandidateManagerActor.create(ctx.getEntityId(),rebuildRegion)));
 
 
         //EntityTypeKey<AppraisalActor.Command> appraisalKey = EntityTypeKey.create(AppraisalActor.Command.class, "AppraisalActor");
@@ -41,7 +44,7 @@ public class StreamingShardedDispatcher {
 
         EntityTypeKey<ValueOwnerActor.Command> valueKey = EntityTypeKey.create(ValueOwnerActor.Command.class, "ValueOwner");
         var valueRegion = sharding.init(Entity.of(valueKey,ctx -> ValueOwnerActor.create(ctx.getEntityId(),
-                candidateRegion)));
+                candidateRegion, rebuildRegion)));
 
         EntityTypeKey<SketchActor.Command> sketchKey =EntityTypeKey.create(SketchActor.Command.class, "SketchActor");
         //var sketchRegion = sharding.init(Entity.of(sketchKey, ctx -> SketchActor.create(ctx.getEntityId(), appraisalRegion)));
