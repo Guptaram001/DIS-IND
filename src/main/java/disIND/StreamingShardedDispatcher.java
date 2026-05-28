@@ -15,12 +15,18 @@ import disIND.streamBasedShardedDispatcher.actors.*;
 import disIND.streamBasedShardedDispatcher.dataset.CSVStreamingSource;
 import disIND.streamBasedShardedDispatcher.model.RawEvent;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.CompletionStage;
+import java.util.stream.Stream;
 
 public class StreamingShardedDispatcher {
 
     private static final int NUM_DISPATCHERS = 8;
+    public record FileBatch(String filename, RawEvent.Batch batch) {}
 
     public static void main(String[] args) throws Exception {
 
@@ -57,30 +63,69 @@ public class StreamingShardedDispatcher {
                 valueRegion,
                 sketchRegion)));
 
-        Source<RawEvent.Batch, NotUsed> source = CSVStreamingSource.stream("/Users/gupta/Documents/DIS-IND/data/sample_data.csv", 4);
+        Path dir = Paths.get("/Users/gupta/Documents/DIS-IND/data/tpch");
+        List<String> files;
+        try (Stream<Path> paths = Files.list(dir)) {
+            files = paths
+                    .filter(path -> path.toString().endsWith(".csv"))
+                    .map(Path::toString)
+                    .toList();
+        }
+
+        Source<FileBatch, NotUsed> source = Source.from(files).flatMapMerge(
+                                4,
+                                file ->
+                                        CSVStreamingSource.stream(file, 400)
+                                                .map(batch ->
+                                                        new FileBatch(file, batch))
+                        );
 
         CompletionStage<Done> done = source
-                        .mapAsync(4, batch -> {
+                        .mapAsyncUnordered(8, fileBatch -> {
+                            RawEvent.Batch batch = fileBatch.batch();
                             String dispatcherId =
                                     String.valueOf(batch.batchId() % NUM_DISPATCHERS);
-
-                            return AskPattern.<
-                                    ShardingEnvelope<BatchDispatcherActor.Command>,
-                                    Done
-                                    >ask(
+                            return AskPattern.ask(
                                     dispatcherRegion,
-                                    replyTo -> new ShardingEnvelope<>(
-                                            dispatcherId,
-                                            new BatchDispatcherActor.ProcessBatch(
-                                                    batch,
-                                                    replyTo
-                                            )
-                                    ),
+                                    (ActorRef<Done> replyTo) ->
+                                            new ShardingEnvelope<>(
+                                                    dispatcherId,
+                                                    new BatchDispatcherActor.ProcessBatch(
+                                                            batch,
+                                                            replyTo
+                                                    )
+                                            ),
+
                                     Duration.ofSeconds(30),
                                     system.scheduler()
                             );
                         })
                         .runWith(Sink.ignore(), system);
+
+//        Source<RawEvent.Batch, NotUsed> source = CSVStreamingSource.stream("/Users/gupta/Documents/DIS-IND/data/sample_data.csv", 4);
+//
+//        CompletionStage<Done> done = source
+//                        .mapAsync(4, batch -> {
+//                            String dispatcherId =
+//                                    String.valueOf(batch.batchId() % NUM_DISPATCHERS);
+//
+//                            return AskPattern.<
+//                                    ShardingEnvelope<BatchDispatcherActor.Command>,
+//                                    Done
+//                                    >ask(
+//                                    dispatcherRegion,
+//                                    replyTo -> new ShardingEnvelope<>(
+//                                            dispatcherId,
+//                                            new BatchDispatcherActor.ProcessBatch(
+//                                                    batch,
+//                                                    replyTo
+//                                            )
+//                                    ),
+//                                    Duration.ofSeconds(30),
+//                                    system.scheduler()
+//                            );
+//                        })
+//                        .runWith(Sink.ignore(), system);
 
         done.whenComplete((ok, ex) -> {
             if (ex != null) {

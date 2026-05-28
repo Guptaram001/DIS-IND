@@ -72,7 +72,6 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
     private Behavior<Command> onProcessBatch(ProcessBatch cmd) {
 
         long batchId = cmd.batch().batchId();
-
         var entityUpdates = aggregateBatch(cmd.batch().events());
         var sketchUpdates = aggregateSketch(cmd.batch().events());
         LongOpenHashSet workSet = new LongOpenHashSet();
@@ -90,15 +89,9 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         pendingWork.put(batchId, workSet);
         replyMap.put(batchId, cmd.replyTo());
 
-        ActorRef<Ack> ackAdapter =
-                getContext().messageAdapter(Ack.class, this::onAckAdapter);
+        ActorRef<Ack> ackAdapter = getContext().messageAdapter(Ack.class, this::onAckAdapter);
 
-        getContext().getLog().info(
-                "Dispatcher {} batch={} workItems={}",
-                dispatcherId,
-                batchId,
-                workSet.size()
-        );
+        getContext().getLog().info("Dispatcher {} batch={} workItems={}", dispatcherId, batchId, workSet.size());
 
         for (var e : entityUpdates.entrySet()) {
             long entityHash = e.getKey();
@@ -118,7 +111,7 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         }
 
         for (var e : sketchUpdates.entrySet()) {
-            long attrId =e.getKey();
+            short attrId =e.getKey();
             String shardKey = Long.toString(attrId);
             sketchRegion.tell(
                     new ShardingEnvelope<>(
@@ -153,21 +146,12 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
         boolean removed = workSet.remove(wid);
 
         if (!removed) {
-            getContext().getLog().warn(
-                    "Duplicate or unknown ACK batch={} target={} type={}",
-                    batchId,
-                    ack.targetId(),
-                    ack.type()
-            );
+            getContext().getLog().warn("Duplicate or unknown ACK batch={} target={} type={}", batchId, ack.targetId(), ack.type());
             return this;
         }
 
         if (workSet.isEmpty()) {
-            getContext().getLog().info(
-                    "Dispatcher {} batch={} fully ACKed",
-                    dispatcherId,
-                    batchId
-            );
+            getContext().getLog().info("Dispatcher {} batch={} fully ACKed", dispatcherId, batchId);
             pendingWork.remove(batchId);
             ActorRef<Done> reply = replyMap.remove(batchId);
             if (reply != null) {
@@ -180,7 +164,6 @@ public class BatchDispatcherActor extends AbstractBehavior<BatchDispatcherActor.
 
     private static Map<Long, Map<Short, Integer>> aggregateBatch(List<RawEvent> events) {
         Map<Long, Map<Short, Integer>> grouped = new HashMap<>();
-
 
         for (RawEvent event : events) {
             if (event instanceof RawEvent.Insert ins) {

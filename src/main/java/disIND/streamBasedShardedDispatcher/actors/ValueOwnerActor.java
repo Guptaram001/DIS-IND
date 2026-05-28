@@ -67,13 +67,17 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             //propagateRemovedChange(cmd.entityHash(), removedAttrs);
             updateRebuildActor((int) cmd.entityHash(), removedAttrs, false);
         }
-        getContext().getLog().info(
-                "ValueOwner {} batch={} update={} state={}",
-                entityId,
-                cmd.batchId(),
-                cmd.attrCounts(),
-                counts
-        );
+//        getContext().getLog().info(
+//                "ValueOwner {} batch={} update={} state={}",
+//                entityId,
+//                cmd.batchId(),
+//                cmd.attrCounts(),
+//                counts
+//        );
+
+        if (cmd.batchId() % 1000 == 0) {
+            getContext().getLog().info("ValueOwner {} batch={} attrs={}", entityId, cmd.batchId(), counts.size());
+        }
 
         return this;
     }

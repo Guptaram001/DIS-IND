@@ -3,8 +3,10 @@ package disIND.streamBasedShardedDispatcher.actors;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.*;
+import akka.cluster.sharding.ClusterSharding;
 import akka.cluster.sharding.typed.ShardingEnvelope;
 import disIND.streamBasedShardedDispatcher.model.AkkaSerializable;
+import org.roaringbitmap.RoaringBitmap;
 
 import java.util.*;
 import java.util.BitSet;
@@ -30,14 +32,15 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
     //activation received from AA
     public record ActivatePair(short lhsAttr, short rhsAttr) implements Command {}
 
-    private final Set<String> activePairs = new HashSet<>();
-    private final Set<Short> rhsCandidates = new HashSet<>();
-
     private final Set<Short> activeCandidates = new HashSet<>();
     private final Map<Short, Long> violationCounts = new HashMap<>();
     private final short lhsAttr;
-    private final Map<String, Long> witnesses = new HashMap<>();
+
     private static final int MAX_VIOLATIONS = 10;
+    private final Map<Short, RoaringBitmap> activeViolations = new HashMap<>();
+    private final Set<Short> currentlyValid = new HashSet<>();
+    private final Map<Short, RoaringBitmap> rebuildViolations = new HashMap<>();
+    private final Map<Short, RoaringBitmap> liveViolations = new HashMap<>();
 
     public static Behavior<Command> create(String lhsAttr, ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion) {
         return Behaviors.setup(ctx ->
@@ -46,11 +49,13 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
 
     private final Map<Short, Long> witness = new HashMap<>();
     private final ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion;
+    private final ClusterSharding sharding;
 
     private CandidateManagerActor(ActorContext<Command> ctx,short lhsAttr, ActorRef<ShardingEnvelope<RebuildActor.Command>> rebuildRegion) {
         super(ctx);
         this.lhsAttr = lhsAttr;
         this.rebuildRegion = rebuildRegion;
+        this.sharding = ClusterSharding.get( ctx.getSystem() );
     }
 
     @Override
@@ -67,15 +72,17 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
     private Behavior<Command> onActivatePair(ActivatePair cmd) {
         short lhs = cmd.lhsAttr();
         short rhs = cmd.rhsAttr();
+
         if (cmd.lhsAttr() != lhsAttr) {
             getContext().getLog().warn("Wrong shard. shard={} pair={}⊆{}", lhsAttr, cmd.lhsAttr(), cmd.rhsAttr());
             return this;
         }
+
         if (activeCandidates.add (rhs)) {
             getContext().getLog().info("Activated IND {}⊆{}", lhs, rhs);
         }
-        ActorRef<RebuildActor.CandidateCheckResult> rebuildAdapter =
-                getContext().messageAdapter(
+
+        ActorRef<RebuildActor.CandidateCheckResult> rebuildAdapter = getContext().messageAdapter(
                         RebuildActor.CandidateCheckResult.class,
                         WrappedRebuildResult::new
                 );
@@ -94,51 +101,40 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
     }
 
     private Behavior<Command> onSemanticTransition(SemanticTransition cmd) {
+
         BitSet before = cmd.before();
         BitSet after = cmd.after();
-
-        for (short rhs : rhsCandidates) {
-            boolean beforeViolation =
-                    before.get(lhsAttr) && !before.get(rhs);
-
-            boolean afterViolation =
-                    after.get(lhsAttr) && !after.get(rhs);
-
+        int value = (int) cmd.valueHash();
+        for (short rhs : activeCandidates) {
+            boolean beforeViolation = before.get(lhsAttr) && !before.get(rhs);
+            boolean afterViolation = after.get(lhsAttr) && !after.get(rhs);
+            RoaringBitmap live = liveViolations.computeIfAbsent(rhs, k -> new RoaringBitmap());
             if (!beforeViolation && afterViolation) {
-                long count = violationCounts.merge(rhs, 1L,Long::sum);
-                witness.put(rhs, cmd.valueHash());
-
-                getContext().getLog().info(
-                        "IND violation CREATED {}⊆{} value={} count={}",
-                        lhsAttr,
-                        rhs,
-                        Long.toUnsignedString(cmd.valueHash(), 16),
-                        count
-                );
+                int beforeSize = live.getCardinality();
+                live.add(value);
+                int afterSize = live.getCardinality();
+                if (afterSize > beforeSize) {
+                    getContext().getLog().info("IND violation CREATED {}⊆{} value={} liveCount={}", lhsAttr, rhs,
+                            Long.toUnsignedString(cmd.valueHash(), 16), afterSize);
+                }
             }
 
             if (beforeViolation && !afterViolation) {
-                long count = violationCounts.merge(rhs, -1L, Long::sum);
-                if (count < 0) {
-                    violationCounts.put(rhs, 0L);
-                    count = 0;
+                int beforeSize = live.getCardinality();
+                live.remove(value);
+                int afterSize = live.getCardinality();
+                if (afterSize < beforeSize) {
+                    getContext().getLog().info(
+                            "IND violation RESOLVED {}⊆{} value={} liveCount={}", lhsAttr, rhs,
+                            Long.toUnsignedString(cmd.valueHash(), 16), afterSize);
                 }
-
-                getContext().getLog().info(
-                        "IND violation RESOLVED {}⊆{} value={} count={}",
-                        lhsAttr,
-                        rhs,
-                        Long.toUnsignedString(cmd.valueHash(), 16),
-                        count
-                );
             }
+            updateValidity(rhs);
         }
-
         return this;
     }
 
     private Behavior<Command> onChange(Change cmd) {
-
         return this;
     }
 
@@ -171,15 +167,44 @@ public class CandidateManagerActor extends AbstractBehavior<CandidateManagerActo
 //        activeCandidates.removeAll(toRemove);
         return this;
     }
+
     private Behavior<Command> onWrappedRebuildResult(WrappedRebuildResult msg) {
         RebuildActor.CandidateCheckResult result = msg.result();
-        getContext().getLog().info(
-                "Rebuild result {}⊆{} violations={} witness={}",
-                result.lhs(),
-                result.rhs(),
-                result.violationCount(),
-                result.witnessValue()
-        );
+        rebuildViolations.put(result.rhs(), result.violations());
+        int count = result.violations().getCardinality();
+        int witness = result.violations().isEmpty() ? -1 : result.violations().first();
+
+        getContext().getLog().info("Rebuild result {}⊆{} violations={} witness={}", result.lhs(), result.rhs(), count, witness);
+        updateValidity(result.rhs());
         return this;
+    }
+
+    private boolean isValid(short rhs) {
+        RoaringBitmap rebuild = rebuildViolations.getOrDefault(rhs, new RoaringBitmap());
+        RoaringBitmap live = liveViolations.getOrDefault(rhs, new RoaringBitmap());
+        return rebuild.isEmpty() && live.isEmpty();
+    }
+
+    private void updateValidity(short rhs) {
+        boolean nowValid = effectiveViolations(rhs).isEmpty();
+        boolean wasValid = currentlyValid.contains(rhs);
+        if (nowValid && !wasValid) {
+            currentlyValid.add(rhs);
+            getContext().getLog().info("VALID IND {}⊆{}", lhsAttr, rhs);
+        }
+
+        if (!nowValid && wasValid) {
+            currentlyValid.remove(rhs);
+            getContext().getLog().info("INVALIDATED IND {}⊆{}", lhsAttr, rhs
+            );
+        }
+    }
+
+    private RoaringBitmap effectiveViolations(short rhs) {
+        RoaringBitmap rebuild = rebuildViolations.getOrDefault(rhs, new RoaringBitmap());
+        RoaringBitmap live = liveViolations.getOrDefault(rhs, new RoaringBitmap());
+        RoaringBitmap merged = (RoaringBitmap) rebuild.clone();
+        merged.or(live);
+        return merged;
     }
 }

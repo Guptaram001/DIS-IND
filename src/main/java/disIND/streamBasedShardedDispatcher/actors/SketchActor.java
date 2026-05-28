@@ -18,12 +18,12 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
 
     public record UpdateSketch(
             int batchId,
-            long attrId,
+            short attrId,
             List<String> values,
             ActorRef<Ack> replyTo
     ) implements Command {}
 
-    private final long attrId;
+    private final short attrId;
 
     private final LongOpenHashSet cqfLike = new LongOpenHashSet();
     private final LongOpenHashSet distinct = new LongOpenHashSet();
@@ -33,10 +33,10 @@ public class SketchActor extends AbstractBehavior<SketchActor.Command> {
     private static final int TOP_K_LIMIT = 10;
 
     public static Behavior<Command> create(String attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
-        return Behaviors.setup(ctx -> new SketchActor(ctx, Long.parseLong(attrId), appraisalActor));
+        return Behaviors.setup(ctx -> new SketchActor(ctx, Short.parseShort(attrId), appraisalActor));
     }
 
-    private SketchActor(ActorContext<Command> ctx, long attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
+    private SketchActor(ActorContext<Command> ctx, short attrId,ActorRef<AppraisalActor.Command> appraisalActor) {
         super(ctx);
         this.attrId = attrId;
         this.appraisalActor = appraisalActor;

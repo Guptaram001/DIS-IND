@@ -30,8 +30,7 @@ public class RebuildActor extends AbstractBehavior<RebuildActor.Command> {
     public record CandidateCheckResult(
             short lhs,
             short rhs,
-            int violationCount,
-            int witnessValue
+            RoaringBitmap violations
     ) implements AkkaSerializable {}
 
     public record UpdateMembership(
@@ -77,20 +76,15 @@ public class RebuildActor extends AbstractBehavior<RebuildActor.Command> {
         } else {
             bitmap.remove(cmd.valueId());
         }
+//        getContext().getLog().info("Rebuild Actor update Membership valueID:{} ", cmd.valueId());
         return this;
     }
-    private Behavior<Command> onCheckCandidate(CheckCandidate cmd) {
-        EntityTypeKey<Command> key =
-                EntityTypeKey.create(
-                        Command.class,
-                        "RebuildActor"
-                );
 
-        EntityRef<Command> rhsRef =
-                sharding.entityRefFor(
-                        key,
-                        String.valueOf(cmd.rhs())
-                );
+    private Behavior<Command> onCheckCandidate(CheckCandidate cmd) {
+        getContext().getLog().info("Rebuild Actor Candidate Check: Lhs: {}, RHS: {}, ReplyTO: {}", cmd.lhs(),
+                cmd.rhs(), cmd.replyTo);
+        EntityTypeKey<Command> key = EntityTypeKey.create(Command.class, "RebuildActor");
+        EntityRef<Command> rhsRef = sharding.entityRefFor(key, String.valueOf(cmd.rhs()));
 
         ActorRef<BitmapResponse> adapter =
                 getContext().messageAdapter(
@@ -122,8 +116,7 @@ public class RebuildActor extends AbstractBehavior<RebuildActor.Command> {
         msg.replyTo().tell(new CandidateCheckResult(
                         msg.lhs(),
                         msg.rhs(),
-                        count,
-                        witness
+                        violations
                 )
         );
         return this;
