@@ -1,0 +1,124 @@
+package disIND.streamBasedShardedDispatcher.actors;
+
+import akka.actor.typed.ActorRef;
+import akka.actor.typed.Behavior;
+import akka.actor.typed.javadsl.AbstractBehavior;
+import akka.actor.typed.javadsl.ActorContext;
+import akka.actor.typed.javadsl.Behaviors;
+import akka.actor.typed.javadsl.Receive;
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.Entity;
+import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
+import disIND.streamBasedShardedDispatcher.monitor.DiscoveryStatsActor;
+import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
+import disIND.streamBasedShardedDispatcher.structures.*;
+
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+public final class INDGuardian extends AbstractBehavior<BDCommand> {
+
+    public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold, Map<Integer, String> colNames,
+                         List<Integer> tableOffsets, Map<Integer, ColType> colTypes, DatasetMetadata metadata) {
+
+        public static Config withAll(DatasetMetadata metadata) {
+            return new Config(metadata.totalCols(), 3, 32, 1, metadata.colNames(), metadata.offsets(), metadata.colTypes(), metadata);
+        }
+    }
+
+    private final ActorRef<BDCommand> bdRef;
+    private final ActorRef<RCCommand> rcRef;
+    private final AtomicLong totalRows = new AtomicLong(0L);
+
+    public static Behavior<BDCommand> create(Config cfg) {
+        return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg));
+    }
+
+    private INDGuardian(ActorContext<BDCommand> ctx, Config cfg) {
+        super(ctx);
+        ValueIdMap vidMap = new ValueIdMap();
+        WatermarkRegister wmReg = new WatermarkRegister();
+        AtomicReference<ActorRef<CMCommand>> cmRefHolder = new AtomicReference<>();
+        DatasetMetadata metadata = cfg.metadata();
+        ActorRef<StatsCommand> statsRef = ctx.spawn(DiscoveryStatsActor.create(), "discovery-stats");
+
+        ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
+        sharding.init(Entity.of(AttributeActor.TYPE_KEY, entityCtx -> {
+                    int colId = Integer.parseInt(entityCtx.getEntityId().substring("col-".length()));
+                    return AttributeActor.create(colId, vidMap, wmReg, cmRefHolder,statsRef);
+                })
+        );
+        ctx.getLog().info("[Guardian] Sharding init: {} columns", cfg.numCols());
+
+        this.rcRef = ctx.spawn(ResultCollectorActor.create(cfg.colNames(),metadata,statsRef), "result-collector");
+
+        ActorRef<RACommand> raRef = ctx.spawn(RebuildActor_.create(sharding,metadata,statsRef), "rebuild-actor");
+
+        ActorRef<LMCommand> lmRef = ctx.spawn(LatticeManagerActor.create(cfg.maxArity(), cfg.maxConcurrentNra(),
+                        cfg.tableOffsets(), cfg.colTypes(), metadata,statsRef), "lattice-manager");
+
+        ActorRef<CMCommand> cmRef = ctx.spawn(CandidateManagerActor_.create(raRef, lmRef, rcRef, wmReg,
+                        cfg.cleanThreshold(), metadata,statsRef), "candidate-manager");
+        cmRefHolder.set(cmRef);
+
+        raRef.tell(new RACommand.InjectCm(cmRef));
+
+        lmRef.tell(new LMCommand.InjectCm(cmRef));
+
+
+
+        ActorRef<NRACommand> nraRef = ctx.spawn(NaryRebuildActor.create(sharding, cmRef, lmRef, 2, metadata,
+                statsRef), "nary-rebuild");
+
+        lmRef.tell(new LMCommand.InjectNra(nraRef));
+
+        ActorRef<AppraiserCommand> apRef = ctx.spawn(AppraisalActor_.create(cfg.numCols(), sharding, cmRef, metadata,statsRef),
+                "appraisal-actor");
+
+        this.bdRef = ctx.spawn(BatchDispatcherActor_.create(cfg.numCols(), vidMap, sharding, apRef, metadata,
+                statsRef), "batch-dispatcher");
+
+        if (!cfg.colTypes().isEmpty()) {
+            for (Map.Entry<Integer, ColType> e : cfg.colTypes().entrySet()) {
+                int colId = e.getKey();
+                ColType ct = e.getValue();
+                sharding.entityRefFor(AttributeActor.TYPE_KEY,
+                                AACommand.entityId(colId))
+                        .tell(new AACommand.SetPresetType(ct));
+            }
+            ctx.getLog().info("[Guardian] Preset types injected for {} columns",
+                    cfg.colTypes().size());
+        }
+
+        ctx.getLog().info("[Guardian] All actors spawned. Ready.");
+    }
+
+    @Override
+    public Receive<BDCommand> createReceive() {
+        return newReceiveBuilder()
+                .onMessage(BDCommand.IngestBatch.class, msg -> {
+                    totalRows.addAndGet(msg.numRows());
+                    bdRef.tell(msg);
+                    return this;
+                })
+                .onMessage(BDCommand.IngestionDone.class, msg -> {
+                    bdRef.tell(msg);
+                    return this;
+                })
+                .onMessage(BDCommand.GetBatchDispatcher.class, msg -> {
+                    msg.replyTo().tell(bdRef);
+                    return this;
+                })
+                .onMessage(BDCommand.GetResultCollector.class, msg -> {
+                    msg.replyTo().tell(rcRef);
+                    return this;
+                })
+                .onMessage(BDCommand.Shutdown.class, msg -> {
+                    bdRef.tell(msg);
+                    return Behaviors.stopped();
+                })
+                .build();
+    }
+}

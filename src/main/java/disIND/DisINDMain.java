@@ -13,24 +13,54 @@ import disIND.prototypeModel.actors.InputReaderActor;
 import disIND.prototypeModel.actors.ValueOwnerActor;
 import disIND.prototypeModel.dataset.CSVLoader;
 import disIND.prototypeModel.model.RawEvent;
+import disIND.streamBasedShardedDispatcher.actors.INDGuardian;
+import disIND.streamBasedShardedDispatcher.dataset.DataLoader;
+import disIND.streamBasedShardedDispatcher.model.SharedModel;
+
 import java.util.List;
 
 import java.util.concurrent.TimeUnit;
 
 public class DisINDMain {
+//    public static void main(String[] args) throws Exception {
+//
+//        ActorSystem<Void> system = ActorSystem.create(
+//                Behaviors.empty(), "disIND", ConfigFactory.load());
+//
+//        Thread.sleep(2000);
+//        System.out.println(" Akka Cluster ready on 127.0.0.1:2551");
+//
+//        runCSV(system);
+//
+//        system.terminate();
+//        system.getWhenTerminated().toCompletableFuture().get(10, TimeUnit.SECONDS);
+//        System.out.println(" System terminated.");
+//    }
+
     public static void main(String[] args) throws Exception {
 
-        ActorSystem<Void> system = ActorSystem.create(
-                Behaviors.empty(), "disIND", ConfigFactory.load());
+        String inputDir = "/Users/gupta/Documents/DIS-IND/data/synthetic";
+        int batchSize = 2;
+        int timeoutSec = 60;
+        String outputFile = null;
 
-        Thread.sleep(2000);
-        System.out.println(" Akka Cluster ready on 127.0.0.1:2551");
+        INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir);
+        System.out.println("[Main] Discovered config: " + cfg);
+        ActorSystem<SharedModel.BDCommand> system = ActorSystem.create(INDGuardian.create(cfg), "disIND", ConfigFactory.load());
+        System.out.println("[Main] INDGuardian started.");
 
-        runCSV(system);
+        Thread.sleep(3000);
 
-        system.terminate();
-        system.getWhenTerminated().toCompletableFuture().get(10, TimeUnit.SECONDS);
-        System.out.println(" System terminated.");
+        try {
+            DataLoader.run(system, inputDir, batchSize, timeoutSec, outputFile);
+        } finally {
+            System.out.println("[Main] Terminating actor system.");
+            system.terminate();
+            system.getWhenTerminated()
+                    .toCompletableFuture()
+                    .get(10, TimeUnit.SECONDS);
+            System.out.println("[Main] System terminated.");
+        }
     }
 
     private static void runCSV(ActorSystem<Void> system) throws Exception {
@@ -48,9 +78,7 @@ public class DisINDMain {
                             List<RawEvent.Batch> batches) throws Exception {
 
         String runId = String.valueOf(System.currentTimeMillis());
-
         ClusterSharding sharding = ClusterSharding.get(system);
-
         EntityTypeKey<ValueOwnerActor.Command> valueKey =
                 EntityTypeKey.create(
                         ValueOwnerActor.Command.class,
