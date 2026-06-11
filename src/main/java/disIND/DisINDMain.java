@@ -3,6 +3,7 @@ package disIND;
 import akka.actor.typed.Props;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
+import akka.actor.typed.javadsl.AskPattern;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.Entity;
@@ -17,6 +18,7 @@ import disIND.streamBasedShardedDispatcher.actors.INDGuardian;
 import disIND.streamBasedShardedDispatcher.dataset.DataLoader;
 import disIND.streamBasedShardedDispatcher.model.SharedModel;
 
+import java.time.Duration;
 import java.util.List;
 
 import java.util.concurrent.TimeUnit;
@@ -49,10 +51,19 @@ public class DisINDMain {
         ActorSystem<SharedModel.BDCommand> system = ActorSystem.create(INDGuardian.create(cfg), "disIND", ConfigFactory.load());
         System.out.println("[Main] INDGuardian started.");
 
+        //Direct reference to BDActor, instead of numerous calls at send batch
+        ActorRef<SharedModel.BDCommand> bdRef = AskPattern.ask(
+                                system,
+                                SharedModel.BDCommand.GetBatchDispatcher::new,
+                                Duration.ofSeconds(10),
+                                system.scheduler()
+                        ).toCompletableFuture()
+                        .get();
+
         Thread.sleep(3000);
 
         try {
-            DataLoader.run(system, inputDir, batchSize, timeoutSec, outputFile);
+            DataLoader.run(system, inputDir, batchSize, timeoutSec, outputFile, bdRef);
         } finally {
             System.out.println("[Main] Terminating actor system.");
             system.terminate();

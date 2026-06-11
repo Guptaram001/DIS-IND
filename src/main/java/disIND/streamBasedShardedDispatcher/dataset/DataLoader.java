@@ -92,7 +92,7 @@ public final class DataLoader {
     }
 
     public static void run(ActorSystem<BDCommand> system, String csvDir, int batchSize, int timeoutSec,
-            String outputFile) throws Exception {
+            String outputFile, ActorRef<SharedModel.BDCommand> bdRef) throws Exception {
 
         Path dir = Paths.get(csvDir);
         List<String> files = listInputFiles(dir);
@@ -104,7 +104,7 @@ public final class DataLoader {
 
         long startMs = System.currentTimeMillis();
         long totalRows = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), metadata.totalCols(),
-                batchSize);
+                batchSize, bdRef);
 
         System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", totalRows, (System.currentTimeMillis() - startMs) / 1000.0);
         system.tell(new BDCommand.IngestionDone());
@@ -127,7 +127,7 @@ public final class DataLoader {
     }
 
     private static long ingestAllInterleaved(ActorSystem<BDCommand> system, List<String> files, List<Integer> offsets,
-            List<Integer> nCols, int totalCols, int batchSize) throws Exception {
+            List<Integer> nCols, int totalCols, int batchSize,ActorRef<SharedModel.BDCommand> bdRef) throws Exception {
 
         int n = files.size();
         BufferedReader[] readers = new BufferedReader[n];
@@ -172,7 +172,7 @@ public final class DataLoader {
                     System.out.println("[Loader Header] Batch Details for Cells:");
                     for(String st:cells)
                         System.out.print(st);
-                    sendBatch(system, cells, rowsInBatch, totalCols);
+                    sendBatch(system, cells, rowsInBatch, totalCols, bdRef);
                     rowsInBatch = 0;
                 }
             }
@@ -208,8 +208,7 @@ public final class DataLoader {
                         System.out.println("[Loader Body] Batch Details for Cells After Full size:");
                         for(String st:cells)
                             System.out.println("CElls Values: "+st);
-                        sendBatch(system, cells, rowsInBatch, totalCols);
-                        sendBatch(system, cells, rowsInBatch, totalCols);
+                        sendBatch(system, cells, rowsInBatch, totalCols,bdRef);
                         rowsInBatch = 0;
                     }
                 }
@@ -219,7 +218,7 @@ public final class DataLoader {
         }
 
         if (rowsInBatch > 0)
-            sendBatch(system, cells, rowsInBatch, totalCols);
+            sendBatch(system, cells, rowsInBatch, totalCols,bdRef);
         System.out.println("[Loader] Per-file row counts:");
         for (int i = 0; i < n; i++) {
             if (nCols.get(i) == 0)
@@ -240,7 +239,7 @@ public final class DataLoader {
         }
     }
 
-    private static void sendBatch(ActorSystem<BDCommand> system, String[] cells, int numRows, int totalCols)
+    private static void sendBatch(ActorSystem<BDCommand> system, String[] cells, int numRows, int totalCols,ActorRef<SharedModel.BDCommand> bdRef)
             throws Exception {
 
         //Need to look into retry logic if failed or more robust error handling.
@@ -251,11 +250,6 @@ public final class DataLoader {
 //                system.scheduler()
 //        ).toCompletableFuture().get();
 
-        ActorRef<BDCommand> bdRef = AskPattern.ask(system,
-                                BDCommand.GetBatchDispatcher::new,
-                                Duration.ofSeconds(10),
-                                system.scheduler()
-                        ).toCompletableFuture().get();
         AskPattern.ask(bdRef,
                 ( ActorRef<BDReply> replyTo ) -> new BDCommand.IngestBatch(copy, numRows, totalCols, replyTo),
                 Duration.ofSeconds(30),

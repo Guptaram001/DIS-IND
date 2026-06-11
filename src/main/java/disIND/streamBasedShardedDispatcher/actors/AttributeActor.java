@@ -2,10 +2,7 @@ package disIND.streamBasedShardedDispatcher.actors;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
-import akka.actor.typed.javadsl.AbstractBehavior;
-import akka.actor.typed.javadsl.ActorContext;
-import akka.actor.typed.javadsl.Behaviors;
-import akka.actor.typed.javadsl.Receive;
+import akka.actor.typed.javadsl.*;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
@@ -46,7 +43,8 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
     @Override
     public Receive<AACommand> createReceive() {
-        return null;
+
+        return newReceiveBuilder().build();
     }
 
     // After processing values add
