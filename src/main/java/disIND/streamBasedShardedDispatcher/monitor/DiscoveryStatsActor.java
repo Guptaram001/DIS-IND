@@ -24,7 +24,7 @@ public class DiscoveryStatsActor extends AbstractBehavior<StatsCommand> {
     public static Behavior<StatsCommand> create() {
         return Behaviors.setup(ctx -> Behaviors.withTimers(
                 timers -> {timers.startTimerAtFixedRate(new StatsCommand.PrintStats(),
-                        Duration.ofSeconds(10));
+                        Duration.ofSeconds(30));
                     return new DiscoveryStatsActor(ctx);
                 })
         );
@@ -81,15 +81,8 @@ public class DiscoveryStatsActor extends AbstractBehavior<StatsCommand> {
                 .sorted(Comparator.comparingInt(StatsCommand.AttributeStats::colId))
                 .limit(10)
                 .forEach(s ->
-                        getContext().getLog().info(
-                                "col={} distinct={} bitmapCard={} sketchCard={}",
-                                s.colId(),
-                                s.distinctValues(),
-                                s.bitmapCardinality(),
-                                s.sketchCardinality()
-                        )
-                );
-
+                        getContext().getLog().info("col={} distinct={} bitmapCard={} sketchCard={}",
+                                s.colId(), s.distinctValues(), s.bitmapCardinality(), s.sketchCardinality()));
         return this;
     }
 }

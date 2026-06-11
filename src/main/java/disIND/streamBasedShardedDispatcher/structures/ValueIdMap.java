@@ -7,11 +7,6 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Global append-only value dictionary.
- * Assigns a stable int ID to every distinct string value seen.
- * Thread-safe via ConcurrentHashMap.computeIfAbsent.
- */
 public final class ValueIdMap {
 
     private final ConcurrentHashMap<String, Integer> strToId = new ConcurrentHashMap<>();

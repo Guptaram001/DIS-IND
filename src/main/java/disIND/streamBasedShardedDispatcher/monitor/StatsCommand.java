@@ -6,7 +6,7 @@ public sealed interface StatsCommand extends AkkaSerializable permits StatsComma
         StatsCommand.CandidateCreated, StatsCommand.CandidateRemoved, StatsCommand.UnaryRebuild, StatsCommand.NaryRebuild,
         StatsCommand.IndDiscovered, StatsCommand.PrintStats, StatsCommand.AttributeStats {
 
-    record RowBatchProcessed(long rows, long batchSize) implements StatsCommand {}
+    record RowBatchProcessed(long rows) implements StatsCommand {}
 
     record CandidateCreated() implements StatsCommand {}
 

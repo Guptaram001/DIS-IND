@@ -93,9 +93,11 @@ public final class SharedModel {
     public sealed interface BDCommand extends AkkaSerializable
             permits BDCommand.IngestBatch, BDCommand.BatchDispatched, BDCommand.BatchFlushed,
             BDCommand.IngestionDone, BDCommand.Shutdown,
-            BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher {
+            BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher, BDCommand.SendTableBatch {
 
         record IngestBatch(String[] cells, int numRows, int numCols, ActorRef<BDReply> replyTo) implements BDCommand {}
+
+        record SendTableBatch(int tableId, long startRowId, List<String []> rows, ActorRef<BDReply> replyTo) implements BDCommand {}
 
         record BatchDispatched(long epoch) implements BDCommand {}
 

@@ -110,7 +110,7 @@ public final class DataLoader {
         system.tell(new BDCommand.IngestionDone());
         System.out.println("[Loader] Waiting for discovery result...");
         CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(system, BDCommand.GetResultCollector::new,
-                Duration.ofSeconds(10), system.scheduler());
+                Duration.ofSeconds(5), system.scheduler());
 
         ActorRef<RCCommand> rcRef = rcFuture.toCompletableFuture().get();
 
@@ -127,23 +127,18 @@ public final class DataLoader {
     }
 
     private static long ingestAllInterleaved(ActorSystem<BDCommand> system, List<String> files, List<Integer> offsets,
-            List<Integer> nCols, int totalCols, int batchSize,ActorRef<SharedModel.BDCommand> bdRef) throws Exception {
+            List<Integer> nCols, int totalCols, int batchSize, ActorRef<BDCommand> bdRef) throws Exception {
 
         int n = files.size();
         BufferedReader[] readers = new BufferedReader[n];
         String[] delims = new String[n];
         boolean[] tblFlags = new boolean[n];
-        String[][] sentinels = new String[n][];
-        long[] rowCounts = new long[n];
         boolean[] active = new boolean[n];
-
-        String[] cells = new String[batchSize * totalCols];
-
-        int rowsInBatch = 0;
+        long[] rowCounts = new long[n];
+        long[] nextRowId = new long[n];
         long totalRows = 0;
 
-        System.out.println("[Loader] Opening files for interleaved ingestion...");
-
+        System.out.println("[Loader] Opening files...");
         for (int i = 0; i < n; i++) {
             if (nCols.get(i) == 0)
                 continue;
@@ -159,22 +154,21 @@ public final class DataLoader {
             delims[i] = delim;
             readers[i] = br;
             active[i] = true;
-            String[] sentinel = new String[totalCols];
-            Arrays.fill(sentinel, "\u0000");
-            sentinels[i] = sentinel;
+
+            /*
+             * TBL:
+             * first line is DATA
+             *
+             * CSV:
+             * first line is HEADER
+             */
             if (tbl) {
-                String[] vals = splitRow(firstLine, delim, true);
-                addRowToBuffer(cells, rowsInBatch, totalCols, sentinel, offsets.get(i), nCols.get(i), vals);
-                rowsInBatch++;
+                List<String[]> firstBatch = new ArrayList<>(1);
+                firstBatch.add(splitRow(firstLine, delim, true));
+                sendTableBatch(system, bdRef, i, nextRowId[i], firstBatch);
+                nextRowId[i]++;
                 rowCounts[i]++;
                 totalRows++;
-                if (rowsInBatch >= batchSize) {
-                    System.out.println("[Loader Header] Batch Details for Cells:");
-                    for(String st:cells)
-                        System.out.print(st);
-                    sendBatch(system, cells, rowsInBatch, totalCols, bdRef);
-                    rowsInBatch = 0;
-                }
             }
             System.out.printf("  opened %-25s offset=%d cols=%d%n", Paths.get(files.get(i)).getFileName(),
                     offsets.get(i), nCols.get(i));
@@ -187,6 +181,7 @@ public final class DataLoader {
             for (int i = 0; i < n; i++) {
                 if (!active[i])
                     continue;
+                List<String[]> batchRows = new ArrayList<>(batchSize);
                 int rowsRead = 0;
                 while (rowsRead < batchSize) {
                     String line = readers[i].readLine();
@@ -197,28 +192,18 @@ public final class DataLoader {
                     }
                     if (line.isBlank())
                         continue;
-                    anyActive = true;
+                    batchRows.add(splitRow(line, delims[i], tblFlags[i]));
                     rowsRead++;
-                    String[] vals = splitRow(line, delims[i], tblFlags[i]);
-                    addRowToBuffer(cells, rowsInBatch, totalCols, sentinels[i], offsets.get(i), nCols.get(i), vals);
-                    rowsInBatch++;
                     rowCounts[i]++;
                     totalRows++;
-                    if (rowsInBatch >= batchSize) {
-                        System.out.println("[Loader Body] Batch Details for Cells After Full size:");
-                        for(String st:cells)
-                            System.out.println("CElls Values: "+st);
-                        sendBatch(system, cells, rowsInBatch, totalCols,bdRef);
-                        rowsInBatch = 0;
-                    }
                 }
-                if (rowsRead > 0)
+                if (!batchRows.isEmpty()) {
+                    sendTableBatch(system, bdRef, i, nextRowId[i], batchRows);
+                    nextRowId[i] += batchRows.size();
                     anyActive = true;
+                }
             }
         }
-
-        if (rowsInBatch > 0)
-            sendBatch(system, cells, rowsInBatch, totalCols,bdRef);
         System.out.println("[Loader] Per-file row counts:");
         for (int i = 0; i < n; i++) {
             if (nCols.get(i) == 0)
@@ -227,6 +212,18 @@ public final class DataLoader {
         }
         return totalRows;
     }
+
+        private static void sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
+        List<String[]> rows) throws Exception {
+
+            AskPattern.ask(bdRef, (ActorRef<BDReply> replyTo) ->
+                                    new BDCommand.SendTableBatch(tableId, startRowId,rows, replyTo),
+                            Duration.ofSeconds(30),
+                            system.scheduler()
+                    )
+                    .toCompletableFuture()
+                    .get();
+        }
 
     private static void addRowToBuffer(String[] cells, int rowIdx, int totalCols, String[] sentinel,
             int offset, int fileCols, String[] vals) {
@@ -255,6 +252,7 @@ public final class DataLoader {
                 Duration.ofSeconds(30),
                 system.scheduler()
         ).toCompletableFuture().get();
+
     }
 
     private static List<String> listInputFiles(Path dir) throws IOException {
