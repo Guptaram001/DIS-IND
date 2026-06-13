@@ -67,8 +67,6 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
         lmRef.tell(new LMCommand.InjectCm(cmRef));
 
-
-
         ActorRef<NRACommand> nraRef = ctx.spawn(NaryRebuildActor.create(sharding, cmRef, lmRef, 2, metadata,
                 statsRef), "nary-rebuild");
 
@@ -79,6 +77,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
         this.bdRef = ctx.spawn(BatchDispatcherActor_.create(cfg.numCols(), vidMap, sharding, apRef, metadata,
                 statsRef), "batch-dispatcher");
+        System.out.println("BD REF = " + bdRef);
 
         if (!cfg.colTypes().isEmpty()) {
             for (Map.Entry<Integer, ColType> e : cfg.colTypes().entrySet()) {
@@ -109,6 +108,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                 })
                 .onMessage(BDCommand.GetBatchDispatcher.class, msg -> {
                     msg.replyTo().tell(bdRef);
+                    getContext().getLog().info("[Guardian] Sending BD ref {}", bdRef);
                     return this;
                 })
                 .onMessage(BDCommand.GetResultCollector.class, msg -> {

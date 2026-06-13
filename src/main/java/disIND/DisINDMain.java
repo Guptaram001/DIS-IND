@@ -43,7 +43,7 @@ public class DisINDMain {
 
         String inputDir = "/Users/gupta/Documents/DIS-IND/data/synthetic";
         int batchSize = 2;
-        int timeoutSec = 60;
+        int timeoutSec = 5;
         String outputFile = null;
 
         INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir);

@@ -49,6 +49,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                                   ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
                                   DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         super(ctx);
+        getContext().getLog().info("BD STARTED");
         this.numCols      = numCols;
         this.valueIdMap   = valueIdMap;
         this.sharding     = sharding;
@@ -61,14 +62,18 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
     @Override
     public Receive<BDCommand> createReceive() {
-
+        getContext().getLog().info("BD receive created");
         return newReceiveBuilder()
-                .onMessage(BDCommand.SendTableBatch.class,this::onSendTableBatch)
-                .onMessage(BDCommand.IngestionDone.class,this::onIngestionDone)
+                .onMessage(BDCommand.SendTableBatch.class, this::onSendTableBatch)
+                .onMessage(BDCommand.BatchFlushed.class, this::onBatchFlushed)
+                .onMessage(BDCommand.IngestionDone.class, this::onIngestionDone)
+                .onAnyMessage(msg -> {getContext().getLog().info("BD GOT {}", msg.getClass());return this;})
                 .build();
     }
 
+
     private Behavior<BDCommand> onSendTableBatch(BDCommand.SendTableBatch msg) {
+        getContext().getLog().debug("[BD] Initial Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
         epoch++;
 
         int tableId = msg.tableId();
@@ -124,6 +129,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             int base = localCol * bufCapacity;
             long[] rArr = Arrays.copyOfRange(rowBuffer, base, base + count);
             int[] vArr = Arrays.copyOfRange(vidBuffer, base, base + count);
+            getContext().getLog().debug("[BD] Finally Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
             sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(globalCol))
                     .tell(new AACommand.InsertBatch(e, rArr, vArr, selfRef));
         }

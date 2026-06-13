@@ -21,11 +21,11 @@ public final class ValueIdMap {
         });
     }
 
-    public Optional<Integer> get(String value) {
+    public Optional<Integer> getId(String value) {
         return Optional.ofNullable(strToId.get(value));
     }
 
-    public String decode(int id) {
+    public String getValue(int id) {
         return idToStr.get(id);
     }
 

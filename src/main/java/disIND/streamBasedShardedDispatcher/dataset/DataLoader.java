@@ -107,7 +107,7 @@ public final class DataLoader {
                 batchSize, bdRef);
 
         System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", totalRows, (System.currentTimeMillis() - startMs) / 1000.0);
-        system.tell(new BDCommand.IngestionDone());
+        bdRef.tell(new BDCommand.IngestionDone());
         System.out.println("[Loader] Waiting for discovery result...");
         CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(system, BDCommand.GetResultCollector::new,
                 Duration.ofSeconds(5), system.scheduler());
@@ -216,13 +216,16 @@ public final class DataLoader {
         private static void sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
         List<String[]> rows) throws Exception {
 
+
+            System.out.println("[Loader] Sending table batch to "+bdRef+" "+bdRef.path().name()+" tableId="+tableId+" startRowId="+startRowId+" rows="+rows.size());
             AskPattern.ask(bdRef, (ActorRef<BDReply> replyTo) ->
                                     new BDCommand.SendTableBatch(tableId, startRowId,rows, replyTo),
-                            Duration.ofSeconds(30),
+                            Duration.ofSeconds(5),
                             system.scheduler()
                     )
                     .toCompletableFuture()
                     .get();
+
         }
 
     private static void addRowToBuffer(String[] cells, int rowIdx, int totalCols, String[] sentinel,
@@ -249,7 +252,7 @@ public final class DataLoader {
 
         AskPattern.ask(bdRef,
                 ( ActorRef<BDReply> replyTo ) -> new BDCommand.IngestBatch(copy, numRows, totalCols, replyTo),
-                Duration.ofSeconds(30),
+                Duration.ofSeconds(5),
                 system.scheduler()
         ).toCompletableFuture().get();
 
