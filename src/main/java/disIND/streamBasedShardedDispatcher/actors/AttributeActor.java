@@ -53,7 +53,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private Behavior<AACommand> onInsertBatch(AACommand.InsertBatch insertBatch) {
-        getContext().getLog().debug("[ATTRA] Received insert batch for col {} with {} rows", colId, insertBatch.rows().length);
+        getContext().getLog().info("[ATTRA] Received insert batch for col {} with {} rows", colId, insertBatch.rows().length);
         RoaringBitmap newDistinct = new RoaringBitmap();
 
         int[] valueIds    = insertBatch.valueIds();
@@ -66,7 +66,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             RoaringBitmap rowSet = valueToRows.computeIfAbsent(vid, k -> new RoaringBitmap());
             boolean wasEmpty = rowSet.isEmpty();
             rowSet.add(rowI);
-            getContext().getLog().debug("[ATTRA] Adding row {} to bitmap for value {}", rowI, vid);
+            getContext().getLog().info("[ATTRA] Adding row {} to bitmap for value {}", rowI, vid);
 
             if (wasEmpty) {
                 bitmapStore.insertIds(new int[]{vid});
@@ -75,9 +75,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                 bitmapStore.insertIds(new int[]{vid});
                 newDistinct.add(vid);
             }
-
         }
-
 
         if (insertBatch.ackTo() != null)
             insertBatch.ackTo().tell(new BDCommand.BatchFlushed(insertBatch.epoch(), colId));

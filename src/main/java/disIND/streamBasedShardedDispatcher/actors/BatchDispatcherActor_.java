@@ -72,8 +72,9 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     }
 
 
+
     private Behavior<BDCommand> onSendTableBatch(BDCommand.SendTableBatch msg) {
-        getContext().getLog().debug("[BD] Initial Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
+        getContext().getLog().info("[BD] Initial Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
         epoch++;
 
         int tableId = msg.tableId();
@@ -129,7 +130,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             int base = localCol * bufCapacity;
             long[] rArr = Arrays.copyOfRange(rowBuffer, base, base + count);
             int[] vArr = Arrays.copyOfRange(vidBuffer, base, base + count);
-            getContext().getLog().debug("[BD] Finally Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
+            getContext().getLog().info("[BD] Finally Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
             sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(globalCol))
                     .tell(new AACommand.InsertBatch(e, rArr, vArr, selfRef));
         }
@@ -158,7 +159,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         long e = msg.epoch();
         Integer remaining = pendingPerEpoch.get(e);
         if (remaining == null) {
-            getContext().getLog().debug("[BD] BatchFlushed unknown/completed epoch={} col={}", e, msg.colId());
+            getContext().getLog().info("[BD] BatchFlushed unknown/completed epoch={} col={}", e, msg.colId());
             return this;
         }
         int nr = remaining - 1;
