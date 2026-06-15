@@ -63,11 +63,64 @@ public final class SharedModel {
 
     //  Data carriers
 
-    public record KMVSketch(
-            int k,
-            long[] hashes,
-            int size
-    ) implements AkkaSerializable {}
+    public record KMVSketch(int k, long[] hashes, int size) implements AkkaSerializable {
+
+        public double containmentIn(KMVSketch rhs) {
+            long threshold = Math.min(maxObserved(), rhs.maxObserved());
+            int lhsConsidered = 0;
+            int common = 0;
+            for (int i = 0; i < size; i++) {
+                if (Long.compareUnsigned(hashes[i], threshold) <= 0) {
+                    lhsConsidered++;
+                    if (rhs.contains(hashes[i]))
+                        common++;
+                }
+            }
+            if (lhsConsidered == 0)
+                return 1.0;
+            return (double) common / lhsConsidered;
+        }
+
+        public double jaccard(KMVSketch rhs) {
+            long threshold = Math.min(maxObserved(), rhs.maxObserved());
+            int intersection = 0;
+            int union = 0;
+            for (int i = 0; i < size; i++) {
+                if (Long.compareUnsigned(hashes[i], threshold) <= 0) {
+                    union++;
+                    if (rhs.contains(hashes[i]))
+                        intersection++;
+                }
+            }
+            for (int i = 0; i < rhs.size; i++) {
+                long h = rhs.hashes[i];
+                if (Long.compareUnsigned(h, threshold) <= 0 && !contains(h))
+                    union++;
+            }
+            if (union == 0)
+                return 1.0;
+            return (double) intersection / union;
+        }
+
+        private boolean contains(long h) {
+            for (int i = 0; i < size; i++) {
+                if (hashes[i] == h)
+                    return true;
+            }
+            return false;
+        }
+
+        private long maxObserved() {
+            if (size < k)
+                return Long.MAX_VALUE;
+            long max = hashes[0];
+            for (int i = 1; i < size; i++) {
+                if (Long.compareUnsigned(hashes[i], max) > 0)
+                    max = hashes[i];
+            }
+            return max;
+        }
+    }
 
     public record SketchSummary(
             int colId,

@@ -17,26 +17,20 @@ public class LatticeManagerActor extends AbstractBehavior<LMCommand> {
     private final DatasetMetadata metadata;
     private final int   maxArity;
     private final int   maxConcurrent;
-    private final int[] tableOffsets;
-    private final Map<Integer, ColType> colTypeMap;
     private int credits;
 
-    public static Behavior<LMCommand> create(int maxArity, int maxConcurrent, List<Integer> tableOffsets,
-                                             Map<Integer, ColType> colTypes, DatasetMetadata metadata,
+    public static Behavior<LMCommand> create(int maxArity, int maxConcurrent, DatasetMetadata metadata,
                                              ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx -> new LatticeManagerActor(ctx, maxArity, maxConcurrent,
-                        tableOffsets, colTypes,metadata,statsRef));
+                        metadata,statsRef));
     }
 
     private LatticeManagerActor(ActorContext<LMCommand> ctx, int maxArity, int maxConcurrent,
-                                List<Integer> tableOffsets, Map<Integer, ColType> colTypes,
                                 DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         super(ctx);
         this.maxArity      = maxArity;
         this.maxConcurrent = maxConcurrent;
         this.credits       = maxConcurrent;
-        this.tableOffsets  = tableOffsets.stream().mapToInt(Integer::intValue).toArray();
-        this.colTypeMap    = new HashMap<>(colTypes);
         this.metadata      = metadata;
         this.statsRef      = statsRef;
     }

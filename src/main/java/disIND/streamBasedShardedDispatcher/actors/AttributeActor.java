@@ -17,7 +17,6 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
     private final int colId;
     private final ValueIdMap valueIdMap;
-    private final WatermarkRegister wmReg;
     private final AtomicReference<ActorRef<CMCommand>> cmRef;
 
     private final BitmapStore bitmapStore=new BitmapStore();
@@ -26,18 +25,18 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private long epochsProcessed = 0L;
 
 
-    public static Behavior<AACommand> create(int colId, ValueIdMap vidMap, WatermarkRegister wmReg,
+    public static Behavior<AACommand> create(int colId, ValueIdMap vidMap,
                                              AtomicReference<ActorRef<CMCommand>> cmRef, ActorRef<StatsCommand> statsRef) {
-        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, vidMap, wmReg, cmRef
+        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, vidMap, cmRef
         ,statsRef));
     }
 
-    private AttributeActor(ActorContext<AACommand> ctx, int colId, ValueIdMap valueIdMap, WatermarkRegister wmReg,
+    private AttributeActor(ActorContext<AACommand> ctx, int colId, ValueIdMap valueIdMap,
                            AtomicReference<ActorRef<CMCommand>> cmRef,ActorRef<StatsCommand> statsRef) {
         super(ctx);
         this.colId      = colId;
+
         this.valueIdMap = valueIdMap;
-        this.wmReg      = wmReg;
         this.cmRef   = cmRef;
         this.statsRef   = statsRef;
     }

@@ -19,7 +19,6 @@ import java.util.Map;
 public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private final ActorRef<StatsCommand> statsRef;
     private final  DatasetMetadata metadata;
-    private final int numCols;
     private final ValueIdMap valueIdMap;
     private final ClusterSharding sharding;
     private final ActorRef<AppraiserCommand> appraiserRef;
@@ -39,23 +38,22 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
 
 
-    public static Behavior<BDCommand> create(int numCols, ValueIdMap vidMap, ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
+    public static Behavior<BDCommand> create(ValueIdMap vidMap, ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
                                              DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx ->
-                new BatchDispatcherActor_(ctx, numCols, vidMap, sharding, appraiserRef,metadata,statsRef));
+                new BatchDispatcherActor_(ctx,  vidMap, sharding, appraiserRef,metadata,statsRef));
     }
 
-    private BatchDispatcherActor_(ActorContext<BDCommand> ctx, int numCols, ValueIdMap valueIdMap,
+    private BatchDispatcherActor_(ActorContext<BDCommand> ctx, ValueIdMap valueIdMap,
                                   ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
                                   DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         super(ctx);
         getContext().getLog().info("BD STARTED");
-        this.numCols      = numCols;
         this.valueIdMap   = valueIdMap;
         this.sharding     = sharding;
         this.appraiserRef = appraiserRef;
         this.selfRef      = ctx.getSelf();
-        this.cursors      = new int[numCols];
+        this.cursors      = new int[metadata.totalCols()];
         this.metadata     = metadata;
         this.statsRef     = statsRef;
     }
@@ -74,7 +72,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
 
     private Behavior<BDCommand> onSendTableBatch(BDCommand.SendTableBatch msg) {
-        getContext().getLog().info("[BD] Initial Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
+        getContext().getLog().info("[BD] Initial Sending table batch: {} rows, {} cols", msg.rows().size(),metadata.totalCols());
         epoch++;
 
         int tableId = msg.tableId();
@@ -129,7 +127,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             int base = localCol * bufCapacity;
             long[] rArr = Arrays.copyOfRange(rowBuffer, base, base + count);
             int[] vArr = Arrays.copyOfRange(vidBuffer, base, base + count);
-            getContext().getLog().info("[BD] Finally Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
+            getContext().getLog().info("[BD] Finally Sending table batch: {} rows, {} cols", msg.rows().size(), metadata.totalCols());
             sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(globalCol))
                     .tell(new AACommand.InsertBatch(epoch, rArr, vArr, selfRef));
         }

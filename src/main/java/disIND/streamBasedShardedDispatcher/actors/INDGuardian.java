@@ -39,7 +39,6 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private INDGuardian(ActorContext<BDCommand> ctx, Config cfg) {
         super(ctx);
         ValueIdMap vidMap = new ValueIdMap();
-        WatermarkRegister wmReg = new WatermarkRegister();
         AtomicReference<ActorRef<CMCommand>> cmRefHolder = new AtomicReference<>();
         DatasetMetadata metadata = cfg.metadata();
         ActorRef<StatsCommand> statsRef = ctx.spawn(DiscoveryStatsActor.create(), "discovery-stats");
@@ -47,7 +46,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         sharding.init(Entity.of(AttributeActor.TYPE_KEY, entityCtx -> {
                     int colId = Integer.parseInt(entityCtx.getEntityId().substring("col-".length()));
-                    return AttributeActor.create(colId, vidMap, wmReg, cmRefHolder,statsRef);
+                    return AttributeActor.create(colId, vidMap, cmRefHolder,statsRef);
                 })
         );
         ctx.getLog().info("[Guardian] Sharding init: {} columns", cfg.numCols());
@@ -57,9 +56,9 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ActorRef<RACommand> raRef = ctx.spawn(RebuildActor_.create(sharding,metadata,statsRef), "rebuild-actor");
 
         ActorRef<LMCommand> lmRef = ctx.spawn(LatticeManagerActor.create(cfg.maxArity(), cfg.maxConcurrentNra(),
-                        cfg.tableOffsets(), cfg.colTypes(), metadata,statsRef), "lattice-manager");
+                        metadata,statsRef), "lattice-manager");
 
-        ActorRef<CMCommand> cmRef = ctx.spawn(CandidateManagerActor_.create(raRef, lmRef, rcRef, wmReg,
+        ActorRef<CMCommand> cmRef = ctx.spawn(CandidateManagerActor_.create(raRef, lmRef, rcRef,
                         cfg.cleanThreshold(), metadata,statsRef), "candidate-manager");
         cmRefHolder.set(cmRef);
 
@@ -72,10 +71,9 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
         lmRef.tell(new LMCommand.InjectNra(nraRef));
 
-        ActorRef<AppraiserCommand> apRef = ctx.spawn(AppraisalActor_.create(cfg.numCols(), sharding, cmRef, metadata,statsRef),
-                "appraisal-actor");
+        ActorRef<AppraiserCommand> apRef = ctx.spawn(AppraisalActor_.create( sharding, cmRef, metadata,statsRef), "appraisal-actor");
 
-        this.bdRef = ctx.spawn(BatchDispatcherActor_.create(cfg.numCols(), vidMap, sharding, apRef, metadata,
+        this.bdRef = ctx.spawn(BatchDispatcherActor_.create( vidMap, sharding, apRef, metadata,
                 statsRef), "batch-dispatcher");
         System.out.println("BD REF = " + bdRef);
 
