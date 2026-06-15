@@ -4,13 +4,11 @@ import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.*;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
+import disIND.streamBasedShardedDispatcher.model.SharedModel;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
-import org.roaringbitmap.RoaringBitmap;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class AttributeActor extends AbstractBehavior<AACommand> {
@@ -22,8 +20,9 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final WatermarkRegister wmReg;
     private final AtomicReference<ActorRef<CMCommand>> cmRef;
 
-    private final Map<Integer, RoaringBitmap> valueToRows = new HashMap<>();
     private final BitmapStore bitmapStore=new BitmapStore();
+    private final ValueToRowsStore valueToRowsStore = new ValueToRowsStore();
+    private final SketchStore sketchStore = new SketchStore();
     private long epochsProcessed = 0L;
 
 
@@ -49,12 +48,18 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
         return newReceiveBuilder()
                 .onMessage(AACommand.InsertBatch.class,this::onInsertBatch)
+                .onMessage(AACommand.EmitSketch.class,this::onEmitSketch)
                 .build();
+    }
+
+    private Behavior<AACommand> onEmitSketch(AACommand.EmitSketch msg) {
+        getContext().getLog().info("[ATTRA] Emitting sketch for col {} epoch {}", colId, msg.epoch());
+        msg.replyTo().tell(new AppraiserCommand.SketchArrived(sketchStore.getSummary(colId, msg.epoch())));
+        return this;
     }
 
     private Behavior<AACommand> onInsertBatch(AACommand.InsertBatch insertBatch) {
         getContext().getLog().info("[ATTRA] Received insert batch for col {} with {} rows", colId, insertBatch.rows().length);
-        RoaringBitmap newDistinct = new RoaringBitmap();
 
         int[] valueIds    = insertBatch.valueIds();
         long[] rows   = insertBatch.rows();
@@ -62,31 +67,19 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         for (int i = 0; i < rows.length; i++) {
             int vid  = valueIds[i];
             int rowI = (int) rows[i];
-
-            RoaringBitmap rowSet = valueToRows.computeIfAbsent(vid, k -> new RoaringBitmap());
-            boolean wasEmpty = rowSet.isEmpty();
-            rowSet.add(rowI);
+            sketchStore.insert(vid);
+            valueToRowsStore.add(vid, rowI);
             getContext().getLog().info("[ATTRA] Adding row {} to bitmap for value {}", rowI, vid);
 
-            if (wasEmpty) {
+            valueToRowsStore.add(vid, rowI);
+            if (!valueToRowsStore.containsValue(vid))
                 bitmapStore.insertIds(new int[]{vid});
-                newDistinct.add(vid);
-            } else if (!bitmapStore.containsId(vid)) {
-                bitmapStore.insertIds(new int[]{vid});
-                newDistinct.add(vid);
-            }
         }
 
         if (insertBatch.ackTo() != null)
             insertBatch.ackTo().tell(new BDCommand.BatchFlushed(insertBatch.epoch(), colId));
 
-        ActorRef<CMCommand> cm = cmRef.get();
-        if (cm != null && !newDistinct.isEmpty()) {
-            newDistinct.runOptimize();
-            cm.tell(new CMCommand.DistinctValueDelta(colId, newDistinct, insertBatch.epoch()));
-        }
-
-        epochsProcessed++;
+        epochsProcessed=insertBatch.epoch();
         return this;
     }
 

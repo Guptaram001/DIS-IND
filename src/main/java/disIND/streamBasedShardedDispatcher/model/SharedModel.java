@@ -63,12 +63,17 @@ public final class SharedModel {
 
     //  Data carriers
 
+    public record KMVSketch(
+            int k,
+            long[] hashes,
+            int size
+    ) implements AkkaSerializable {}
+
     public record SketchSummary(
             int colId,
-            long cardinality,
-            RoaringBitmap bitmap,
             long epoch,
-            ColType colType
+            long distinctValues,
+            KMVSketch kmv
     ) implements AkkaSerializable {}
 
     public record BitmapAtEpoch(
@@ -117,7 +122,7 @@ public final class SharedModel {
             permits AACommand.InsertBatch, AACommand.SetPresetType,
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
-            AACommand.UpdateWatermarks {
+            AACommand.UpdateWatermarks,AACommand.EmitSketch {
 
         static String entityId(int colId) { return "col-" + colId; }
 
@@ -136,6 +141,8 @@ public final class SharedModel {
 
         record GetColumnSlice(long epoch, long requestId,
                               ActorRef<NRACommand> replyTo) implements AACommand {}
+
+        record EmitSketch(long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
 
         record UpdateWatermarks(long binaryWm, long naryWm) implements AACommand {}
     }

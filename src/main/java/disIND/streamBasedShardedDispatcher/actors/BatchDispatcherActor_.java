@@ -120,7 +120,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             msg.replyTo().tell(new BDReply.BatchAccepted(epoch));
 
         int expected = 0;
-        long e = epoch;
         for (int localCol = 0; localCol < localCols; localCol++) {
             int count = cursors[localCol];
             if (count == 0)
@@ -132,14 +131,17 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             int[] vArr = Arrays.copyOfRange(vidBuffer, base, base + count);
             getContext().getLog().info("[BD] Finally Sending table batch: {} rows, {} cols", msg.rows().size(), numCols);
             sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(globalCol))
-                    .tell(new AACommand.InsertBatch(e, rArr, vArr, selfRef));
+                    .tell(new AACommand.InsertBatch(epoch, rArr, vArr, selfRef));
+        }
+
+        if (epoch % 50 == 0) {
+            appraiserRef.tell(new AppraiserCommand.EpochComplete(epoch));
         }
 
         if (expected == 0) {
-            appraiserRef.tell(new AppraiserCommand.EpochComplete(e));
-            maybeForwardIngestionDone(e);
+            maybeForwardIngestionDone(epoch);
         } else
-            pendingPerEpoch.put(e, expected);
+            pendingPerEpoch.put(epoch, expected);
 
         statsRef.tell(new StatsCommand.RowBatchProcessed(rows.size()));
         return this;

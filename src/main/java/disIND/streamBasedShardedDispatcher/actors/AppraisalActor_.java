@@ -9,6 +9,7 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
+import scala.App;
 
 
 public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
@@ -39,6 +40,25 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
 
     @Override
     public Receive<AppraiserCommand> createReceive() {
-        return newReceiveBuilder().build();
+        return newReceiveBuilder()
+                .onMessage(AppraiserCommand.EpochComplete.class,this::onEpochComplete)
+                .onMessage(AppraiserCommand.SketchArrived.class,this::onSketchArrived)
+                .build();
+    }
+
+    private Behavior<AppraiserCommand> onSketchArrived(AppraiserCommand.SketchArrived sketchArrived) {
+
+        getContext().getLog().info("[APP] Sketch arrived for epoch  {}, kmv: {}, colid: {} , cardinaliy: {}"
+                ,sketchArrived.summary().epoch(), sketchArrived.summary().kmv(),sketchArrived.summary().colId(),
+                sketchArrived.summary().distinctValues());
+        return this;
+    }
+
+    private Behavior<AppraiserCommand> onEpochComplete(AppraiserCommand.EpochComplete epochComplete) {
+        for (int c = 0; c < numCols; c++) {
+            sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(c)).tell(
+                            new AACommand.EmitSketch(epochComplete.epoch(), getContext().getSelf()));
+        }
+        return this;
     }
 }
