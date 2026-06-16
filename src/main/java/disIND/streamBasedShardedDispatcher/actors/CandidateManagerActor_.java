@@ -8,8 +8,6 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
-import disIND.streamBasedShardedDispatcher.structures.*;
-import org.roaringbitmap.RoaringBitmap;
 
 import java.util.HashMap;
 import java.util.List;
@@ -23,8 +21,9 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final ActorRef<RCCommand>  rcRef;
     private final int cleanThreshold;
 
-    public enum CandidateStatus {  TRACKED_CLEAN, TRACKED_VIOLATING, UNTRACKED }
+    public enum CandidateStatus {  REBUILDING,TRACKED_CLEAN, TRACKED_VIOLATING, UNTRACKED }
     private static final int MAX_WITNESSES = 2;
+    private int raInProgress = 0;
 
     private static class UnaryState {
         CandidateStatus status = CandidateStatus.UNTRACKED;
@@ -70,11 +69,29 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     public Receive<CMCommand> createReceive() {
         return newReceiveBuilder()
                 .onMessage(CMCommand.UnaryCandidateProposed.class,this::onUnaryCandidateProposed)
+                .onMessage(CMCommand.UnaryViolationReport.class,this::onUnaryViolationReport)
                 .build();
+    }
+
+    private Behavior<CMCommand> onUnaryViolationReport(CMCommand.UnaryViolationReport unaryViolationReport) {
+        raInProgress = Math.max(0, raInProgress - 1);
+
+      return this;
+
     }
 
     private Behavior<CMCommand> onUnaryCandidateProposed(CMCommand.UnaryCandidateProposed unaryCandidateProposed) {
         getContext().getLog().info("Unary candidate proposed: {}", unaryCandidateProposed.candidate().pair().toString());
+
+        UnaryPair pair = unaryCandidateProposed.candidate().pair();
+        UnaryState s = unaryPairs.get(pair);
+        if (s == null || s.status == CandidateStatus.UNTRACKED) {
+            s = new UnaryState();
+            s.status = CandidateStatus.REBUILDING;
+            unaryPairs.putIfAbsent(pair, s);
+            raRef.tell(new RACommand.EvaluateCandidate(unaryCandidateProposed.candidate()));
+            raInProgress++;
+        }
         return this;
     }
 }

@@ -2,6 +2,8 @@ package disIND.streamBasedShardedDispatcher.model;
 
 import akka.actor.typed.ActorRef;
 import disIND.prototypeModel.model.AkkaSerializable;
+import disIND.streamBasedShardedDispatcher.structures.BitmapStore;
+import disIND.streamBasedShardedDispatcher.structures.ValueToRowsStore;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.ArrayList;
@@ -42,15 +44,11 @@ public final class SharedModel {
             Map<Integer,ColType> colTypes
     ) {}
 
-    public record DeltaScanResult(
+    public record ScanResult(
             UnaryPair pair,
             int violationCount,
-            int totalLhs,
             List<String> witnesses,
-            long sinceEpoch,
-            long untilEpoch,
-            RoaringBitmap violationBitmap,
-            RoaringBitmap rhsBitmap
+            long epoch
     ) implements AkkaSerializable {}
 
     public record NaryCheckResult(
@@ -136,6 +134,14 @@ public final class SharedModel {
             long requestId
     ) implements AkkaSerializable {}
 
+
+    public record AttributeSnapshot(
+            long epoch,
+            BitmapStore bitmapStore,
+            ValueToRowsStore valueToRowsStore,
+            SketchSummary sketchSummary
+    ) {}
+
     public record ColumnSlice(
             int colId,
             Map<Integer, RoaringBitmap> valToRows,
@@ -175,7 +181,7 @@ public final class SharedModel {
             permits AACommand.InsertBatch, AACommand.SetPresetType,
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
-            AACommand.UpdateWatermarks,AACommand.EmitSketch {
+            AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.EpochComplete, AACommand.GetSnapshot {
 
         static String entityId(int colId) { return "col-" + colId; }
 
@@ -189,7 +195,7 @@ public final class SharedModel {
 
         record DeltaScan(
                 RoaringBitmap rhsBitmap, long sinceEpoch, long untilEpoch,
-                UnaryPair pair, ActorRef<DeltaScanResult> replyTo
+                UnaryPair pair, ActorRef<ScanResult> replyTo
         ) implements AACommand {}
 
         record GetColumnSlice(long epoch, long requestId,
@@ -198,6 +204,10 @@ public final class SharedModel {
         record EmitSketch(long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
 
         record UpdateWatermarks(long binaryWm, long naryWm) implements AACommand {}
+
+        record EpochComplete(long epoch) implements AACommand {}
+
+        record GetSnapshot(long epoch, ActorRef<RACommand> replyTo) implements AACommand {}
     }
 
 
@@ -217,13 +227,13 @@ public final class SharedModel {
 
     public sealed interface RACommand extends AkkaSerializable
             permits RACommand.EvaluateCandidate, RACommand.RhsBitmapReady,
-            RACommand.DeltaScanReady, RACommand.RebuildRequest,
+            RACommand.ScanReady, RACommand.RebuildRequest,
             RACommand.InjectCm, RACommand.BitmapReady {
 
         record BitmapReady(long requestId, BitmapAtEpoch bm)              implements RACommand {}
         record EvaluateCandidate(UnaryCandidate candidate)                 implements RACommand {}
         record RhsBitmapReady(BitmapAtEpoch bm, UnaryCandidate candidate)  implements RACommand {}
-        record DeltaScanReady(DeltaScanResult result)                      implements RACommand {}
+        record ScanReady(ScanResult result)                      implements RACommand {}
         record RebuildRequest(UnaryPair pair, long sinceEpoch,
                               long untilEpoch)                             implements RACommand {}
         record InjectCm(ActorRef<CMCommand> cmRef)                        implements RACommand {}
@@ -237,7 +247,7 @@ public final class SharedModel {
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced {
 
         record UnaryCandidateProposed(UnaryCandidate candidate) implements CMCommand {}
-        record UnaryViolationReport(DeltaScanResult result) implements CMCommand {}
+        record UnaryViolationReport(ScanResult result) implements CMCommand {}
         record NaryViolationReport(NaryCheckResult result)                 implements CMCommand {}
         record EpochTick(long epoch)                                       implements CMCommand {}
         record DistinctValueDelta(int colId, RoaringBitmap newValues, long epoch) implements CMCommand {}

@@ -9,6 +9,8 @@ import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class AttributeActor extends AbstractBehavior<AACommand> {
@@ -24,6 +26,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final SketchStore sketchStore = new SketchStore();
     private long epochsProcessed = 0L;
 
+    private final Map<Long, AttributeSnapshot> snapshots = new HashMap<>();
 
     public static Behavior<AACommand> create(int colId, ValueIdMap vidMap,
                                              AtomicReference<ActorRef<CMCommand>> cmRef, ActorRef<StatsCommand> statsRef) {
@@ -48,7 +51,24 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         return newReceiveBuilder()
                 .onMessage(AACommand.InsertBatch.class,this::onInsertBatch)
                 .onMessage(AACommand.EmitSketch.class,this::onEmitSketch)
+                .onMessage(AACommand.EpochComplete.class,this::onEpochComplete)
                 .build();
+    }
+
+    private Behavior<AACommand> onEpochComplete(AACommand.EpochComplete epochComplete) {
+        getContext().getLog().info("[ATTRA] Snapshotting Epoch {} complete for col {}", epochComplete.epoch(), colId);
+        if (epochComplete.epoch() >= epochsProcessed) {
+            if (!snapshots.containsKey(epochComplete.epoch())) {
+                snapshots.put(epochComplete.epoch(), new AttributeSnapshot(
+                                epochComplete.epoch(),
+                                bitmapStore.deepCopy(),
+                                valueToRowsStore.deepCopy(),
+                                sketchStore.getSummary(colId, epochComplete.epoch())
+                        )
+                );
+            }
+        }
+        return this;
     }
 
     private Behavior<AACommand> onEmitSketch(AACommand.EmitSketch msg) {
@@ -67,11 +87,11 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             int vid  = valueIds[i];
             int rowI = (int) rows[i];
             sketchStore.insert(vid);
-            valueToRowsStore.add(vid, rowI);
             getContext().getLog().info("[ATTRA] Adding row {} to bitmap for value {}", rowI, vid);
 
+            boolean newValue = !valueToRowsStore.containsValue(vid);
             valueToRowsStore.add(vid, rowI);
-            if (!valueToRowsStore.containsValue(vid))
+            if (newValue)
                 bitmapStore.insertIds(new int[]{vid});
         }
 

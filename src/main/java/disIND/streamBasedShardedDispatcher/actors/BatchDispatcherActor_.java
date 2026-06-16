@@ -132,8 +132,14 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                     .tell(new AACommand.InsertBatch(epoch, rArr, vArr, selfRef));
         }
 
-        if (epoch % 50 == 0) {
+        if (epoch % 2 == 0) {
+            getContext().getLog().info("[BD] Sending epoch complete message to ATTRA and APPA");
+            //Notify the APPA to start asking sketches
             appraiserRef.tell(new AppraiserCommand.EpochComplete(epoch));
+            // Notify all the ATTRA regarding epoch complete to snapshot
+            for (int col = 0; col < metadata.totalCols(); col++) {
+                sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(col)).tell(new AACommand.EpochComplete(epoch));
+            }
         }
 
         if (expected == 0) {
