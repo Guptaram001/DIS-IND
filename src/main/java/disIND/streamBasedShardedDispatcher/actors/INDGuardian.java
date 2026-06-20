@@ -58,7 +58,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ActorRef<LMCommand> lmRef = ctx.spawn(LatticeManagerActor.create(cfg.maxArity(), cfg.maxConcurrentNra(),
                         metadata,statsRef), "lattice-manager");
 
-        ActorRef<CMCommand> cmRef = ctx.spawn(CandidateManagerActor_.create(raRef, lmRef, rcRef,
+        ActorRef<CMCommand> cmRef = ctx.spawn(CandidateManagerActor_.create(sharding,raRef, lmRef, rcRef,
                         cfg.cleanThreshold(), metadata,statsRef), "candidate-manager");
         cmRefHolder.set(cmRef);
 

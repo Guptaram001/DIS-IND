@@ -8,9 +8,10 @@ import disIND.streamBasedShardedDispatcher.model.SharedModel;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
+import org.roaringbitmap.IntIterator;
+import org.roaringbitmap.RoaringBitmap;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class AttributeActor extends AbstractBehavior<AACommand> {
@@ -20,13 +21,15 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final int colId;
     private final ValueIdMap valueIdMap;
     private final AtomicReference<ActorRef<CMCommand>> cmRef;
+    private final Map<UnaryPair, ActorRef<CMCommand>> subscribers = new HashMap<>();
 
     private final BitmapStore bitmapStore=new BitmapStore();
     private final ValueToRowsStore valueToRowsStore = new ValueToRowsStore();
     private final SketchStore sketchStore = new SketchStore();
     private long epochsProcessed = 0L;
 
-    private final Map<Long, AttributeSnapshot> snapshots = new HashMap<>();
+    private AttributeCheckPoint checkPoint ;
+    private final Deque<AttributeDelta> deltaLogDequeue = new ArrayDeque<>();
 
     public static Behavior<AACommand> create(int colId, ValueIdMap vidMap,
                                              AtomicReference<ActorRef<CMCommand>> cmRef, ActorRef<StatsCommand> statsRef) {
@@ -52,22 +55,45 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                 .onMessage(AACommand.InsertBatch.class,this::onInsertBatch)
                 .onMessage(AACommand.EmitSketch.class,this::onEmitSketch)
                 .onMessage(AACommand.EpochComplete.class,this::onEpochComplete)
+                .onMessage(AACommand.SendColumnData.class,this::onSendColumnData)
+                .onMessage(AACommand.CompareBitmap.class,this::onCompareBitmap)
                 .build();
+    }
+
+    private Behavior<AACommand> onSendColumnData(AACommand.SendColumnData sendColumnData) {
+        getContext().getLog().info("[ATTRA] Invoked for sending column col:{} to col: {}", sendColumnData.candidate().pair().lhsCol(),
+                sendColumnData.candidate().pair().rhsCol());
+        RoaringBitmap lhsBitmap = checkPoint.bitmapStore().getBitmap();
+        ActorRef<CMCommand> cmRef = sendColumnData.cmRef();
+        subscribers.put(sendColumnData.candidate().pair(), sendColumnData.cmRef());
+        sendColumnData.aaRef().tell(new AACommand.CompareBitmap(sendColumnData.candidate(),lhsBitmap,cmRef));
+        return this;
+    }
+
+    private Behavior<AACommand> onCompareBitmap(AACommand.CompareBitmap compareBitmap) {
+        getContext().getLog().info("[ATTRA] Comparing {} ⊆ {}", compareBitmap.candidate().pair().lhsCol(),
+                compareBitmap.candidate().pair().rhsCol());
+        subscribers.put(compareBitmap.candidate().pair(), compareBitmap.cmRef());
+        ScanResult result = checkPoint.bitmapStore().compareAgainst(
+                                compareBitmap.lhsBitmap(),
+                                compareBitmap.candidate().pair(),
+                                compareBitmap.candidate().evalEpoch());
+
+        compareBitmap.cmRef().tell(new CMCommand.UnaryViolationReport(result));
+
+        return this;
     }
 
     private Behavior<AACommand> onEpochComplete(AACommand.EpochComplete epochComplete) {
         getContext().getLog().info("[ATTRA] Snapshotting Epoch {} complete for col {}", epochComplete.epoch(), colId);
         if (epochComplete.epoch() >= epochsProcessed) {
-            if (!snapshots.containsKey(epochComplete.epoch())) {
-                snapshots.put(epochComplete.epoch(), new AttributeSnapshot(
-                                epochComplete.epoch(),
-                                bitmapStore.deepCopy(),
-                                valueToRowsStore.deepCopy(),
-                                sketchStore.getSummary(colId, epochComplete.epoch())
-                        )
-                );
-            }
+            checkPoint=new AttributeCheckPoint(epochComplete.epoch(),
+                    bitmapStore.deepCopy(),
+                    valueToRowsStore.deepCopy(),
+                    sketchStore.getSummary(colId, epochComplete.epoch()));
+
         }
+        cleanupOldDeltas(epochComplete.epoch());
         return this;
     }
 
@@ -82,6 +108,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
         int[] valueIds    = insertBatch.valueIds();
         long[] rows   = insertBatch.rows();
+        AttributeDeltaBuilder deltaBuilder = new AttributeDeltaBuilder(insertBatch.epoch());
 
         for (int i = 0; i < rows.length; i++) {
             int vid  = valueIds[i];
@@ -93,13 +120,21 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             valueToRowsStore.add(vid, rowI);
             if (newValue)
                 bitmapStore.insertIds(new int[]{vid});
+            deltaBuilder.addInsert(vid,rowI);
         }
 
         if (insertBatch.ackTo() != null)
             insertBatch.ackTo().tell(new BDCommand.BatchFlushed(insertBatch.epoch(), colId));
 
+        deltaLogDequeue.addLast(deltaBuilder.build());
         epochsProcessed=insertBatch.epoch();
         return this;
+    }
+
+    private void cleanupOldDeltas(long checkpointEpoch){
+        while(!deltaLogDequeue.isEmpty() && deltaLogDequeue.peekFirst().epoch() <= checkpointEpoch){
+            deltaLogDequeue.removeFirst();
+        }
     }
 
 

@@ -1,9 +1,13 @@
 package disIND.streamBasedShardedDispatcher.model;
 
+import akka.actor.Actor;
 import akka.actor.typed.ActorRef;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.prototypeModel.model.AkkaSerializable;
 import disIND.streamBasedShardedDispatcher.structures.BitmapStore;
 import disIND.streamBasedShardedDispatcher.structures.ValueToRowsStore;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.ArrayList;
@@ -47,7 +51,7 @@ public final class SharedModel {
     public record ScanResult(
             UnaryPair pair,
             int violationCount,
-            List<String> witnesses,
+            List<Integer> witnesses,
             long epoch
     ) implements AkkaSerializable {}
 
@@ -134,8 +138,9 @@ public final class SharedModel {
             long requestId
     ) implements AkkaSerializable {}
 
+    public record AttributeDelta(long epoch, Int2ObjectMap<IntArrayList>  inserts){}
 
-    public record AttributeSnapshot(
+    public record AttributeCheckPoint(
             long epoch,
             BitmapStore bitmapStore,
             ValueToRowsStore valueToRowsStore,
@@ -181,7 +186,8 @@ public final class SharedModel {
             permits AACommand.InsertBatch, AACommand.SetPresetType,
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
-            AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.EpochComplete, AACommand.GetSnapshot {
+            AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.EpochComplete, AACommand.GetSnapshot,
+        AACommand.SendColumnData, AACommand.CompareBitmap{
 
         static String entityId(int colId) { return "col-" + colId; }
 
@@ -208,6 +214,11 @@ public final class SharedModel {
         record EpochComplete(long epoch) implements AACommand {}
 
         record GetSnapshot(long epoch, ActorRef<RACommand> replyTo) implements AACommand {}
+
+        record SendColumnData(UnaryCandidate candidate, EntityRef<AACommand> aaRef, ActorRef<CMCommand> cmRef) implements AACommand {}
+
+        record CompareBitmap(UnaryCandidate candidate,RoaringBitmap lhsBitmap,ActorRef<CMCommand> cmRef) implements AACommand {}
+
     }
 
 
@@ -253,7 +264,6 @@ public final class SharedModel {
         record DistinctValueDelta(int colId, RoaringBitmap newValues, long epoch) implements CMCommand {}
 
         record IngestionDone()                                             implements CMCommand {}
-
 
         record NaryDispatched()                                            implements CMCommand {}
 

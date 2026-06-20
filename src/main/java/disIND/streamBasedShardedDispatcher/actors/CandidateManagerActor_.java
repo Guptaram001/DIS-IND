@@ -6,6 +6,8 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 
@@ -20,6 +22,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final ActorRef<LMCommand>  lmRef;
     private final ActorRef<RCCommand>  rcRef;
     private final int cleanThreshold;
+    private final ClusterSharding sharding;
 
     public enum CandidateStatus {  REBUILDING,TRACKED_CLEAN, TRACKED_VIOLATING, UNTRACKED }
     private static final int MAX_WITNESSES = 2;
@@ -28,7 +31,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private static class UnaryState {
         CandidateStatus status = CandidateStatus.UNTRACKED;
         long lastEvaluatedEpoch = -1L;
-        List<String> witnesses = List.of();
+        List<Integer> witnesses = List.of();
         int violatingCount = 0;
         boolean reportedConfirmed = false;
     }
@@ -36,7 +39,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private static class NaryState {
         CandidateStatus status = CandidateStatus.UNTRACKED;
         long lastEvaluatedEpoch = -1L;
-        List<String> witnesses = List.of();
+        List<Integer> witnesses = List.of();
         int violatingCount = 0;
         boolean reportedConfirmed = false;
     }
@@ -45,17 +48,18 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final Map<NaryPair,  NaryState>  naryPairs  = new HashMap<>();
 
 
-    public static Behavior<CMCommand> create(ActorRef<RACommand> raRef, ActorRef<LMCommand> lmRef,
+    public static Behavior<CMCommand> create(ClusterSharding sharding,ActorRef<RACommand> raRef, ActorRef<LMCommand> lmRef,
                                              ActorRef<RCCommand> rcRef,  int cleanThreshold,
                                              DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx ->
-                new CandidateManagerActor_(ctx, raRef, lmRef, rcRef, cleanThreshold, metadata,statsRef));
+                new CandidateManagerActor_(ctx, sharding,raRef, lmRef, rcRef, cleanThreshold, metadata,statsRef));
     }
 
-    private CandidateManagerActor_(ActorContext<CMCommand> ctx, ActorRef<RACommand> raRef, ActorRef<LMCommand> lmRef,
+    private CandidateManagerActor_(ActorContext<CMCommand> ctx, ClusterSharding sharding,ActorRef<RACommand> raRef, ActorRef<LMCommand> lmRef,
                                    ActorRef<RCCommand> rcRef,  int cleanThreshold
                         , DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         super(ctx);
+        this.sharding       = sharding;
         this.raRef          = raRef;
         this.lmRef          = lmRef;
         this.rcRef          = rcRef;
@@ -74,11 +78,20 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onUnaryViolationReport(CMCommand.UnaryViolationReport unaryViolationReport) {
-        raInProgress = Math.max(0, raInProgress - 1);
+        getContext().getLog().info("[CM] Unary Report Received: pair: {} , epoch: {} , witnesses: {} , violatingCount: {}",
+                unaryViolationReport.result().pair(),unaryViolationReport.result().epoch(),unaryViolationReport.result().witnesses(),
+                unaryViolationReport.result().violationCount());
+        UnaryPair pair = unaryViolationReport.result().pair();
+        UnaryState s = unaryPairs.get(pair);
+        if (s.status == CandidateStatus.REBUILDING){
+            s.status=CandidateStatus.TRACKED_VIOLATING;
+            s.violatingCount=unaryViolationReport.result().violationCount();
+            s.witnesses=unaryViolationReport.result().witnesses();
 
-      return this;
-
+        }
+        return this;
     }
+
 
     private Behavior<CMCommand> onUnaryCandidateProposed(CMCommand.UnaryCandidateProposed unaryCandidateProposed) {
         getContext().getLog().info("Unary candidate proposed: {}", unaryCandidateProposed.candidate().pair().toString());
@@ -89,7 +102,12 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             s = new UnaryState();
             s.status = CandidateStatus.REBUILDING;
             unaryPairs.putIfAbsent(pair, s);
-            raRef.tell(new RACommand.EvaluateCandidate(unaryCandidateProposed.candidate()));
+            //raRef.tell(new RACommand.EvaluateCandidate(unaryCandidateProposed.candidate()));
+            EntityRef<AACommand> lhs = sharding.entityRefFor(AttributeActor.TYPE_KEY,
+                    AACommand.entityId(unaryCandidateProposed.candidate().pair().lhsCol()));
+            EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY,
+                    AACommand.entityId(unaryCandidateProposed.candidate().pair().rhsCol()));
+            lhs.tell(new AACommand.SendColumnData(unaryCandidateProposed.candidate(),rhs,getContext().getSelf()));
             raInProgress++;
         }
         return this;

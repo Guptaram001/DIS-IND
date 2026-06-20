@@ -10,15 +10,12 @@ import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 
-import java.util.HashMap;
-import java.util.Map;
 
 public class RebuildActor_ extends AbstractBehavior<RACommand> {
     private final ActorRef<StatsCommand> statsRef;
     private final DatasetMetadata metadata;
     private final ClusterSharding sharding;
     private ActorRef<CMCommand> cmRef;
-    private final ActorRef<ScanResult> deltaAdapter;
     private final ActorRef<BitmapAtEpoch> bitmapAdapter;
 
     public static Behavior<RACommand> create(ClusterSharding sharding, DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
@@ -30,9 +27,7 @@ public class RebuildActor_ extends AbstractBehavior<RACommand> {
         super(ctx);
         this.sharding = sharding;
         this.cmRef = null;
-        this.deltaAdapter = ctx.messageAdapter(ScanResult.class, RACommand.ScanReady::new);
-        this.bitmapAdapter = ctx.messageAdapter(BitmapAtEpoch.class, bm ->
-                new RACommand.BitmapReady(bm.requestId(), bm));
+        this.bitmapAdapter = null;
         this.metadata = metadata;
         this.statsRef = statsRef;
     }

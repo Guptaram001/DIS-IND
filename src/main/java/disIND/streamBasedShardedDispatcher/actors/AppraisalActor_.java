@@ -10,10 +10,7 @@ import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 
 import static disIND.streamBasedShardedDispatcher.utility.ColTypeCompatibility.testCompatibility;
 
@@ -29,6 +26,8 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     private long currentEpoch       = 0L;
     private long lastEvaluatedEpoch = -1L;
 
+    private HashSet<UnaryPair> activeCandidates;
+
     public static Behavior<AppraiserCommand> create( ClusterSharding sharding, ActorRef<CMCommand> cmRef,
                                                     DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx -> new AppraisalActor_(ctx, sharding, cmRef,
@@ -43,6 +42,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
         this.sketchAdapter = ctx.messageAdapter(SketchSummary.class, AppraiserCommand.SketchArrived::new);
         this.metadata = metadata;
         this.statsRef = statsRef;
+        this.activeCandidates = new HashSet<>();
     }
 
     @Override
@@ -93,6 +93,10 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                 if (ls.distinctValues() == 0)
                     continue;
 
+                //already being tracked, so no more retracking request.
+                if(activeCandidates.contains(new UnaryPair(lhs, rhs)))
+                    continue;
+
                 //Data Type Pruning
                 if(!testCompatibility(metadata.colTypes().get(lhs),metadata.colTypes().get(rhs))){
                     prunedType++;
@@ -114,6 +118,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
 
                 emitted++;
                 getContext().getLog().info("[APP] Proposing pair: {} , {} , containment: {}",lhs,rhs,containment);
+                activeCandidates.add(new UnaryPair(lhs, rhs));
                 cmRef.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
             }
             getContext().getLog().info("[APP] Pruned {} distinct values for type and distinct count heuristic",prunedType);
