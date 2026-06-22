@@ -2,6 +2,7 @@ package disIND.streamBasedShardedDispatcher.model;
 
 import akka.actor.Actor;
 import akka.actor.typed.ActorRef;
+import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.prototypeModel.model.AkkaSerializable;
 import disIND.streamBasedShardedDispatcher.structures.BitmapStore;
@@ -52,6 +53,7 @@ public final class SharedModel {
             UnaryPair pair,
             int violationCount,
             List<Integer> witnesses,
+            RoaringBitmap violationBitmap,
             long epoch
     ) implements AkkaSerializable {}
 
@@ -187,7 +189,7 @@ public final class SharedModel {
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
             AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.EpochComplete, AACommand.GetSnapshot,
-        AACommand.SendColumnData, AACommand.CompareBitmap{
+        AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership{
 
         static String entityId(int colId) { return "col-" + colId; }
 
@@ -199,9 +201,7 @@ public final class SharedModel {
 
         record GetBitmap(long epoch, long requestId, ActorRef<BitmapAtEpoch> replyTo) implements AACommand {}
 
-        record DeltaScan(
-                RoaringBitmap rhsBitmap, long sinceEpoch, long untilEpoch,
-                UnaryPair pair, ActorRef<ScanResult> replyTo
+        record DeltaScan(RoaringBitmap rhsBitmap, long sinceEpoch, long untilEpoch, UnaryPair pair, ActorRef<ScanResult> replyTo
         ) implements AACommand {}
 
         record GetColumnSlice(long epoch, long requestId,
@@ -215,10 +215,10 @@ public final class SharedModel {
 
         record GetSnapshot(long epoch, ActorRef<RACommand> replyTo) implements AACommand {}
 
-        record SendColumnData(UnaryCandidate candidate, EntityRef<AACommand> aaRef, ActorRef<CMCommand> cmRef) implements AACommand {}
+        record SendColumnData(UnaryCandidate candidate, EntityRef<AACommand> rhsRef, EntityRef<CMCommand> cmRef) implements AACommand {}
 
-        record CompareBitmap(UnaryCandidate candidate,RoaringBitmap lhsBitmap,ActorRef<CMCommand> cmRef) implements AACommand {}
-
+        record CompareBitmap(UnaryCandidate candidate,RoaringBitmap lhsBitmap,EntityRef<CMCommand> cmRef) implements AACommand {}
+        record CheckMembership(UnaryPair pair, long epoch, RoaringBitmap values, EntityRef<CMCommand> replyTo) implements AACommand {}
     }
 
 
@@ -255,18 +255,29 @@ public final class SharedModel {
             permits CMCommand.UnaryCandidateProposed, CMCommand.UnaryViolationReport,
             CMCommand.NaryViolationReport, CMCommand.EpochTick,
             CMCommand.DistinctValueDelta, CMCommand.IngestionDone,
-            CMCommand.NaryDispatched, CMCommand.NaryQuiesced {
+            CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
+    CMCommand.LhsColumnDelta, CMCommand.RhsColumnDelta,
+    CMCommand.MembershipResult, CMCommand.ReplayFinished{
 
+        static String entityId(int lhsCol) {return "cm-lhs-" + lhsCol;}
         record UnaryCandidateProposed(UnaryCandidate candidate) implements CMCommand {}
         record UnaryViolationReport(ScanResult result) implements CMCommand {}
         record NaryViolationReport(NaryCheckResult result)                 implements CMCommand {}
         record EpochTick(long epoch)                                       implements CMCommand {}
         record DistinctValueDelta(int colId, RoaringBitmap newValues, long epoch) implements CMCommand {}
 
-        record IngestionDone()                                             implements CMCommand {}
+        record IngestionDone() implements CMCommand {}
 
-        record NaryDispatched()                                            implements CMCommand {}
+        record NaryDispatched() implements CMCommand {}
 
+        record DistinctDeltaBatch(int colId, long epoch, RoaringBitmap insertedDistinctValues) implements CMCommand {}
+
+        record LhsColumnDelta(int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
+
+        record RhsColumnDelta(int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
+        record MembershipResult(UnaryPair pair, long epoch, RoaringBitmap missingValues) implements CMCommand {}
+
+        record ReplayFinished(UnaryPair pair, long epoch) implements CMCommand {}
         /**
          * Sent by LM → CM when its queue is fully empty and nraInFlight=0.
          * This is the definitive n-ary quiescence signal.  CM uses it instead

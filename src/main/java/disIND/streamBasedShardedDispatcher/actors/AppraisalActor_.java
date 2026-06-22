@@ -7,6 +7,7 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 
@@ -19,7 +20,6 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     private final ActorRef<StatsCommand> statsRef;
     private final  DatasetMetadata metadata;
     private final ClusterSharding sharding;
-    private final ActorRef<CMCommand> cmRef;
     private final ActorRef<SketchSummary> sketchAdapter;
 
     private final HashMap<Integer,SketchSummary> sketchSummaries= new HashMap<>();
@@ -28,17 +28,16 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
 
     private HashSet<UnaryPair> activeCandidates;
 
-    public static Behavior<AppraiserCommand> create( ClusterSharding sharding, ActorRef<CMCommand> cmRef,
+    public static Behavior<AppraiserCommand> create( ClusterSharding sharding,
                                                     DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
-        return Behaviors.setup(ctx -> new AppraisalActor_(ctx, sharding, cmRef,
+        return Behaviors.setup(ctx -> new AppraisalActor_(ctx, sharding,
                 metadata,statsRef));
     }
 
-    private AppraisalActor_(ActorContext<AppraiserCommand> ctx, ClusterSharding sharding, ActorRef<CMCommand> cmRef
+    private AppraisalActor_(ActorContext<AppraiserCommand> ctx, ClusterSharding sharding
             , DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         super(ctx);
         this.sharding = sharding;
-        this.cmRef    = cmRef;
         this.sketchAdapter = ctx.messageAdapter(SketchSummary.class, AppraiserCommand.SketchArrived::new);
         this.metadata = metadata;
         this.statsRef = statsRef;
@@ -119,7 +118,9 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                 emitted++;
                 getContext().getLog().info("[APP] Proposing pair: {} , {} , containment: {}",lhs,rhs,containment);
                 activeCandidates.add(new UnaryPair(lhs, rhs));
-                cmRef.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
+                //cmRef.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
+                EntityRef<CMCommand> cmShard = sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhs));
+                cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
             }
             getContext().getLog().info("[APP] Pruned {} distinct values for type and distinct count heuristic",prunedType);
             getContext().getLog().info("[APP] Pruned {} distinct values for containment heuristic",prunedHeuristic);

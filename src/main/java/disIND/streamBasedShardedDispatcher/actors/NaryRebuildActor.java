@@ -14,23 +14,21 @@ public class NaryRebuildActor extends AbstractBehavior<NRACommand>  {
     private final ActorRef<StatsCommand> statsRef;
     private final DatasetMetadata metadata;
     private final ClusterSharding sharding;
-    private final ActorRef<CMCommand> cmRef;
     private final ActorRef<LMCommand> lmRef;
     private final int witnessK;
 
-    public static Behavior<NRACommand> create(ClusterSharding sharding, ActorRef<CMCommand> cmRef,
+    public static Behavior<NRACommand> create(ClusterSharding sharding,
                                               ActorRef<LMCommand> lmRef, int witnessK, DatasetMetadata metadata
     ,ActorRef<StatsCommand> statsRef) {
-        return Behaviors.setup(ctx -> new NaryRebuildActor(ctx, sharding, cmRef, lmRef, witnessK
+        return Behaviors.setup(ctx -> new NaryRebuildActor(ctx, sharding, lmRef, witnessK
         ,metadata,statsRef));
     }
 
-    private NaryRebuildActor(ActorContext<NRACommand> ctx, ClusterSharding sharding, ActorRef<CMCommand> cmRef,
+    private NaryRebuildActor(ActorContext<NRACommand> ctx, ClusterSharding sharding,
                              ActorRef<LMCommand> lmRef, int witnessK, DatasetMetadata metadata,
                              ActorRef<StatsCommand> statsRef) {
         super(ctx);
         this.sharding  = sharding;
-        this.cmRef     = cmRef;
         this.lmRef     = lmRef;
         this.witnessK  = witnessK;
         this.metadata  = metadata;
