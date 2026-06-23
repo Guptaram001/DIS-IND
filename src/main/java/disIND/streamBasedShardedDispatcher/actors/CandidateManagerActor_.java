@@ -109,6 +109,8 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onLhsColumnDelta(CMCommand.LhsColumnDelta msg) {
+        getContext().getLog().info("[CM] LhsColumnDelta received: colId: {}, epoch: {}, newValues: {}",
+                msg.colId(), msg.epoch(), msg.newValues());
         for (Map.Entry<UnaryPair, UnaryState> e : unaryPairs.entrySet()) {
             UnaryPair pair = e.getKey();
             UnaryState s = e.getValue();
@@ -124,6 +126,8 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onRhsColumnDelta(CMCommand.RhsColumnDelta msg) {
+        getContext().getLog().info("[CM] RhsColumnDelta received: colId: {}, epoch: {}, newValues: {}",
+                msg.colId(), msg.epoch(), msg.newValues());
         for (Map.Entry<UnaryPair, UnaryState> e : unaryPairs.entrySet()) {
             UnaryPair pair = e.getKey();
             UnaryState s = e.getValue();
@@ -165,7 +169,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onUnaryCandidateProposed(CMCommand.UnaryCandidateProposed unaryCandidateProposed) {
-        getContext().getLog().info("Unary candidate proposed: {}", unaryCandidateProposed.candidate().pair().toString());
+        getContext().getLog().info(" [CM] Unary candidate proposed: {}", unaryCandidateProposed.candidate().pair().toString());
 
         UnaryPair pair = unaryCandidateProposed.candidate().pair();
         UnaryState s = unaryPairs.get(pair);

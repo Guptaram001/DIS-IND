@@ -62,6 +62,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private Behavior<AACommand> onCheckMembership(AACommand.CheckMembership msg) {
+        getContext().getLog().info("[ATTRA] Checking membership for col {} epoch {}", colId, msg.epoch());
         RoaringBitmap missing = msg.values().clone();
         missing.andNot(bitmapStore.getBitmap());
         msg.replyTo().tell(new CMCommand.MembershipResult(msg.pair(),msg.epoch(), missing));
@@ -95,7 +96,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private Behavior<AACommand> onEpochComplete(AACommand.EpochComplete epochComplete) {
-        getContext().getLog().info("[ATTRA] Snapshotting Epoch {} complete for col {}", epochComplete.epoch(), colId);
+        getContext().getLog().info("[ATTRA] Snapshotting Epoch {} complete for col {}", epochComplete.epoch(), epochComplete.colId());
         if (epochComplete.epoch() >= epochsProcessed) {
             checkPoint=new AttributeCheckPoint(epochComplete.epoch(),
                     bitmapStore.deepCopy(),
@@ -136,17 +137,19 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             deltaBuilder.addInsert(vid,rowI);
         }
 
+        deltaLogDequeue.addLast(deltaBuilder.build());
+        if(!newDistinctThisBatch.isEmpty()) {
+            publishLiveDistinctDelta(insertBatch.epoch(), newDistinctThisBatch);
+            getContext().getLog().info("[ATTRA] Published distinct delta for col {} epoch {}", colId, insertBatch.epoch());
+        }
+        epochsProcessed=insertBatch.epoch();
         if (insertBatch.ackTo() != null)
             insertBatch.ackTo().tell(new BDCommand.BatchFlushed(insertBatch.epoch(), colId));
-
-        deltaLogDequeue.addLast(deltaBuilder.build());
-        publishLiveDistinctDelta(insertBatch.epoch(), newDistinctThisBatch);
-        epochsProcessed=insertBatch.epoch();
         return this;
     }
 
     private void publishLiveDistinctDelta(long epoch, RoaringBitmap newValues) {
-        if (newValues == null || newValues.isEmpty())
+        if (newValues == null)
             return;
 
         for (EntityRef<CMCommand> cm : lhsSubscribers)
@@ -163,6 +166,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private void replayLhsDeltasToCm(UnaryPair pair, long afterEpoch, EntityRef<CMCommand> cmRef) {
+        getContext().getLog().info("[ATTRA] Replaying LHS deltas for col {} epoch {}", pair.lhsCol(), afterEpoch);
         for (AttributeDelta delta : deltaLogDequeue) {
             if (delta.epoch() <= afterEpoch)
                 continue;
@@ -173,6 +177,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private void replayRhsDeltasToCm(UnaryPair pair, long afterEpoch, EntityRef<CMCommand> cmRef) {
+        getContext().getLog().info("[ATTRA] Replaying RHS deltas for col {} epoch {}", pair.lhsCol(), afterEpoch);
         for (AttributeDelta delta : deltaLogDequeue) {
             if (delta.epoch() <= afterEpoch)
                 continue;

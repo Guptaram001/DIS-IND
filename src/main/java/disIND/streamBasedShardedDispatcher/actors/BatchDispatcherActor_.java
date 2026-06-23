@@ -138,7 +138,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             appraiserRef.tell(new AppraiserCommand.EpochComplete(epoch));
             // Notify all the ATTRA regarding epoch complete to snapshot
             for (int col = 0; col < metadata.totalCols(); col++) {
-                sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(col)).tell(new AACommand.EpochComplete(epoch));
+                sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(col)).tell(new AACommand.EpochComplete(epoch,col));
             }
         }
 

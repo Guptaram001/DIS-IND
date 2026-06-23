@@ -211,7 +211,7 @@ public final class SharedModel {
 
         record UpdateWatermarks(long binaryWm, long naryWm) implements AACommand {}
 
-        record EpochComplete(long epoch) implements AACommand {}
+        record EpochComplete(long epoch,int colId) implements AACommand {}
 
         record GetSnapshot(long epoch, ActorRef<RACommand> replyTo) implements AACommand {}
 

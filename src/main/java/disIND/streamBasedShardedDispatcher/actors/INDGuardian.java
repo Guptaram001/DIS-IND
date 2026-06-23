@@ -77,17 +77,17 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                 statsRef), "batch-dispatcher");
         System.out.println("BD REF = " + bdRef);
 
-        if (!cfg.colTypes().isEmpty()) {
-            for (Map.Entry<Integer, ColType> e : cfg.colTypes().entrySet()) {
-                int colId = e.getKey();
-                ColType ct = e.getValue();
-                sharding.entityRefFor(AttributeActor.TYPE_KEY,
-                                AACommand.entityId(colId))
-                        .tell(new AACommand.SetPresetType(ct));
-            }
-            ctx.getLog().info("[Guardian] Preset types injected for {} columns",
-                    cfg.colTypes().size());
-        }
+//        if (!cfg.colTypes().isEmpty()) {
+//            for (Map.Entry<Integer, ColType> e : cfg.colTypes().entrySet()) {
+//                int colId = e.getKey();
+//                ColType ct = e.getValue();
+//                sharding.entityRefFor(AttributeActor.TYPE_KEY,
+//                                AACommand.entityId(colId))
+//                        .tell(new AACommand.SetPresetType(ct));
+//            }
+//            ctx.getLog().info("[Guardian] Preset types injected for {} columns",
+//                    cfg.colTypes().size());
+//        }
 
         ctx.getLog().info("[Guardian] All actors spawned. Ready.");
     }
