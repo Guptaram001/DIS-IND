@@ -73,7 +73,8 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
     private Behavior<AACommand> onSendColumnData(AACommand.SendColumnData msg) {
         if(Debug.MESSAGE)
-            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,Debug.pairTag(msg.candidate().pair()), String.valueOf(Debug.State.NONE),
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,Debug.pairTag(msg.candidate().pair()),
+                    String.valueOf(Debug.State.NONE),
                     "Invoked for sending column col:{} to col: {}", msg.candidate().pair().lhsCol(), msg.candidate().pair().rhsCol());
         RoaringBitmap lhsBitmap = checkPoint.bitmapStore().getBitmap();
         long checkpointEpoch = checkPoint.epoch();

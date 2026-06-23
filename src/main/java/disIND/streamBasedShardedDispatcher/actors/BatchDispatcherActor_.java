@@ -10,11 +10,14 @@ import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
+import disIND.streamBasedShardedDispatcher.utility.Debug;
 
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
 public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private final ActorRef<StatsCommand> statsRef;
@@ -60,7 +63,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
     @Override
     public Receive<BDCommand> createReceive() {
-        getContext().getLog().info("BD receive created");
         return newReceiveBuilder()
                 .onMessage(BDCommand.SendTableBatch.class, this::onSendTableBatch)
                 .onMessage(BDCommand.BatchFlushed.class, this::onBatchFlushed)
@@ -72,7 +74,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
 
     private Behavior<BDCommand> onSendTableBatch(BDCommand.SendTableBatch msg) {
-        getContext().getLog().info("[BD] Initial Sending table batch: {} rows, {} cols", msg.rows().size(),metadata.totalCols());
         epoch++;
 
         int tableId = msg.tableId();
@@ -127,13 +128,18 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             int base = localCol * bufCapacity;
             long[] rArr = Arrays.copyOfRange(rowBuffer, base, base + count);
             int[] vArr = Arrays.copyOfRange(vidBuffer, base, base + count);
-            getContext().getLog().info("[BD] Finally Sending table batch: {} rows, {} cols", msg.rows().size(), metadata.totalCols());
+            if(Debug.MESSAGE)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),globalCol,"-",
+                        String.valueOf(Debug.State.NONE), "Sending table batch: {} rows, {} cols",
+                        msg.rows().size(), metadata.totalCols());
             sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(globalCol))
                     .tell(new AACommand.InsertBatch(epoch, rArr, vArr, selfRef));
         }
 
         if (epoch % 2 == 0) {
-            getContext().getLog().info("[BD] Sending epoch complete message to ATTRA and APPA");
+            if(Debug.MESSAGE)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),-1,"-",
+                        String.valueOf(Debug.State.NONE), "Sending epoch complete message to all ATTRA and APPA");
             //Notify the APPA to start asking sketches
             appraiserRef.tell(new AppraiserCommand.EpochComplete(epoch));
             // Notify all the ATTRA regarding epoch complete to snapshot
@@ -165,7 +171,10 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         long e = msg.epoch();
         Integer remaining = pendingPerEpoch.get(e);
         if (remaining == null) {
-            getContext().getLog().info("[BD] BatchFlushed unknown/completed epoch={} col={}", e, msg.colId());
+            if(Debug.MESSAGE)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),msg.colId(),"-",
+                        String.valueOf(Debug.State.NONE), " BatchFlushed unknown/completed epoch={} col={}",
+                        e, msg.colId());
             return this;
         }
         int nr = remaining - 1;

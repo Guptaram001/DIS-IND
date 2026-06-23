@@ -10,10 +10,12 @@ import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
+import disIND.streamBasedShardedDispatcher.utility.Debug;
 
 import java.util.*;
 
 import static disIND.streamBasedShardedDispatcher.utility.ColTypeCompatibility.testCompatibility;
+import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
 
 public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
@@ -23,7 +25,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     private final ActorRef<SketchSummary> sketchAdapter;
 
     private final HashMap<Integer,SketchSummary> sketchSummaries= new HashMap<>();
-    private long currentEpoch       = 0L;
+    private long currentEpoch = 0L;
     private long lastEvaluatedEpoch = -1L;
 
     private HashSet<UnaryPair> activeCandidates;
@@ -54,9 +56,11 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
 
     private Behavior<AppraiserCommand> onSketchArrived(AppraiserCommand.SketchArrived sketchArrived) {
 
-        getContext().getLog().info("[APP] Sketch arrived for epoch  {}, kmv: {}, colid: {} , cardinaliy: {}"
-                ,sketchArrived.summary().epoch(), sketchArrived.summary().kmv(),sketchArrived.summary().colId(),
-                sketchArrived.summary().distinctValues());
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(),sketchArrived.summary().colId(),
+                    "-", String.valueOf(Debug.State.NONE),
+                    "Sketch arrived for epoch  {}, kmv: {}, colid: {} , cardinaliy: {}",sketchArrived.summary().epoch(),
+                    sketchArrived.summary().kmv(),sketchArrived.summary().colId(), sketchArrived.summary().distinctValues());
         sketchSummaries.put(sketchArrived.summary().colId(),sketchArrived.summary());
         if(sketchSummaries.size()==metadata.totalCols())
             evaluatePairs();
@@ -116,15 +120,20 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                 }
 
                 emitted++;
-                getContext().getLog().info("[APP] Proposing pair: {} , {} , containment: {}",lhs,rhs,containment);
+                if(Debug.MESSAGE)
+                    formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(),-1,
+                            Debug.pair(lhs,rhs), String.valueOf(Debug.State.NONE),
+                            " Proposing pair: {} , {} , containment: {}",lhs,rhs,containment);
                 activeCandidates.add(new UnaryPair(lhs, rhs));
                 //cmRef.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
                 EntityRef<CMCommand> cmShard = sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhs));
                 cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
             }
-            getContext().getLog().info("[APP] Pruned {} distinct values for type and distinct count heuristic",prunedType);
-            getContext().getLog().info("[APP] Pruned {} distinct values for containment heuristic",prunedHeuristic);
-            getContext().getLog().info("[APP] Evaluated {} pairs",emitted);
+            if(Debug.INTERNAL)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.app(),-1,
+                        "-", String.valueOf(Debug.State.NONE),
+                        "Pruned {} distinct values for type and distinct count heuristic,{} distinct values for containment heuristic" +
+                                " Evaluated {} pairs",prunedType,prunedHeuristic,emitted);
 
             }
         }

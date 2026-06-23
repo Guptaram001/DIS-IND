@@ -12,11 +12,14 @@ import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.DiscoveryStatsActor;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
+import disIND.streamBasedShardedDispatcher.utility.Debug;
 
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+
+import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
 public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
@@ -49,7 +52,9 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                     return AttributeActor.create(colId, vidMap, cmRefHolder,statsRef);
                 })
         );
-        ctx.getLog().info("[Guardian] Sharding init: {} columns", cfg.numCols());
+        if(Debug.INTERNAL)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(),-1,"-",
+                    String.valueOf(Debug.State.NONE), " Sharding init: {} columns",cfg.numCols());
 
         this.rcRef = ctx.spawn(ResultCollectorActor.create(cfg.colNames(),metadata,statsRef), "result-collector");
 
@@ -89,7 +94,10 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
 //                    cfg.colTypes().size());
 //        }
 
-        ctx.getLog().info("[Guardian] All actors spawned. Ready.");
+        if(Debug.INTERNAL)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(),-1,"-",
+                    String.valueOf(Debug.State.NONE), "All actors spawned. Ready.");
+
     }
 
     @Override
