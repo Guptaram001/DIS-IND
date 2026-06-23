@@ -257,7 +257,7 @@ public final class SharedModel {
             CMCommand.DistinctValueDelta, CMCommand.IngestionDone,
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
     CMCommand.LhsColumnDelta, CMCommand.RhsColumnDelta,
-    CMCommand.MembershipResult, CMCommand.ReplayFinished{
+    CMCommand.MembershipResult{
 
         static String entityId(int lhsCol) {return "cm-lhs-" + lhsCol;}
         record UnaryCandidateProposed(UnaryCandidate candidate) implements CMCommand {}
@@ -277,7 +277,6 @@ public final class SharedModel {
         record RhsColumnDelta(int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
         record MembershipResult(UnaryPair pair, long epoch, RoaringBitmap missingValues) implements CMCommand {}
 
-        record ReplayFinished(UnaryPair pair, long epoch) implements CMCommand {}
         /**
          * Sent by LM → CM when its queue is fully empty and nraInFlight=0.
          * This is the definitive n-ary quiescence signal.  CM uses it instead

@@ -11,11 +11,14 @@ import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
+import disIND.streamBasedShardedDispatcher.utility.Debug;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
 public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     public static final EntityTypeKey<CMCommand> TYPE_KEY = EntityTypeKey.create(CMCommand.class, "CandidateManagerActor");
@@ -40,6 +43,9 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         int violatingCount = 0;
         RoaringBitmap violatingValues = new RoaringBitmap();
         boolean reportedConfirmed = false;
+        RoaringBitmap bufferedLhsNewValues = new RoaringBitmap();
+        RoaringBitmap bufferedRhsNewValues = new RoaringBitmap();
+        long bufferedMaxEpoch = -1L;
     }
 
     private static class NaryState {
@@ -84,11 +90,14 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 .onMessage(CMCommand.RhsColumnDelta.class, this::onRhsColumnDelta)
                 .onMessage(CMCommand.LhsColumnDelta.class, this::onLhsColumnDelta)
                 .onMessage(CMCommand.MembershipResult.class, this::onMembershipResult)
-                .onMessage(CMCommand.ReplayFinished.class, this::onReplayFinished)
                 .build();
     }
 
     private Behavior<CMCommand> onMembershipResult(CMCommand.MembershipResult msg) {
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,Debug.pairTag(msg.pair()),
+                    String.valueOf(Debug.State.NONE), "Membership Result received: pair: {}, epoch: {}, missingValues: {}",
+                    msg.pair(), msg.epoch(),msg.missingValues());
         UnaryState s = unaryPairs.get(msg.pair());
         if (s == null)
             return this;
@@ -109,13 +118,20 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onLhsColumnDelta(CMCommand.LhsColumnDelta msg) {
-        getContext().getLog().info("[CM] LhsColumnDelta received: colId: {}, epoch: {}, newValues: {}",
-                msg.colId(), msg.epoch(), msg.newValues());
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,"-",
+                    String.valueOf(Debug.State.NONE), "LhsColumnDelta received: colId: {}, epoch: {}, newValues: {}",
+                    msg.colId(), msg.epoch(), msg.newValues());
         for (Map.Entry<UnaryPair, UnaryState> e : unaryPairs.entrySet()) {
             UnaryPair pair = e.getKey();
             UnaryState s = e.getValue();
             if (pair.lhsCol() != msg.colId())
                 continue;
+            if (s.status == CandidateStatus.REBUILDING) {
+                s.bufferedLhsNewValues.or(msg.newValues());
+                s.bufferedMaxEpoch = Math.max(s.bufferedMaxEpoch, msg.epoch());
+                continue;
+            }
             if (!isTracked(s))
                 continue;
             EntityRef<CMCommand> cmSelf = selfEntityRef();
@@ -126,13 +142,20 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onRhsColumnDelta(CMCommand.RhsColumnDelta msg) {
-        getContext().getLog().info("[CM] RhsColumnDelta received: colId: {}, epoch: {}, newValues: {}",
-                msg.colId(), msg.epoch(), msg.newValues());
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,"-",
+                    String.valueOf(Debug.State.NONE), "RhsColumnDelta received: colId: {}, epoch: {}, newValues: {}",
+                    msg.colId(), msg.epoch(), msg.newValues());
         for (Map.Entry<UnaryPair, UnaryState> e : unaryPairs.entrySet()) {
             UnaryPair pair = e.getKey();
             UnaryState s = e.getValue();
             if (pair.rhsCol() != msg.colId())
                 continue;
+            if (s.status == CandidateStatus.REBUILDING) {
+                s.bufferedRhsNewValues.or(msg.newValues());
+                s.bufferedMaxEpoch = Math.max(s.bufferedMaxEpoch, msg.epoch());
+                continue;
+            }
             if (!isTracked(s))
                 continue;
             s.violatingValues.andNot(msg.newValues());
@@ -142,36 +165,46 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         return this;
     }
 
-    private Behavior<CMCommand> onReplayFinished(CMCommand.ReplayFinished msg) {
-        UnaryState s = unaryPairs.get(msg.pair());
-        if (s == null)
-            return this;
-        refreshUnaryState(s, msg.epoch());
-        getContext().getLog().info("[CM] Replay finished for {} at epoch {}, status={}, violations={}", msg.pair(), msg.epoch(),
-                s.status, s.violatingCount);
-        return this;
-    }
 
-    private Behavior<CMCommand> onUnaryViolationReport(CMCommand.UnaryViolationReport unaryViolationReport) {
-        getContext().getLog().info("[CM] Unary Report Received: pair: {} , epoch: {} , witnesses: {} , violatingCount: {}",
-                unaryViolationReport.result().pair(),unaryViolationReport.result().epoch(),unaryViolationReport.result().witnesses(),
-                unaryViolationReport.result().violationCount());
-        UnaryPair pair = unaryViolationReport.result().pair();
+    private Behavior<CMCommand> onUnaryViolationReport(CMCommand.UnaryViolationReport msg) {
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,"-",
+                String.valueOf(Debug.State.REPLAYING), "Unary Report Received: pair: {} , epoch: {} , witnesses: {} , violatingCount: {}",
+                    msg.result().pair(), msg.result().epoch(), msg.result().witnesses(), msg.result().violationCount());
+        UnaryPair pair = msg.result().pair();
         UnaryState s = unaryPairs.get(pair);
-        if (s == null)
+        if (s == null || s.status != CandidateStatus.REBUILDING) {
             return this;
-        if (s.status != CandidateStatus.REBUILDING)
-            return this;
+        }
         s.status=CandidateStatus.REPLAYING;
-        s.violatingValues = unaryViolationReport.result().violationBitmap().clone();
-        refreshUnaryState(s, unaryViolationReport.result().epoch());
+        s.violatingValues = msg.result().violationBitmap().clone();
+        drainEstablishmentBuffers(pair, s, msg.result().epoch());
         return this;
     }
 
-    private Behavior<CMCommand> onUnaryCandidateProposed(CMCommand.UnaryCandidateProposed unaryCandidateProposed) {
-        getContext().getLog().info(" [CM] Unary candidate proposed: {}", unaryCandidateProposed.candidate().pair().toString());
+    private void drainEstablishmentBuffers(UnaryPair pair, UnaryState s, long baselineEpoch) {
+        long mergedEpoch = Math.max(baselineEpoch, s.bufferedMaxEpoch);
 
-        UnaryPair pair = unaryCandidateProposed.candidate().pair();
+        if (!s.bufferedRhsNewValues.isEmpty()) {
+            s.violatingValues.andNot(s.bufferedRhsNewValues);
+        }
+        if (!s.bufferedLhsNewValues.isEmpty()) {
+            EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
+            EntityRef<CMCommand> cmSelf = selfEntityRef();
+            rhs.tell(new AACommand.CheckMembership(pair, mergedEpoch, s.bufferedLhsNewValues.clone(), cmSelf));
+        }
+        s.bufferedLhsNewValues.clear();
+        s.bufferedRhsNewValues.clear();
+        s.bufferedMaxEpoch = -1L;
+
+        refreshUnaryState(s, mergedEpoch);
+    }
+
+    private Behavior<CMCommand> onUnaryCandidateProposed(CMCommand.UnaryCandidateProposed msg) {
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,Debug.pairTag(msg.candidate().pair()),
+                    String.valueOf(Debug.State.REBUILDING), " Unary candidate proposed: {}",  msg.candidate().pair().toString());
+        UnaryPair pair = msg.candidate().pair();
         UnaryState s = unaryPairs.get(pair);
         if (s == null || s.status == CandidateStatus.UNTRACKED) {
             s = new UnaryState();
@@ -179,11 +212,11 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             unaryPairs.putIfAbsent(pair, s);
             //raRef.tell(new RACommand.EvaluateCandidate(unaryCandidateProposed.candidate()));
             EntityRef<AACommand> lhs = sharding.entityRefFor(AttributeActor.TYPE_KEY,
-                    AACommand.entityId(unaryCandidateProposed.candidate().pair().lhsCol()));
+                    AACommand.entityId(msg.candidate().pair().lhsCol()));
             EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY,
-                    AACommand.entityId(unaryCandidateProposed.candidate().pair().rhsCol()));
+                    AACommand.entityId(msg.candidate().pair().rhsCol()));
             EntityRef<CMCommand> cmSelf = selfEntityRef();
-            lhs.tell(new AACommand.SendColumnData(unaryCandidateProposed.candidate(),rhs,cmSelf));
+            lhs.tell(new AACommand.SendColumnData(msg.candidate(),rhs,cmSelf));
             raInProgress++;
         }
         return this;
@@ -198,7 +231,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         s.witnesses = witnessesFrom(s.violatingValues, MAX_TRACKED_VIOLATIONS);
         s.lastEvaluatedEpoch = Math.max(s.lastEvaluatedEpoch, epoch);
         if (s.status != CandidateStatus.REBUILDING && s.status != CandidateStatus.UNTRACKED) {
-            s.status = CandidateStatus.TRACKED_VIOLATING;
+            s.status = s.violatingCount == 0 ? CandidateStatus.TRACKED_CLEAN : CandidateStatus.TRACKED_VIOLATING;
         }
     }
 
