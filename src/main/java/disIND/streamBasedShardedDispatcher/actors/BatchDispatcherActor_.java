@@ -168,6 +168,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     }
 
     private Behavior<BDCommand> onBatchFlushed(BDCommand.BatchFlushed msg) {
+        //Currently not properly acking from the ATTRA. it is acking but not tested fully .
         long e = msg.epoch();
         Integer remaining = pendingPerEpoch.get(e);
         if (remaining == null) {
@@ -183,7 +184,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             return this;
         }
         pendingPerEpoch.remove(e);
-        appraiserRef.tell(new AppraiserCommand.EpochComplete(e));
+        //appraiserRef.tell(new AppraiserCommand.EpochComplete(e));
         maybeForwardIngestionDone(e);
         return this;
     }

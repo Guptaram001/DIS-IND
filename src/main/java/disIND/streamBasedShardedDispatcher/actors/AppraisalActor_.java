@@ -24,9 +24,8 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     private final ClusterSharding sharding;
     private final ActorRef<SketchSummary> sketchAdapter;
 
-    private final HashMap<Integer,SketchSummary> sketchSummaries= new HashMap<>();
-    private long currentEpoch = 0L;
-    private long lastEvaluatedEpoch = -1L;
+    private final Map<Long, Map<Integer, SketchSummary>> pendingSketches = new HashMap<>();
+    private final Set<Long> evaluatedEpochs = new HashSet<>();
 
     private HashSet<UnaryPair> activeCandidates;
 
@@ -54,34 +53,47 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                 .build();
     }
 
-    private Behavior<AppraiserCommand> onSketchArrived(AppraiserCommand.SketchArrived sketchArrived) {
+    private Behavior<AppraiserCommand> onSketchArrived(AppraiserCommand.SketchArrived msg) {
+        SketchSummary s = msg.summary();
+        long epoch = s.epoch();
+        if (evaluatedEpochs.contains(epoch))
+            return this;
+        if (!pendingSketches.containsKey(epoch)) {
+            //Unnecessary epoch sent
+            return this;
+        }
+
+        Map<Integer, SketchSummary> bucket = pendingSketches.get(epoch);
+        if (bucket == null) {
+            return this;
+        }
+        bucket.putIfAbsent(s.colId(), s);
 
         if(Debug.MESSAGE)
-            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(),sketchArrived.summary().colId(),
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(), msg.summary().colId(),
                     "-", String.valueOf(Debug.State.NONE),
-                    "Sketch arrived for epoch  {}, kmv: {}, colid: {} , cardinaliy: {}",sketchArrived.summary().epoch(),
-                    sketchArrived.summary().kmv(),sketchArrived.summary().colId(), sketchArrived.summary().distinctValues());
-        sketchSummaries.put(sketchArrived.summary().colId(),sketchArrived.summary());
-        if(sketchSummaries.size()==metadata.totalCols())
-            evaluatePairs();
+                    "Sketch arrived for epoch {}, kmv: {}, colid: {} , cardinaliy: {}", msg.summary().epoch(),
+                    msg.summary().kmv(), msg.summary().colId(), msg.summary().distinctValues());
+        if (bucket.size() == metadata.totalCols()) {
+            evaluatePairs(epoch, bucket);
+            pendingSketches.remove(epoch);
+            evaluatedEpochs.add(epoch);
+        }
         return this;
     }
 
-    private Behavior<AppraiserCommand> onEpochComplete(AppraiserCommand.EpochComplete epochComplete) {
+    private Behavior<AppraiserCommand> onEpochComplete(AppraiserCommand.EpochComplete msg) {
+        long epoch = msg.epoch();
+        pendingSketches.computeIfAbsent(epoch, e -> new HashMap<>());
         for (int c = 0; c < metadata.totalCols(); c++) {
             sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(c)).tell(
-                            new AACommand.EmitSketch(epochComplete.epoch(), getContext().getSelf()));
+                            new AACommand.EmitSketch(msg.epoch(), getContext().getSelf()));
         }
-        currentEpoch = epochComplete.epoch();
         return this;
     }
 
-    private void evaluatePairs() {
-        if (currentEpoch == lastEvaluatedEpoch) 
-            return;
-        lastEvaluatedEpoch = currentEpoch;
-
-        List<Integer> cols = new ArrayList<>(sketchSummaries.keySet());
+    private void evaluatePairs(long epoch, Map<Integer, SketchSummary> summaries) {
+        List<Integer> cols = new ArrayList<>(summaries.keySet());
         Collections.sort(cols);
 
         int emitted = 0, prunedType = 0, prunedHeuristic = 0;
@@ -90,8 +102,8 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
             for (int rhs : cols) {
                 if (lhs == rhs)
                     continue;
-                SketchSummary ls = sketchSummaries.get(lhs);
-                SketchSummary rs = sketchSummaries.get(rhs);
+                SketchSummary ls = summaries.get(lhs);
+                SketchSummary rs = summaries.get(rhs);
 
                 if (ls.distinctValues() == 0)
                     continue;
@@ -125,9 +137,8 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                             Debug.pair(lhs,rhs), String.valueOf(Debug.State.NONE),
                             " Proposing pair: {} , {} , containment: {}",lhs,rhs,containment);
                 activeCandidates.add(new UnaryPair(lhs, rhs));
-                //cmRef.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
                 EntityRef<CMCommand> cmShard = sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhs));
-                cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), currentEpoch)));
+                cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), epoch)));
             }
             if(Debug.INTERNAL)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.app(),-1,
