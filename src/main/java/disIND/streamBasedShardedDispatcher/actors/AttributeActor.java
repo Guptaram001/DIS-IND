@@ -22,8 +22,8 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final int colId;
     private final ValueIdMap valueIdMap;
     private final AtomicReference<ActorRef<CMCommand>> cmRef;
-    private final Set<EntityRef<CMCommand>> lhsSubscribers = new HashSet<>();
-    private final Set<EntityRef<CMCommand>> rhsSubscribers = new HashSet<>();
+    private final Map<UnaryPair, EntityRef<CMCommand>> lhsSubscriptions = new HashMap<>();
+    private final Map<UnaryPair, EntityRef<CMCommand>> rhsSubscriptions = new HashMap<>();
 
     private final BitmapStore bitmapStore=new BitmapStore();
     private final ValueToRowsStore valueToRowsStore = new ValueToRowsStore();
@@ -58,7 +58,17 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                 .onMessage(AACommand.SendColumnData.class,this::onSendColumnData)
                 .onMessage(AACommand.CompareBitmap.class,this::onCompareBitmap)
                 .onMessage(AACommand.CheckMembership.class,this::onCheckMembership)
+                .onMessage(AACommand.DeactiveUnaryPair.class,this::onDeactivePair)
                 .build();
+    }
+
+    private Behavior<AACommand> onDeactivePair(AACommand.DeactiveUnaryPair msg) {
+        if (msg.lhsSide()) {
+            lhsSubscriptions.remove(msg.pair());
+        } else {
+            rhsSubscriptions.remove(msg.pair());
+        }
+        return this;
     }
 
     private Behavior<AACommand> onCheckMembership(AACommand.CheckMembership msg) {
@@ -81,9 +91,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         EntityRef<CMCommand> cmRef = msg.cmRef();
         //lhsSubscribers.add(sendColumnData.cmRef());
         msg.rhsRef().tell(new AACommand.CompareBitmap(msg.candidate(),lhsBitmap,cmRef));
-        lhsSubscribers.add(msg.cmRef());
+        lhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
         RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointEpoch);
-        cmRef.tell(new CMCommand.LhsColumnDelta(colId, epochsProcessed, mergedSinceCheckpoint));
+        cmRef.tell(new CMCommand.LhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().evalEpoch(),
+                epochsProcessed, mergedSinceCheckpoint));
         return this;
     }
 
@@ -97,9 +108,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                                 msg.candidate().pair(),
                                 msg.candidate().evalEpoch());
         msg.cmRef().tell(new CMCommand.UnaryViolationReport(result));
-        rhsSubscribers.add(msg.cmRef());
+        rhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
         RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointEpoch);
-        msg.cmRef().tell(new CMCommand.RhsColumnDelta(colId, epochsProcessed, mergedSinceCheckpoint));
+        msg.cmRef().tell(new CMCommand.RhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().evalEpoch(),
+                epochsProcessed, mergedSinceCheckpoint));
         return this;
     }
 
@@ -177,14 +189,14 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private void publishLiveDistinctDelta(long epoch, RoaringBitmap newValues) {
-        if (newValues == null)
+        if (newValues == null || newValues.isEmpty())
             return;
 
-        for (EntityRef<CMCommand> cm : lhsSubscribers)
-            cm.tell(new CMCommand.LhsColumnDelta(colId, epoch, newValues.clone()));
+        for (EntityRef<CMCommand> cm : lhsSubscriptions.values())
+            cm.tell(new CMCommand.LhsLiveDelta(colId, epoch, newValues.clone()));
 
-        for (EntityRef<CMCommand> cm : rhsSubscribers)
-            cm.tell(new CMCommand.RhsColumnDelta(colId, epoch, newValues.clone()));
+        for (EntityRef<CMCommand> cm : rhsSubscriptions.values())
+            cm.tell(new CMCommand.RhsLiveDelta(colId, epoch, newValues.clone()));
     }
 
     private void cleanupOldDeltas(long checkpointEpoch){
@@ -203,7 +215,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             getContext().getLog().info("[ATTRA] Replay LHS delta col={} deltaEpoch={} afterEpoch={} values={}",
                     colId, delta.epoch(), afterEpoch, newValues);
             if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.LhsColumnDelta(pair.lhsCol(), delta.epoch(), newValues));
+                cmRef.tell(new CMCommand.LhsLiveDelta(pair.lhsCol(), delta.epoch(), newValues));
         }
     }
 
@@ -218,7 +230,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             getContext().getLog().info("[ATTRA] Replay RHS delta col={} deltaEpoch={} afterEpoch={} values={}",
                     colId, delta.epoch(), afterEpoch, newValues);
             if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.RhsColumnDelta(pair.rhsCol(), delta.epoch(), newValues));
+                cmRef.tell(new CMCommand.RhsLiveDelta(pair.rhsCol(), delta.epoch(), newValues));
         }
     }
 

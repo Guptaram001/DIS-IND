@@ -35,7 +35,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private int bufCapacity = 0;
     private int localBufCols = 0;
 
-    private final Map<Long, Integer> pendingPerEpoch = new HashMap<>();
+    private final Map<Long, PendingEpoch> pendingPerEpoch = new HashMap<>();
     private long    lastSentEpoch     = -1L;
     private boolean ingestionDoneReceived = false;
 
@@ -136,7 +136,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                     .tell(new AACommand.InsertBatch(epoch, rArr, vArr, selfRef));
         }
 
-        if (epoch % 2 == 0) {
+        if (epoch % metadata.totalCols() == 0) {
             if(Debug.MESSAGE)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),-1,"-",
                         String.valueOf(Debug.State.NONE), "Sending epoch complete message to all ATTRA and APPA");
@@ -149,9 +149,11 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         }
 
         if (expected == 0) {
+            if (msg.replyTo() != null)
+                msg.replyTo().tell(new BDReply.BatchAccepted(epoch));
             maybeForwardIngestionDone(epoch);
         } else
-            pendingPerEpoch.put(epoch, expected);
+            pendingPerEpoch.put(epoch, new PendingEpoch(expected, msg.replyTo()));
 
         statsRef.tell(new StatsCommand.RowBatchProcessed(rows.size()));
         return this;
@@ -160,40 +162,40 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private Behavior<BDCommand> onIngestionDone(BDCommand.IngestionDone msg) {
         ingestionDoneReceived = true;
         lastSentEpoch = epoch;
-        if (!pendingPerEpoch.containsKey(lastSentEpoch)) {
-            appraiserRef.tell(new AppraiserCommand.IngestionDone());
-            ingestionDoneReceived = false;
+        ActorRef<BDReply> finishReplyTo = msg.replyTo();
+        if (pendingPerEpoch.isEmpty()) {
+            appraiserRef.tell(new AppraiserCommand.IngestionDone(epoch, getContext().getSelf()));
         }
         return this;
     }
 
     private Behavior<BDCommand> onBatchFlushed(BDCommand.BatchFlushed msg) {
         //Currently not properly acking from the ATTRA. it is acking but not tested fully .
-        long e = msg.epoch();
-        Integer remaining = pendingPerEpoch.get(e);
-        if (remaining == null) {
-            if(Debug.MESSAGE)
-                formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),msg.colId(),"-",
-                        String.valueOf(Debug.State.NONE), " BatchFlushed unknown/completed epoch={} col={}",
-                        e, msg.colId());
+        PendingEpoch p = pendingPerEpoch.get(msg.epoch());
+        if (p == null) return this;
+        int remaining = p.remaining() - 1;
+        if (remaining > 0) {
+            pendingPerEpoch.put(msg.epoch(), new PendingEpoch(remaining, p.replyTo()));
             return this;
         }
-        int nr = remaining - 1;
-        if (nr > 0) {
-            pendingPerEpoch.put(e, nr);
-            return this;
-        }
-        pendingPerEpoch.remove(e);
-        //appraiserRef.tell(new AppraiserCommand.EpochComplete(e));
-        maybeForwardIngestionDone(e);
+        pendingPerEpoch.remove(msg.epoch());
+        if (p.replyTo() != null)
+            p.replyTo().tell(new BDReply.BatchAccepted(msg.epoch()));
+
+        maybeForwardIngestionDone(msg.epoch());
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),msg.colId(),"-",
+                    String.valueOf(Debug.State.NONE), " BatchFlushed unknown/completed epoch={} col={}",
+                    msg.epoch(), msg.colId());
         return this;
     }
 
     private void maybeForwardIngestionDone(long completedEpoch) {
         if (ingestionDoneReceived && completedEpoch == lastSentEpoch) {
             ingestionDoneReceived = false;
-            appraiserRef.tell(new AppraiserCommand.IngestionDone());
+            appraiserRef.tell(new AppraiserCommand.IngestionDone(completedEpoch, getContext().getSelf()));
         }
     }
+
 
 }

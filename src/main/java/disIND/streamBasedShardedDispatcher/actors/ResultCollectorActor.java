@@ -10,6 +10,8 @@ import akka.actor.typed.javadsl.Receive;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
@@ -33,4 +35,5 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     public Receive createReceive() {
         return newReceiveBuilder().build();
     }
+
 }

@@ -11,6 +11,7 @@ import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.utility.Debug;
+import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 
 import java.util.*;
 
@@ -38,6 +39,9 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     private AppraisalActor_(ActorContext<AppraiserCommand> ctx, ClusterSharding sharding
             , DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         super(ctx);
+        if(Debug.STATE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),-1,"-",
+                    String.valueOf(Debug.State.NONE), "Constructor called for AppraisalActor");
         this.sharding = sharding;
         this.sketchAdapter = ctx.messageAdapter(SketchSummary.class, AppraiserCommand.SketchArrived::new);
         this.metadata = metadata;
@@ -50,7 +54,16 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
         return newReceiveBuilder()
                 .onMessage(AppraiserCommand.EpochComplete.class,this::onEpochComplete)
                 .onMessage(AppraiserCommand.SketchArrived.class,this::onSketchArrived)
+                .onMessage(AppraiserCommand.PairStateChanged.class,this::onPairStateChanged)
                 .build();
+    }
+
+    private Behavior<AppraiserCommand> onPairStateChanged(AppraiserCommand.PairStateChanged msg) {
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(),-1,Debug.pairTag(msg.pair()),
+                    String.valueOf(Debug.State.INACTIVE), "Pair marked inactive");
+        activeCandidates.remove(msg.pair());
+        return this;
     }
 
     private Behavior<AppraiserCommand> onSketchArrived(AppraiserCommand.SketchArrived msg) {
@@ -126,7 +139,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
 
                 //KMV Pruning
                 double containment = ls.kmv().containmentIn(rs.kmv());
-                if (containment < 0.70) {
+                if (containment < UserConfig.KMV_PRUN_THRESHOLD) {
                     prunedHeuristic++;
                     continue;
                 }

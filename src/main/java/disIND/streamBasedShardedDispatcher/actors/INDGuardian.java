@@ -63,20 +63,19 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ActorRef<LMCommand> lmRef = ctx.spawn(LatticeManagerActor.create(cfg.maxArity(), cfg.maxConcurrentNra(),
                         metadata,statsRef), "lattice-manager");
 
+        ActorRef<AppraiserCommand> apRef = ctx.spawn(AppraisalActor_.create( sharding, metadata,statsRef), "appraisal-actor");
+
         sharding.init(Entity.of(CandidateManagerActor_.TYPE_KEY, entityCtx -> {
                     int lhsCol = Integer.parseInt(entityCtx.getEntityId().substring("cm-lhs-".length()));
-                    return CandidateManagerActor_.create(lhsCol, sharding, raRef, lmRef, rcRef, cfg.cleanThreshold(), metadata,
+                    return CandidateManagerActor_.create(lhsCol, sharding, apRef,raRef, lmRef, rcRef, cfg.cleanThreshold(), metadata,
                             statsRef);
                 })
         );
-
 
         ActorRef<NRACommand> nraRef = ctx.spawn(NaryRebuildActor.create(sharding, lmRef, 2, metadata,
                 statsRef), "nary-rebuild");
 
         lmRef.tell(new LMCommand.InjectNra(nraRef));
-
-        ActorRef<AppraiserCommand> apRef = ctx.spawn(AppraisalActor_.create( sharding, metadata,statsRef), "appraisal-actor");
 
         this.bdRef = ctx.spawn(BatchDispatcherActor_.create( vidMap, sharding, apRef, metadata,
                 statsRef), "batch-dispatcher");

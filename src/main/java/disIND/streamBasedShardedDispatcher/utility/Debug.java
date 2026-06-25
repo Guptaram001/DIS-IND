@@ -19,18 +19,16 @@ public final class Debug {
     private Debug() {}
 
 
-    public enum State {NONE, REBUILDING, REPLAYING, TRACKED_CLEAN, TRACKED_VIOLATING}
+    public enum State {NONE, REBUILDING, REPLAYING, TRACKED_CLEAN, TRACKED_VIOLATING,INACTIVE}
     public enum LogType {MESSAGE, FLOW, DELTA, CHECKPOINT, PERF, STATE, INTERNAL}
 
-    public static final boolean ENABLED = true;
 
-    public static final boolean FLOW = true;
     public static final boolean MESSAGE = true;
     public static final boolean CHECKPOINT = true;
     public static final boolean DELTA = true;
     public static final boolean PERF = true;
     public static final boolean STATE = true;
-    public static final boolean INTERNAL = true;
+    public static final boolean INTERNAL = false;
 
 
     public static String cm() {

@@ -17,6 +17,7 @@ import disIND.prototypeModel.model.RawEvent;
 import disIND.streamBasedShardedDispatcher.actors.INDGuardian;
 import disIND.streamBasedShardedDispatcher.dataset.DataLoader;
 import disIND.streamBasedShardedDispatcher.model.SharedModel;
+import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 
 import java.time.Duration;
 import java.util.List;
@@ -41,10 +42,10 @@ public class DisINDMain {
 
     public static void main(String[] args) throws Exception {
 
-        String inputDir = "/Users/gupta/Documents/DIS-IND/data/synthetic";
-        int batchSize = 2;
+        String inputDir = UserConfig.inputDir;
+        int batchSize = UserConfig.BATCH_SIZE;
         int timeoutSec = 5;
-        String outputFile = null;
+        String outputFile = UserConfig.outputDir;
 
         INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir);
         System.out.println("[Main] Discovered config: " + cfg);

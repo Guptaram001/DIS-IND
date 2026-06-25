@@ -20,16 +20,12 @@ public final class SharedModel {
 
     private SharedModel() {}
 
-    public enum ColType implements AkkaSerializable {
-        INTEGER, DECIMAL, DATE, BOOLEAN, STRING, KEY,UNKNOWN
-    }
+    public enum ColType implements AkkaSerializable {INTEGER, DECIMAL, DATE, BOOLEAN, STRING, KEY,UNKNOWN}
+    public enum PairState {ACTIVE, INACTIVE}
 
     public record UnaryPair(int lhsCol, int rhsCol) implements AkkaSerializable {}
-
     public record NaryPair(List<Integer> lhsCols, List<Integer> rhsCols) implements AkkaSerializable {
-
         public int arity() { return lhsCols.size(); }
-
         public NaryPair canonical() {
             List<int[]> z = new ArrayList<>();
             for (int i = 0; i < lhsCols.size(); i++)
@@ -155,10 +151,13 @@ public final class SharedModel {
             long epoch
     ) implements AkkaSerializable {}
 
+    public record PendingEpoch(int remaining, ActorRef<BDReply> replyTo) {}
 
-    public sealed interface BDReply extends AkkaSerializable permits BDReply.BatchAccepted {
+    public sealed interface BDReply extends AkkaSerializable permits BDReply.BatchAccepted,
+    BDReply.IngestionFinished{
 
         record BatchAccepted(long epoch) implements BDReply {}
+        record IngestionFinished(long epoch) implements BDReply {}
     }
 
     public sealed interface BDCommand extends AkkaSerializable
@@ -174,7 +173,7 @@ public final class SharedModel {
 
         record BatchFlushed(long epoch, int colId) implements BDCommand {}
 
-        record IngestionDone() implements BDCommand {}
+        record IngestionDone(ActorRef<BDReply> replyTo) implements BDCommand {}
 
         record Shutdown() implements BDCommand {}
 
@@ -189,7 +188,7 @@ public final class SharedModel {
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
             AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.EpochComplete, AACommand.GetSnapshot,
-        AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership{
+        AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership, AACommand.DeactiveUnaryPair{
 
         static String entityId(int colId) { return "col-" + colId; }
 
@@ -219,18 +218,20 @@ public final class SharedModel {
 
         record CompareBitmap(UnaryCandidate candidate,RoaringBitmap lhsBitmap,EntityRef<CMCommand> cmRef) implements AACommand {}
         record CheckMembership(UnaryPair pair, long epoch, RoaringBitmap values, EntityRef<CMCommand> replyTo) implements AACommand {}
+        record DeactiveUnaryPair(UnaryPair pair, boolean lhsSide) implements AACommand {}
     }
 
 
     public sealed interface AppraiserCommand extends AkkaSerializable
             permits AppraiserCommand.SketchArrived,
             AppraiserCommand.EpochComplete,
-            AppraiserCommand.IngestionDone {
+            AppraiserCommand.IngestionDone, AppraiserCommand.PairStateChanged {
 
         record SketchArrived(SketchSummary summary) implements AppraiserCommand {}
-        record EpochComplete(long epoch)            implements AppraiserCommand {}
+        record EpochComplete(long epoch)implements AppraiserCommand {}
 
-        record IngestionDone()                      implements AppraiserCommand {}
+        record IngestionDone(long epoch, ActorRef<BDCommand> replyTo) implements AppraiserCommand {}
+        record PairStateChanged(UnaryPair pair, PairState state) implements AppraiserCommand {}
     }
 
     public record UnaryCandidate(UnaryPair pair, long evalEpoch) implements AkkaSerializable {}
@@ -256,7 +257,7 @@ public final class SharedModel {
             CMCommand.NaryViolationReport, CMCommand.EpochTick,
             CMCommand.DistinctValueDelta, CMCommand.IngestionDone,
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
-    CMCommand.LhsColumnDelta, CMCommand.RhsColumnDelta,
+    CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta,CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
     CMCommand.MembershipResult{
 
         static String entityId(int lhsCol) {return "cm-lhs-" + lhsCol;}
@@ -265,17 +266,16 @@ public final class SharedModel {
         record NaryViolationReport(NaryCheckResult result)                 implements CMCommand {}
         record EpochTick(long epoch)                                       implements CMCommand {}
         record DistinctValueDelta(int colId, RoaringBitmap newValues, long epoch) implements CMCommand {}
-
         record IngestionDone() implements CMCommand {}
-
         record NaryDispatched() implements CMCommand {}
-
         record DistinctDeltaBatch(int colId, long epoch, RoaringBitmap insertedDistinctValues) implements CMCommand {}
-
-        record LhsColumnDelta(int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
-
-        record RhsColumnDelta(int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
+        record LhsLiveDelta( int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
+        record RhsLiveDelta( int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
         record MembershipResult(UnaryPair pair, long epoch, RoaringBitmap missingValues) implements CMCommand {}
+        record LhsReplayDelta(UnaryPair pair, int colId, long fromEpochExclusive, long toEpochInclusive,
+                              RoaringBitmap newValues) implements CMCommand {}
+        record RhsReplayDelta(UnaryPair pair, int colId, long fromEpochExclusive, long toEpochInclusive,
+                              RoaringBitmap newValues) implements CMCommand {}
 
         /**
          * Sent by LM → CM when its queue is fully empty and nraInFlight=0.

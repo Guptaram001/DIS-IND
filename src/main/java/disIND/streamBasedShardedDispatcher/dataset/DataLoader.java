@@ -60,6 +60,7 @@ public final class DataLoader {
                 offsets.add(totalCols);
                 System.out.printf("  %s  %d cols  offset=%d  delim='%s'%n", table, cols.length, totalCols, delim);
 
+                //Inferring Column Basic Details
                 List<String[]> sampleRows = new ArrayList<>();
                 for (int i = 0; i < 1000; i++) {
                     String row = br.readLine();
@@ -107,7 +108,11 @@ public final class DataLoader {
                 batchSize, bdRef);
 
         System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", totalRows, (System.currentTimeMillis() - startMs) / 1000.0);
-        bdRef.tell(new BDCommand.IngestionDone());
+        //bdRef.tell(new BDCommand.IngestionDone());
+        CompletionStage<BDReply> doneFuture = AskPattern.ask(bdRef, BDCommand.IngestionDone::new, Duration.ofMinutes(10),
+                system.scheduler());
+
+        doneFuture.toCompletableFuture().get();
         System.out.println("[Loader] Waiting for discovery result...");
         CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(system, BDCommand.GetResultCollector::new,
                 Duration.ofSeconds(5), system.scheduler());
@@ -119,7 +124,9 @@ public final class DataLoader {
                         Duration.ofSeconds(timeoutSec),
                         system.scheduler());
 
-        IndReport report = reportFuture.toCompletableFuture().get();
+        //IndReport report = reportFuture.toCompletableFuture().get();
+        IndReport report = AskPattern.ask(rcRef, RCCommand.GetReport::new, Duration.ofSeconds(30), system.scheduler())
+                .toCompletableFuture().get();
 
         printReport(report, outputFile);
 
