@@ -52,7 +52,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     @Override
     public Receive<AppraiserCommand> createReceive() {
         return newReceiveBuilder()
-                .onMessage(AppraiserCommand.EpochComplete.class,this::onEpochComplete)
+                .onMessage(AppraiserCommand.CheckPoint.class,this::onCheckPoint)
                 .onMessage(AppraiserCommand.SketchArrived.class,this::onSketchArrived)
                 .onMessage(AppraiserCommand.PairStateChanged.class,this::onPairStateChanged)
                 .build();
@@ -95,7 +95,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
         return this;
     }
 
-    private Behavior<AppraiserCommand> onEpochComplete(AppraiserCommand.EpochComplete msg) {
+    private Behavior<AppraiserCommand> onCheckPoint(AppraiserCommand.CheckPoint msg) {
         long epoch = msg.epoch();
         pendingSketches.computeIfAbsent(epoch, e -> new HashMap<>());
         for (int c = 0; c < metadata.totalCols(); c++) {

@@ -13,7 +13,6 @@ import org.roaringbitmap.RoaringBitmap;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
-import static disIND.streamBasedShardedDispatcher.utility.Debug.pair;
 
 public class AttributeActor extends AbstractBehavior<AACommand> {
     public static final EntityTypeKey<AACommand> TYPE_KEY = EntityTypeKey.create(AACommand.class, "AttributeActor");
@@ -54,7 +53,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         return newReceiveBuilder()
                 .onMessage(AACommand.InsertBatch.class,this::onInsertBatch)
                 .onMessage(AACommand.EmitSketch.class,this::onEmitSketch)
-                .onMessage(AACommand.EpochComplete.class,this::onEpochComplete)
+                .onMessage(AACommand.CheckPoint.class,this::onEpochComplete)
                 .onMessage(AACommand.SendColumnData.class,this::onSendColumnData)
                 .onMessage(AACommand.CompareBitmap.class,this::onCompareBitmap)
                 .onMessage(AACommand.CheckMembership.class,this::onCheckMembership)
@@ -125,15 +124,15 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         return accumulated;
     }
 
-    private Behavior<AACommand> onEpochComplete(AACommand.EpochComplete epochComplete) {
+    private Behavior<AACommand> onEpochComplete(AACommand.CheckPoint msg) {
         if(Debug.CHECKPOINT)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.CHECKPOINT), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
-                    "Received Epoch Complete Checkpoint for Epoch {}  for col {}", epochComplete.epoch(), epochComplete.colId());
-        if (epochComplete.epoch() >= epochsProcessed) {
-            checkPoint=new AttributeCheckPoint(epochComplete.epoch(),
+                    "Received Epoch Complete Checkpoint for Epoch {}  for col {}", msg.epoch(), msg.colId());
+        if (msg.epoch() >= epochsProcessed) {
+            checkPoint=new AttributeCheckPoint(msg.epoch(),
                     bitmapStore.deepCopy(),
                     valueToRowsStore.deepCopy(),
-                    sketchStore.getSummary(colId, epochComplete.epoch()));
+                    sketchStore.getSummary(colId, msg.epoch()));
 
         }
         //cleanupOldDeltas(epochComplete.epoch());

@@ -67,10 +67,26 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                 .onMessage(BDCommand.SendTableBatch.class, this::onSendTableBatch)
                 .onMessage(BDCommand.BatchFlushed.class, this::onBatchFlushed)
                 .onMessage(BDCommand.IngestionDone.class, this::onIngestionDone)
+                .onMessage(BDCommand.CheckPoint.class,this::onCheckPoint)
                 .onAnyMessage(msg -> {getContext().getLog().info("BD GOT {}", msg.getClass());return this;})
                 .build();
     }
 
+    private Behavior<BDCommand> onCheckPoint(BDCommand.CheckPoint msg) {
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),-1,"-",
+                    String.valueOf(Debug.State.NONE), "Received CheckPoint Message for round: {}", msg.round());
+
+        // Notify all the ATTRA regarding epoch complete to snapshot
+        for (int col = 0; col < metadata.totalCols(); col++) {
+            sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(col)).tell(new AACommand.CheckPoint(epoch,col,
+                    msg.round()));
+        }
+        //Notify the APPA to start asking sketches
+        appraiserRef.tell(new AppraiserCommand.CheckPoint(epoch,msg.round()));
+
+        return this;
+    }
 
 
     private Behavior<BDCommand> onSendTableBatch(BDCommand.SendTableBatch msg) {
@@ -135,19 +151,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(globalCol))
                     .tell(new AACommand.InsertBatch(epoch, rArr, vArr, selfRef));
         }
-
-        if (epoch % metadata.totalCols() == 0) {
-            if(Debug.MESSAGE)
-                formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),-1,"-",
-                        String.valueOf(Debug.State.NONE), "Sending epoch complete message to all ATTRA and APPA");
-            //Notify the APPA to start asking sketches
-            appraiserRef.tell(new AppraiserCommand.EpochComplete(epoch));
-            // Notify all the ATTRA regarding epoch complete to snapshot
-            for (int col = 0; col < metadata.totalCols(); col++) {
-                sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(col)).tell(new AACommand.EpochComplete(epoch,col));
-            }
-        }
-
         if (expected == 0) {
             if (msg.replyTo() != null)
                 msg.replyTo().tell(new BDReply.BatchAccepted(epoch));

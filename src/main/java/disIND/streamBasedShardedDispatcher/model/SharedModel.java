@@ -163,11 +163,12 @@ public final class SharedModel {
     public sealed interface BDCommand extends AkkaSerializable
             permits BDCommand.IngestBatch, BDCommand.BatchDispatched, BDCommand.BatchFlushed,
             BDCommand.IngestionDone, BDCommand.Shutdown,
-            BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher, BDCommand.SendTableBatch {
+            BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher, BDCommand.SendTableBatch,
+    BDCommand.CheckPoint{
 
         record IngestBatch(String[] cells, int numRows, int numCols, ActorRef<BDReply> replyTo) implements BDCommand {}
 
-        record SendTableBatch(int tableId, long startRowId, List<String []> rows, ActorRef<BDReply> replyTo) implements BDCommand {}
+        record SendTableBatch(int tableId, long startRowId, List<String []> rows, int round,ActorRef<BDReply> replyTo) implements BDCommand {}
 
         record BatchDispatched(long epoch) implements BDCommand {}
 
@@ -180,6 +181,7 @@ public final class SharedModel {
         record GetResultCollector(ActorRef<ActorRef<RCCommand>> replyTo) implements BDCommand {}
 
         record GetBatchDispatcher(ActorRef<ActorRef<BDCommand>> replyTo) implements BDCommand {}
+        record CheckPoint(int round)implements  BDCommand{}
     }
 
 
@@ -187,7 +189,7 @@ public final class SharedModel {
             permits AACommand.InsertBatch, AACommand.SetPresetType,
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
-            AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.EpochComplete, AACommand.GetSnapshot,
+            AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.CheckPoint, AACommand.GetSnapshot,
         AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership, AACommand.DeactiveUnaryPair{
 
         static String entityId(int colId) { return "col-" + colId; }
@@ -210,7 +212,7 @@ public final class SharedModel {
 
         record UpdateWatermarks(long binaryWm, long naryWm) implements AACommand {}
 
-        record EpochComplete(long epoch,int colId) implements AACommand {}
+        record CheckPoint(long epoch,int colId,int round) implements AACommand {}
 
         record GetSnapshot(long epoch, ActorRef<RACommand> replyTo) implements AACommand {}
 
@@ -224,11 +226,11 @@ public final class SharedModel {
 
     public sealed interface AppraiserCommand extends AkkaSerializable
             permits AppraiserCommand.SketchArrived,
-            AppraiserCommand.EpochComplete,
+            AppraiserCommand.CheckPoint,
             AppraiserCommand.IngestionDone, AppraiserCommand.PairStateChanged {
 
         record SketchArrived(SketchSummary summary) implements AppraiserCommand {}
-        record EpochComplete(long epoch)implements AppraiserCommand {}
+        record CheckPoint(long epoch,int round)implements AppraiserCommand {}
 
         record IngestionDone(long epoch, ActorRef<BDCommand> replyTo) implements AppraiserCommand {}
         record PairStateChanged(UnaryPair pair, PairState state) implements AppraiserCommand {}

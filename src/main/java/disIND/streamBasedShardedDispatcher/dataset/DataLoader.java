@@ -144,6 +144,7 @@ public final class DataLoader {
         long[] rowCounts = new long[n];
         long[] nextRowId = new long[n];
         long totalRows = 0;
+        int round = 0;
 
         System.out.println("[Loader] Opening files...");
         for (int i = 0; i < n; i++) {
@@ -172,7 +173,7 @@ public final class DataLoader {
             if (tbl) {
                 List<String[]> firstBatch = new ArrayList<>(1);
                 firstBatch.add(splitRow(firstLine, delim, true));
-                sendTableBatch(system, bdRef, i, nextRowId[i], firstBatch);
+                sendTableBatch(system, bdRef, i, nextRowId[i], firstBatch,round);
                 nextRowId[i]++;
                 rowCounts[i]++;
                 totalRows++;
@@ -185,6 +186,7 @@ public final class DataLoader {
         boolean anyActive = true;
         while (anyActive) {
             anyActive = false;
+            round++;
             for (int i = 0; i < n; i++) {
                 if (!active[i])
                     continue;
@@ -204,11 +206,17 @@ public final class DataLoader {
                     rowCounts[i]++;
                     totalRows++;
                 }
+
                 if (!batchRows.isEmpty()) {
-                    sendTableBatch(system, bdRef, i, nextRowId[i], batchRows);
+                    sendTableBatch(system, bdRef, i, nextRowId[i], batchRows,round);
                     nextRowId[i] += batchRows.size();
                     anyActive = true;
                 }
+            }
+            System.out.printf("[Loader] Round %d: %d rows ingested%n", round, totalRows);
+            if(round%10==0){
+                //Trigger checkpoint to BD, since each AA should have received same number of rows if there is in data
+                bdRef.tell(new BDCommand.CheckPoint(round));
             }
         }
         System.out.println("[Loader] Per-file row counts:");
@@ -221,12 +229,12 @@ public final class DataLoader {
     }
 
         private static void sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
-        List<String[]> rows) throws Exception {
+        List<String[]> rows,int round) throws Exception {
 
 
             System.out.println("[Loader] Sending table batch to "+bdRef+" "+bdRef.path().name()+" tableId="+tableId+" startRowId="+startRowId+" rows="+rows.size());
             AskPattern.ask(bdRef, (ActorRef<BDReply> replyTo) ->
-                                    new BDCommand.SendTableBatch(tableId, startRowId,rows, replyTo),
+                                    new BDCommand.SendTableBatch(tableId, startRowId,rows, round,replyTo),
                             Duration.ofSeconds(5),
                             system.scheduler()
                     )
