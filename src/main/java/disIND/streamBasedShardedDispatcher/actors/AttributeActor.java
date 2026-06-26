@@ -12,11 +12,14 @@ import disIND.streamBasedShardedDispatcher.utility.Debug;
 import org.roaringbitmap.RoaringBitmap;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
+
 import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
 public class AttributeActor extends AbstractBehavior<AACommand> {
     public static final EntityTypeKey<AACommand> TYPE_KEY = EntityTypeKey.create(AACommand.class, "AttributeActor");
     private final ActorRef<StatsCommand> statsRef;
+    private final DatasetMetadata metadata;
+    private final int ownerTableId;
 
     private final int colId;
     private final ValueIdMap valueIdMap;
@@ -31,20 +34,30 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
     private AttributeCheckPoint checkPoint ;
     private final Deque<AttributeDelta> deltaLogDequeue = new ArrayDeque<>();
+    private final Map<Integer, NavigableSet<Integer>> receivedBatchIdsByTable = new HashMap<>();
+    private final Set<String> appliedBatchKeys = new HashSet<>();
+
+    private static String key(int tableId, int batchId) {
+        return tableId + ":" + batchId;
+    }
 
     public static Behavior<AACommand> create(int colId, ValueIdMap vidMap,
-                                             AtomicReference<ActorRef<CMCommand>> cmRef, ActorRef<StatsCommand> statsRef) {
+                                             AtomicReference<ActorRef<CMCommand>> cmRef, ActorRef<StatsCommand> statsRef,
+    DatasetMetadata metadata) {
         return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, vidMap, cmRef
-        ,statsRef));
+        ,statsRef,metadata));
     }
 
     private AttributeActor(ActorContext<AACommand> ctx, int colId, ValueIdMap valueIdMap,
-                           AtomicReference<ActorRef<CMCommand>> cmRef,ActorRef<StatsCommand> statsRef) {
+                           AtomicReference<ActorRef<CMCommand>> cmRef,ActorRef<StatsCommand> statsRef,
+                           DatasetMetadata metadata ) {
         super(ctx);
-        this.colId      = colId;
+        this.colId  = colId;
         this.valueIdMap = valueIdMap;
-        this.cmRef   = cmRef;
-        this.statsRef   = statsRef;
+        this.cmRef= cmRef;
+        this.statsRef= statsRef;
+        this.metadata=metadata;
+        this.ownerTableId = findOwnerTable(colId, metadata);
     }
 
 
@@ -53,7 +66,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         return newReceiveBuilder()
                 .onMessage(AACommand.InsertBatch.class,this::onInsertBatch)
                 .onMessage(AACommand.EmitSketch.class,this::onEmitSketch)
-                .onMessage(AACommand.CheckPoint.class,this::onEpochComplete)
+                .onMessage(AACommand.CheckPoint.class,this::onCheckPoint)
                 .onMessage(AACommand.SendColumnData.class,this::onSendColumnData)
                 .onMessage(AACommand.CompareBitmap.class,this::onCompareBitmap)
                 .onMessage(AACommand.CheckMembership.class,this::onCheckMembership)
@@ -124,19 +137,49 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         return accumulated;
     }
 
-    private Behavior<AACommand> onEpochComplete(AACommand.CheckPoint msg) {
+    private Behavior<AACommand> onCheckPoint(AACommand.CheckPoint msg) {
         if(Debug.CHECKPOINT)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.CHECKPOINT), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
                     "Received Epoch Complete Checkpoint for Epoch {}  for col {}", msg.epoch(), msg.colId());
-        if (msg.epoch() >= epochsProcessed) {
-            checkPoint=new AttributeCheckPoint(msg.epoch(),
-                    bitmapStore.deepCopy(),
-                    valueToRowsStore.deepCopy(),
-                    sketchStore.getSummary(colId, msg.epoch()));
 
+        List<InputBatchDetails> missing = findMissingForCheckpoint(msg.round(), msg.maxBatchIdByTable());
+        if (!missing.isEmpty()) {
+            msg.replyTo().tell(new BDCommand.AaCheckpointStatus(msg.round(), colId, false, missing));
+            //Can be optimized to send once
+            for (InputBatchDetails m : missing) {
+                msg.replyTo().tell(new BDCommand.MissingBatchRequest(m.tableId(), m.batchId(), colId));
+            }
+            return this;
         }
+
+        checkPoint = new AttributeCheckPoint(msg.epoch(), bitmapStore.deepCopy(), valueToRowsStore.deepCopy(),
+                sketchStore.getSummary(colId, msg.epoch()));
+
+        msg.replyTo().tell(new BDCommand.AaCheckpointStatus(msg.round(), colId, true, List.of()));
+
         //cleanupOldDeltas(epochComplete.epoch());
+        msg.appraiserRef().tell(new AppraiserCommand.SketchArrived(checkPoint.sketchSummary()));
         return this;
+    }
+
+    private List<InputBatchDetails> findMissingForCheckpoint(int round, Map<Integer, Integer> maxBatchIdByTable) {
+        List<InputBatchDetails> missing = new ArrayList<>();
+
+        for (Map.Entry<Integer, Integer> e : maxBatchIdByTable.entrySet()) {
+            int tableId = e.getKey();
+
+
+            Integer maxBatchId = maxBatchIdByTable.get(ownerTableId);
+            if (maxBatchId == null) return List.of();
+            NavigableSet<Integer> received = receivedBatchIdsByTable.getOrDefault(tableId, new TreeSet<>());
+            for (int b = 0; b <= maxBatchId; b++) {
+                if (!received.contains(b)) {
+                    missing.add(new InputBatchDetails(tableId, -1, b, -1, round, colId));
+                }
+            }
+        }
+
+        return missing;
     }
 
     private Behavior<AACommand> onEmitSketch(AACommand.EmitSketch msg) {
@@ -148,13 +191,29 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private Behavior<AACommand> onInsertBatch(AACommand.InsertBatch msg) {
-        getContext().getLog().info("[ATTRA] Received insert batch for col {} with {} rows", colId, msg.rows().length);
+
+        InputBatchDetails ibd = msg.inputBatchDetails();
+        String batchKey = key(ibd.tableId(), ibd.batchId());
+        if (appliedBatchKeys.contains(batchKey)) {
+            if (msg.ackTo() != null) {
+                msg.ackTo().tell(new BDCommand.BatchFlushed(ibd, colId));
+            }
+            return this;
+        }
+
         if(Debug.MESSAGE)
-            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
-                    "Insert Batch received epcoh: {} rows:{}",msg.epoch(), msg.rows().length);
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,"-",
+                    String.valueOf(Debug.State.NONE),
+                    "Insert Batch received epcoh: {}, batchID:{} rows:{}",msg.inputBatchDetails().epoch(),
+                    msg.inputBatchDetails().batchId(),msg.rows().length);
+
+        appliedBatchKeys.add(batchKey);
+        receivedBatchIdsByTable.computeIfAbsent(ibd.tableId(), t -> new TreeSet<>()).add(ibd.batchId());
+        epochsProcessed = Math.max(epochsProcessed, ibd.epoch());
+
         int[] valueIds    = msg.valueIds();
         long[] rows   = msg.rows();
-        AttributeDeltaBuilder deltaBuilder = new AttributeDeltaBuilder(msg.epoch());
+        AttributeDeltaBuilder deltaBuilder = new AttributeDeltaBuilder(msg.inputBatchDetails().epoch());
         RoaringBitmap newDistinctThisBatch = new RoaringBitmap();
 
         for (int i = 0; i < rows.length; i++) {
@@ -176,14 +235,14 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
         deltaLogDequeue.addLast(deltaBuilder.build());
         if(!newDistinctThisBatch.isEmpty()) {
-            publishLiveDistinctDelta(msg.epoch(), newDistinctThisBatch);
+            publishLiveDistinctDelta(msg.inputBatchDetails().epoch(), newDistinctThisBatch);
             if(Debug.INTERNAL)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
-                        "Published distinct delta for col {} epoch {}", colId, msg.epoch());
+                        "Published distinct delta for col {} epoch {} batchID {}" ,
+                        colId, msg.inputBatchDetails().epoch(),msg.inputBatchDetails().batchId());
         }
-        epochsProcessed= msg.epoch();
         if (msg.ackTo() != null)
-            msg.ackTo().tell(new BDCommand.BatchFlushed(msg.epoch(), colId));
+            msg.ackTo().tell(new BDCommand.BatchFlushed(ibd, colId));
         return this;
     }
 
@@ -238,6 +297,17 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         for (var entry : delta.inserts().int2ObjectEntrySet())
             values.add(entry.getIntKey());
         return values;
+    }
+
+    private static int findOwnerTable(int colId, DatasetMetadata metadata) {
+        for (int t = 0; t < metadata.offsets().size(); t++) {
+            int offset = metadata.offsets().get(t);
+            int nCols = metadata.nCols().get(t);
+            if (colId >= offset && colId < offset + nCols) {
+                return t;
+            }
+        }
+        throw new IllegalArgumentException("No table owns colId=" + colId);
     }
 
 }

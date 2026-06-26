@@ -145,6 +145,9 @@ public final class SharedModel {
             SketchSummary sketchSummary
     ) {}
 
+    public record InputBatchDetails(int tableId, long startRowId, int  batchId, long epoch, int round, int colId){}
+    public record CachedTableBatch(InputBatchDetails inputBatchDetails, List<String[]> rows) {}
+
     public record ColumnSlice(
             int colId,
             Map<Integer, RoaringBitmap> valToRows,
@@ -164,15 +167,15 @@ public final class SharedModel {
             permits BDCommand.IngestBatch, BDCommand.BatchDispatched, BDCommand.BatchFlushed,
             BDCommand.IngestionDone, BDCommand.Shutdown,
             BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher, BDCommand.SendTableBatch,
-    BDCommand.CheckPoint{
+    BDCommand.CheckPoint, BDCommand.MissingBatchRequest, BDCommand.AaCheckpointStatus {
 
         record IngestBatch(String[] cells, int numRows, int numCols, ActorRef<BDReply> replyTo) implements BDCommand {}
 
-        record SendTableBatch(int tableId, long startRowId, List<String []> rows, int round,ActorRef<BDReply> replyTo) implements BDCommand {}
+        record SendTableBatch(List<String []> rows, InputBatchDetails inputBatchDetails,ActorRef<BDReply> replyTo) implements BDCommand {}
 
         record BatchDispatched(long epoch) implements BDCommand {}
 
-        record BatchFlushed(long epoch, int colId) implements BDCommand {}
+        record BatchFlushed(InputBatchDetails inputBatchDetails, int colId) implements BDCommand {}
 
         record IngestionDone(ActorRef<BDReply> replyTo) implements BDCommand {}
 
@@ -181,7 +184,10 @@ public final class SharedModel {
         record GetResultCollector(ActorRef<ActorRef<RCCommand>> replyTo) implements BDCommand {}
 
         record GetBatchDispatcher(ActorRef<ActorRef<BDCommand>> replyTo) implements BDCommand {}
-        record CheckPoint(int round)implements  BDCommand{}
+        record CheckPoint(int round, Map<Integer, Integer> maxBatchIdByTable) implements BDCommand {}
+        record MissingBatchRequest(int tableId, int batchId, int colId) implements BDCommand {}
+        record AaCheckpointStatus(int round, int colId, boolean clean, List<InputBatchDetails> missing) implements BDCommand {}
+
     }
 
 
@@ -194,7 +200,7 @@ public final class SharedModel {
 
         static String entityId(int colId) { return "col-" + colId; }
 
-        record InsertBatch(long epoch, long[] rows, int[] valueIds, ActorRef<BDCommand> ackTo) implements AACommand {}
+        record InsertBatch(InputBatchDetails inputBatchDetails,long[] rows, int[] valueIds, ActorRef<BDCommand> ackTo) implements AACommand {}
 
         record SetPresetType(ColType preset) implements AACommand {}
 
@@ -212,7 +218,8 @@ public final class SharedModel {
 
         record UpdateWatermarks(long binaryWm, long naryWm) implements AACommand {}
 
-        record CheckPoint(long epoch,int colId,int round) implements AACommand {}
+        record CheckPoint(long epoch,int colId,int round,Map<Integer, Integer> maxBatchIdByTable,
+                          ActorRef<BDCommand> replyTo,ActorRef<AppraiserCommand> appraiserRef) implements AACommand {}
 
         record GetSnapshot(long epoch, ActorRef<RACommand> replyTo) implements AACommand {}
 
@@ -230,7 +237,7 @@ public final class SharedModel {
             AppraiserCommand.IngestionDone, AppraiserCommand.PairStateChanged {
 
         record SketchArrived(SketchSummary summary) implements AppraiserCommand {}
-        record CheckPoint(long epoch,int round)implements AppraiserCommand {}
+        record CheckPoint(long epoch,Map<Integer, Integer> maxBatchIdByTable)implements AppraiserCommand {}
 
         record IngestionDone(long epoch, ActorRef<BDCommand> replyTo) implements AppraiserCommand {}
         record PairStateChanged(UnaryPair pair, PairState state) implements AppraiserCommand {}

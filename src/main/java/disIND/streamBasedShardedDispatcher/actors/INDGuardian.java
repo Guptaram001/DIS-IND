@@ -49,7 +49,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         sharding.init(Entity.of(AttributeActor.TYPE_KEY, entityCtx -> {
                     int colId = Integer.parseInt(entityCtx.getEntityId().substring("col-".length()));
-                    return AttributeActor.create(colId, vidMap, cmRefHolder,statsRef);
+                    return AttributeActor.create(colId, vidMap, cmRefHolder,statsRef,metadata);
                 })
         );
         if(Debug.INTERNAL)
