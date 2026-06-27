@@ -12,8 +12,8 @@ public final class SketchStore {
         this(12, 256);
     }
 
-    public SharedModel.SketchSummary getSummary(int colId, long epoch) {
-        return new SharedModel.SketchSummary(colId, epoch, estimateDistinct(), kmv.getKMVSketch());
+    public SharedModel.SketchSummary getSummary(int round,int colId, long epoch) {
+        return new SharedModel.SketchSummary(colId, epoch, round,estimateDistinct(), kmv.getKMVSketch());
     }
 
     public SketchStore(int hllPrecision, int kmvSize) {

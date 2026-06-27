@@ -125,6 +125,7 @@ public final class SharedModel {
     public record SketchSummary(
             int colId,
             long epoch,
+            int round,
             long distinctValues,
             KMVSketch kmv
     ) implements AkkaSerializable {}
@@ -196,7 +197,8 @@ public final class SharedModel {
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
             AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.CheckPoint, AACommand.GetSnapshot,
-        AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership, AACommand.DeactiveUnaryPair{
+        AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership, AACommand.DeactiveUnaryPair,
+            AACommand.RequestSketch {
 
         static String entityId(int colId) { return "col-" + colId; }
 
@@ -214,7 +216,7 @@ public final class SharedModel {
         record GetColumnSlice(long epoch, long requestId,
                               ActorRef<NRACommand> replyTo) implements AACommand {}
 
-        record EmitSketch(long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
+        record EmitSketch(int round,long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
 
         record UpdateWatermarks(long binaryWm, long naryWm) implements AACommand {}
 
@@ -228,16 +230,19 @@ public final class SharedModel {
         record CompareBitmap(UnaryCandidate candidate,RoaringBitmap lhsBitmap,EntityRef<CMCommand> cmRef) implements AACommand {}
         record CheckMembership(UnaryPair pair, long epoch, RoaringBitmap values, EntityRef<CMCommand> replyTo) implements AACommand {}
         record DeactiveUnaryPair(UnaryPair pair, boolean lhsSide) implements AACommand {}
+        record RequestSketch(int round, long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
     }
 
 
     public sealed interface AppraiserCommand extends AkkaSerializable
             permits AppraiserCommand.SketchArrived,
             AppraiserCommand.CheckPoint,
-            AppraiserCommand.IngestionDone, AppraiserCommand.PairStateChanged {
+            AppraiserCommand.IngestionDone, AppraiserCommand.PairStateChanged,
+            AppraiserCommand.CheckMissingSketches {
 
         record SketchArrived(SketchSummary summary) implements AppraiserCommand {}
-        record CheckPoint(long epoch,Map<Integer, Integer> maxBatchIdByTable)implements AppraiserCommand {}
+        record CheckPoint(int round,long epoch,Map<Integer, Integer> maxBatchIdByTable)implements AppraiserCommand {}
+        record CheckMissingSketches(int round) implements AppraiserCommand {}
 
         record IngestionDone(long epoch, ActorRef<BDCommand> replyTo) implements AppraiserCommand {}
         record PairStateChanged(UnaryPair pair, PairState state) implements AppraiserCommand {}

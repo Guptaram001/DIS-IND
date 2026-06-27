@@ -71,6 +71,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                 .onMessage(AACommand.CompareBitmap.class,this::onCompareBitmap)
                 .onMessage(AACommand.CheckMembership.class,this::onCheckMembership)
                 .onMessage(AACommand.DeactiveUnaryPair.class,this::onDeactivePair)
+                .onMessage(AACommand.RequestSketch.class, this::onRequestSketch)
                 .build();
     }
 
@@ -79,6 +80,19 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             lhsSubscriptions.remove(msg.pair());
         } else {
             rhsSubscriptions.remove(msg.pair());
+        }
+        return this;
+    }
+
+    private final Map<Integer, SketchSummary> cleanCheckpointSketches = new HashMap<>();
+    private final Map<Integer, List<ActorRef<AppraiserCommand>>> pendingSketchRequests = new HashMap<>();
+
+    private Behavior<AACommand> onRequestSketch(AACommand.RequestSketch msg) {
+        SketchSummary summary = cleanCheckpointSketches.get(msg.round());
+        if (summary != null) {
+            msg.replyTo().tell(new AppraiserCommand.SketchArrived(summary));
+        } else {
+            pendingSketchRequests.computeIfAbsent(msg.round(), r -> new ArrayList<>()).add(msg.replyTo());
         }
         return this;
     }
@@ -153,29 +167,23 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         }
 
         checkPoint = new AttributeCheckPoint(msg.epoch(), bitmapStore.deepCopy(), valueToRowsStore.deepCopy(),
-                sketchStore.getSummary(colId, msg.epoch()));
+                sketchStore.getSummary(msg.round(),colId, msg.epoch()));
 
         msg.replyTo().tell(new BDCommand.AaCheckpointStatus(msg.round(), colId, true, List.of()));
 
         //cleanupOldDeltas(epochComplete.epoch());
-        msg.appraiserRef().tell(new AppraiserCommand.SketchArrived(checkPoint.sketchSummary()));
+        publishCheckpointSketch(msg.round(), msg.epoch(), msg.appraiserRef());
         return this;
     }
 
     private List<InputBatchDetails> findMissingForCheckpoint(int round, Map<Integer, Integer> maxBatchIdByTable) {
+        Integer maxBatchId = maxBatchIdByTable.get(ownerTableId);
+        if (maxBatchId == null) return List.of();
+        NavigableSet<Integer> received = receivedBatchIdsByTable.getOrDefault(ownerTableId, new TreeSet<>());
         List<InputBatchDetails> missing = new ArrayList<>();
-
-        for (Map.Entry<Integer, Integer> e : maxBatchIdByTable.entrySet()) {
-            int tableId = e.getKey();
-
-
-            Integer maxBatchId = maxBatchIdByTable.get(ownerTableId);
-            if (maxBatchId == null) return List.of();
-            NavigableSet<Integer> received = receivedBatchIdsByTable.getOrDefault(tableId, new TreeSet<>());
-            for (int b = 0; b <= maxBatchId; b++) {
-                if (!received.contains(b)) {
-                    missing.add(new InputBatchDetails(tableId, -1, b, -1, round, colId));
-                }
+        for (int b = 0; b <= maxBatchId; b++) {
+            if (!received.contains(b)) {
+                missing.add(new InputBatchDetails(ownerTableId, -1, b, -1, round, colId));
             }
         }
 
@@ -186,7 +194,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
                     "Emitting sketch for col {} epoch {}", colId, msg.epoch());
-        msg.replyTo().tell(new AppraiserCommand.SketchArrived(sketchStore.getSummary(colId, msg.epoch())));
+        msg.replyTo().tell(new AppraiserCommand.SketchArrived(sketchStore.getSummary(msg.round(),colId, msg.epoch())));
         return this;
     }
 
@@ -260,6 +268,18 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private void cleanupOldDeltas(long checkpointEpoch){
         while(!deltaLogDequeue.isEmpty() && deltaLogDequeue.peekFirst().epoch() <= checkpointEpoch){
             deltaLogDequeue.removeFirst();
+        }
+    }
+
+    private void publishCheckpointSketch(int round,long epoch, ActorRef<AppraiserCommand> appraiserRef) {
+        SketchSummary summary = checkPoint.sketchSummary();
+        cleanCheckpointSketches.put(round, summary);
+        appraiserRef.tell(new AppraiserCommand.SketchArrived(summary));
+        List<ActorRef<AppraiserCommand>> waiters = pendingSketchRequests.remove(round);
+        if (waiters != null) {
+            for (ActorRef<AppraiserCommand> ref : waiters) {
+                ref.tell(new AppraiserCommand.SketchArrived(summary));
+            }
         }
     }
 

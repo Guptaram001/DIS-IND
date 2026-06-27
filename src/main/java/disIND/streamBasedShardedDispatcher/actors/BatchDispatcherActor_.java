@@ -75,8 +75,18 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                 .onMessage(BDCommand.IngestionDone.class, this::onIngestionDone)
                 .onMessage(BDCommand.CheckPoint.class,this::onCheckPoint)
                 .onMessage(BDCommand.MissingBatchRequest.class, this::onMissingBatchRequest)
+                .onMessage(BDCommand.AaCheckpointStatus.class, this::onAaCheckpointStatus)
                 .onAnyMessage(msg -> {getContext().getLog().info("BD GOT {}", msg.getClass());return this;})
                 .build();
+    }
+
+    private Behavior<BDCommand> onAaCheckpointStatus(BDCommand.AaCheckpointStatus msg) {
+        if (!msg.clean()) {
+            for (InputBatchDetails m : msg.missing()) {
+                selfRef.tell(new BDCommand.MissingBatchRequest(m.tableId(), m.batchId(), msg.colId()));
+            }
+        }
+        return this;
     }
 
     private Behavior<BDCommand> onCheckPoint(BDCommand.CheckPoint msg) {
@@ -90,7 +100,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                     msg.round(),msg.maxBatchIdByTable(),selfRef,appraiserRef));
         }
         //Notify the APPA to start asking sketches--- > may need to change since too long waiting time.
-        appraiserRef.tell(new AppraiserCommand.CheckPoint(epoch,msg.maxBatchIdByTable()));
+        appraiserRef.tell(new AppraiserCommand.CheckPoint(msg.round(),epoch,msg.maxBatchIdByTable()));
 
         return this;
     }
@@ -167,8 +177,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                     .tell(new AACommand.InsertBatch(detailsForCol, rArr, vArr, selfRef));
         }
         if (expected == 0) {
-            if (msg.replyTo() != null)
-                msg.replyTo().tell(new BDReply.BatchAccepted(epoch));
             maybeForwardIngestionDone(epoch);
         } else
             pendingPerEpoch.put(epoch, new PendingEpoch(expected, msg.replyTo()));
@@ -198,13 +206,13 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             return this;
         }
         pendingPerEpoch.remove(ackEpoch);
-        if (p.replyTo() != null)
-            p.replyTo().tell(new BDReply.BatchAccepted(ackEpoch));
+//        if (p.replyTo() != null)
+//            p.replyTo().tell(new BDReply.BatchAccepted(ackEpoch));
 
         maybeForwardIngestionDone(ackEpoch);
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),msg.colId(),"-",
-                    String.valueOf(Debug.State.NONE), " BatchFlushed unknown/completed epoch={} col={}",
+                    String.valueOf(Debug.State.NONE), " BatchFlushed completed epoch={} col={}",
                     ackEpoch, msg.colId());
         return this;
     }
