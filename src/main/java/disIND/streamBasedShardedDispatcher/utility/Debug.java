@@ -58,6 +58,10 @@ public final class Debug {
         return "ATTR";
     }
 
+    public static String rc() {
+        return "RC";
+    }
+
     public static String pair(int lhs, int rhs) {
         return lhs + "⊆" + rhs;
     }

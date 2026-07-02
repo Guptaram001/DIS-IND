@@ -60,22 +60,25 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     private final ClusterSharding sharding;
     private final ActorRef<SketchSummary> sketchAdapter;
 
-    private final Map<Long, Map<Integer, SketchSummary>> pendingSketches = new HashMap<>();
-    private final Set<Long> evaluatedEpochs = new HashSet<>();
+    private boolean finishRequested = false;
+    private int finalRound = -1;
+    private ActorRef<RCCommand> rcRef;
+    private boolean noMoreSent = false;
 
     private HashSet<UnaryPair> activeCandidates;
 
     private final TimerScheduler<AppraiserCommand> timers;
     private final Map<Integer, CheckpointState> checkpoints = new HashMap<>();
-    public static Behavior<AppraiserCommand> create( ClusterSharding sharding,
-                                                    DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
+    public static Behavior<AppraiserCommand> create( ClusterSharding sharding, DatasetMetadata metadata,ActorRef<StatsCommand> statsRef
+    ,ActorRef<RCCommand> rcRef) {
         return Behaviors.setup(ctx  ->
                 Behaviors.withTimers(timers ->
-                new AppraisalActor_(ctx, timers,sharding, metadata,statsRef)));
+                new AppraisalActor_(ctx, timers,sharding, metadata,statsRef,rcRef)));
     }
 
     private AppraisalActor_(ActorContext<AppraiserCommand> ctx, TimerScheduler<AppraiserCommand> timers,
-                            ClusterSharding sharding, DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
+                            ClusterSharding sharding, DatasetMetadata metadata,ActorRef<StatsCommand> statsRef,
+                             ActorRef<RCCommand> rcRef) {
         super(ctx);
         this.timers = timers;
         if(Debug.STATE)
@@ -85,6 +88,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
         this.sketchAdapter = ctx.messageAdapter(SketchSummary.class, AppraiserCommand.SketchArrived::new);
         this.metadata = metadata;
         this.statsRef = statsRef;
+        this.rcRef=rcRef;
         this.activeCandidates = new HashSet<>();
     }
 
@@ -95,15 +99,41 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                 .onMessage(AppraiserCommand.SketchArrived.class,this::onSketchArrived)
                 .onMessage(AppraiserCommand.PairStateChanged.class,this::onPairStateChanged)
                 .onMessage(AppraiserCommand.CheckMissingSketches.class, this::onCheckMissingSketches)
-                .onMessage(AppraiserCommand.IngestionDone.class, this::onIngestionDone)
+                .onMessage(AppraiserCommand.FinishDiscovery.class, this::onFinishDiscovery)
                 .build();
     }
 
-    private Behavior<AppraiserCommand> onIngestionDone(AppraiserCommand.IngestionDone msg) {
-        // Ask only for sketches that are still missing.
-        requestOutstandingSketches();
+    private Behavior<AppraiserCommand> onFinishDiscovery(AppraiserCommand.FinishDiscovery msg) {
+        finishRequested = true;
+        finalRound = msg.finalRound();
+        rcRef = msg.rcRef();
+
+        maybeSendNoMoreCandidates();
+
         return this;
     }
+
+    private void maybeSendNoMoreCandidates() {
+        if (!finishRequested) return;
+        if (noMoreSent) return;
+
+        CheckpointState st = checkpoints.get(finalRound);
+        if (st == null || !st.evaluated)
+            return;
+
+        noMoreSent = true;
+        for (int lhs = 0; lhs < metadata.totalCols(); lhs++) {
+            sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhs))
+                    .tell(new CMCommand.NoMoreCandidates(finalRound));
+        }
+
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(),-1,"",
+                    String.valueOf(Debug.State.NONE),
+                    "Final checkpoint round={} evaluated. Sent NoMoreCandidates to all CM shards.",finalRound);
+
+    }
+
 
     private Behavior<AppraiserCommand> onPairStateChanged(AppraiserCommand.PairStateChanged msg) {
         if(Debug.MESSAGE)
@@ -141,33 +171,6 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
 
         tryMarkEvaluated(st);
         return this;
-
-//        long epoch = s.epoch();
-//        if (evaluatedEpochs.contains(epoch))
-//            return this;
-//        if (!pendingSketches.containsKey(epoch)) {
-//            Unnecessary epoch sent
-//            return this;
-//        }
-//
-//
-//        Map<Integer, SketchSummary> bucket = pendingSketches.get(epoch);
-//        if (bucket == null) {
-//            return this;
-//        }
-//        bucket.putIfAbsent(s.colId(), s);
-//
-//        if(Debug.MESSAGE)
-//            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(), msg.summary().colId(),
-//                    "-", String.valueOf(Debug.State.NONE),
-//                    "Sketch arrived for round: {} epoch {},  colid: {} , cardinaliy: {}", msg.summary().round(),
-//                    msg.summary().epoch(), msg.summary().colId(), msg.summary().distinctValues());
-//        if (bucket.size() == metadata.totalCols()) {
-//            evaluatePairs(epoch, bucket);
-//            pendingSketches.remove(epoch);
-//            evaluatedEpochs.add(epoch);
-//        }
-//        return this;
     }
 
     private void compareWithExisting(CheckpointState st, int newCol,SketchSummary newSketch){
@@ -197,72 +200,9 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
             timers.startSingleTimer("missing-sketches-" + msg.round(),
                     new AppraiserCommand.CheckMissingSketches(msg.round()), MISSING_SKETCH_DELAY);
         }
-//        long epoch = msg.epoch();
-//        pendingSketches.computeIfAbsent(epoch, e -> new HashMap<>());
-//        for (int c = 0; c < metadata.totalCols(); c++) {
-//            sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(c)).tell(
-//                            new AACommand.EmitSketch(msg.epoch(), getContext().getSelf()));
-//        }
         cleanupOldCheckpoints();
         return this;
     }
-
-    private void evaluatePairs(long epoch, Map<Integer, SketchSummary> summaries) {
-        List<Integer> cols = new ArrayList<>(summaries.keySet());
-        Collections.sort(cols);
-
-        int emitted = 0, prunedType = 0, prunedHeuristic = 0;
-
-        for (int lhs : cols) {
-            for (int rhs : cols) {
-                if (lhs == rhs)
-                    continue;
-                SketchSummary ls = summaries.get(lhs);
-                SketchSummary rs = summaries.get(rhs);
-
-                if (ls.distinctValues() == 0)
-                    continue;
-
-                //already being tracked, so no more retracking request.
-                if(activeCandidates.contains(new UnaryPair(lhs, rhs)))
-                    continue;
-
-                //Data Type Pruning
-                if(!testCompatibility(metadata.typeOf(lhs),metadata.typeOf(rhs))){
-                    prunedType++;
-                    continue;
-                }
-
-                //Distinct Count Pruning - HLL
-                if (ls.distinctValues() > rs.distinctValues()) {
-                    prunedHeuristic++;
-                    continue;
-                }
-
-                //KMV Pruning
-                double containment = ls.kmv().containmentIn(rs.kmv());
-                if (containment < UserConfig.KMV_PRUN_THRESHOLD) {
-                    prunedHeuristic++;
-                    continue;
-                }
-
-                emitted++;
-                if(Debug.MESSAGE)
-                    formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(),-1,
-                            Debug.pair(lhs,rhs), String.valueOf(Debug.State.NONE),
-                            " Proposing pair: {} , {} , containment: {}",lhs,rhs,containment);
-                activeCandidates.add(new UnaryPair(lhs, rhs));
-                EntityRef<CMCommand> cmShard = sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhs));
-                //cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), epoch)));
-            }
-            if(Debug.INTERNAL)
-                formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.app(),-1,
-                        "-", String.valueOf(Debug.State.NONE),
-                        "Pruned {} distinct values for type and distinct count heuristic,{} distinct values for containment heuristic" +
-                                " Evaluated {} pairs",prunedType,prunedHeuristic,emitted);
-
-            }
-        }
 
     private void evaluateOneDirection(CheckpointState st, SketchSummary lhsS, SketchSummary rhsS) {
         int lhs = lhsS.colId();
@@ -359,7 +299,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
     private void tryMarkEvaluated(CheckpointState st) {
         if (st.evaluated)
             return;
-        if (st.receivedCount < metadata.totalCols())
+        if (st.receivedCount != metadata.totalCols())
             return;
         st.evaluated = true;
         timers.cancel("missing-sketches-" + st.round);
@@ -367,7 +307,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(), -1, "-",
                     String.valueOf(Debug.State.NONE), "Checkpoint round={} fully evaluated with {} sketches",
                     st.round, st.receivedCount);
-
+        maybeSendNoMoreCandidates();
         cleanupOldCheckpoints();
     }
 

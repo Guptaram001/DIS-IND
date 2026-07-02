@@ -17,7 +17,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static disIND.streamBasedShardedDispatcher.utility.Debug.app;
 import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
 public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
@@ -29,16 +28,18 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private final ActorRef<BDCommand> selfRef;
     private int[]  cursors;
 
-    private long epoch     = 0L;
+    private final ActorRef<RCCommand> rcRef;
+    private ActorRef<BDReply> finishReplyTo;
+    private int finalRound = -1;
+    private boolean finishRequested = false;
 
+    private long epoch     = 0L;
     private long[] rowBuffer;
     private int[] vidBuffer;
     private int bufCapacity = 0;
     private int localBufCols = 0;
 
     private final Map<Long, PendingEpoch> pendingPerEpoch = new HashMap<>();
-    private long    lastSentEpoch     = -1L;
-    private boolean ingestionDoneReceived = false;
 
     private final Map<String, CachedTableBatch> batchCache = new HashMap<>();
     private static String key(int tableId, int batchId) {
@@ -48,14 +49,14 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
 
     public static Behavior<BDCommand> create(ValueIdMap vidMap, ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
-                                             DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
+                                             DatasetMetadata metadata,ActorRef<StatsCommand> statsRef,ActorRef<RCCommand> rcRef) {
         return Behaviors.setup(ctx ->
-                new BatchDispatcherActor_(ctx,  vidMap, sharding, appraiserRef,metadata,statsRef));
+                new BatchDispatcherActor_(ctx,  vidMap, sharding, appraiserRef,metadata,statsRef,rcRef));
     }
 
     private BatchDispatcherActor_(ActorContext<BDCommand> ctx, ValueIdMap valueIdMap,
                                   ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
-                                  DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
+                                  DatasetMetadata metadata,ActorRef<StatsCommand> statsRef,ActorRef<RCCommand> rcRef) {
         super(ctx);
         getContext().getLog().info("BD STARTED");
         this.valueIdMap   = valueIdMap;
@@ -65,6 +66,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         this.cursors      = new int[metadata.totalCols()];
         this.metadata     = metadata;
         this.statsRef     = statsRef;
+        this.rcRef        = rcRef;
     }
 
     @Override
@@ -72,12 +74,28 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         return newReceiveBuilder()
                 .onMessage(BDCommand.SendTableBatch.class, this::onSendTableBatch)
                 .onMessage(BDCommand.BatchFlushed.class, this::onBatchFlushed)
-                .onMessage(BDCommand.IngestionDone.class, this::onIngestionDone)
+                .onMessage(BDCommand.FinishDiscovery.class, this::onFinishDiscovery)
                 .onMessage(BDCommand.CheckPoint.class,this::onCheckPoint)
                 .onMessage(BDCommand.MissingBatchRequest.class, this::onMissingBatchRequest)
                 .onMessage(BDCommand.AaCheckpointStatus.class, this::onAaCheckpointStatus)
                 .onAnyMessage(msg -> {getContext().getLog().info("BD GOT {}", msg.getClass());return this;})
                 .build();
+    }
+
+    private Behavior<BDCommand> onFinishDiscovery(BDCommand.FinishDiscovery msg) {
+        this.finishRequested = true;
+        this.finishReplyTo = msg.replyTo();
+        this.finalRound = msg.finalRound();
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),-1,"-",
+                    String.valueOf(Debug.State.NONE), "FinishDiscovery received finalRound={} finalBatchByTable={}",
+                    msg.finalRound(), msg.finalBatchByTable());
+
+        selfRef.tell(new BDCommand.CheckPoint(msg.finalRound(), msg.finalBatchByTable()));
+        rcRef.tell(new RCCommand.AwaitDiscoveryFinished(msg.finalRound(), msg.replyTo()));
+        appraiserRef.tell(new AppraiserCommand.FinishDiscovery(msg.finalRound(), rcRef));
+
+        return this;
     }
 
     private Behavior<BDCommand> onAaCheckpointStatus(BDCommand.AaCheckpointStatus msg) {
@@ -149,8 +167,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                 //ValueId map checking
                 //int id = valueIdMap.getOrInsert(value);
                 //System.out.printf("raw='%s' -> id=%d, round=%d %n", value, id,msg.inputBatchDetails().round());
-                if(value.equals('2'))
-                    return this;
                 vidBuffer[base + cur] = valueIdMap.getOrInsert(value);
                 cursors[localCol] = cur + 1;
             }
@@ -182,7 +198,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                     .tell(new AACommand.InsertBatch(detailsForCol, rArr, vArr, selfRef));
         }
         if (expected == 0) {
-            maybeForwardIngestionDone(epoch);
+            //maybeForwardIngestionDone(epoch);
         } else
             pendingPerEpoch.put(epoch, new PendingEpoch(expected, msg.replyTo()));
 
@@ -190,15 +206,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         return this;
     }
 
-    private Behavior<BDCommand> onIngestionDone(BDCommand.IngestionDone msg) {
-        ingestionDoneReceived = true;
-        lastSentEpoch = epoch;
-        ActorRef<BDReply> finishReplyTo = msg.replyTo();
-        if (pendingPerEpoch.isEmpty()) {
-            appraiserRef.tell(new AppraiserCommand.IngestionDone(epoch, getContext().getSelf()));
-        }
-        return this;
-    }
 
     private Behavior<BDCommand> onBatchFlushed(BDCommand.BatchFlushed msg) {
         //Currently not properly acking from the ATTRA. it is acking but not tested fully .
@@ -211,22 +218,11 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             return this;
         }
         pendingPerEpoch.remove(ackEpoch);
-//        if (p.replyTo() != null)
-//            p.replyTo().tell(new BDReply.BatchAccepted(ackEpoch));
 
-        maybeForwardIngestionDone(ackEpoch);
-        if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),msg.colId(),"-",
                     String.valueOf(Debug.State.NONE), " BatchFlushed completed epoch={} col={}",
                     ackEpoch, msg.colId());
         return this;
-    }
-
-    private void maybeForwardIngestionDone(long completedEpoch) {
-        if (ingestionDoneReceived && completedEpoch == lastSentEpoch) {
-            ingestionDoneReceived = false;
-            appraiserRef.tell(new AppraiserCommand.IngestionDone(completedEpoch, getContext().getSelf()));
-        }
     }
 
     private Behavior<BDCommand> onMissingBatchRequest(BDCommand.MissingBatchRequest msg) {

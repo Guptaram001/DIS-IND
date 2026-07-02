@@ -9,13 +9,13 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
-import disIND.streamBasedShardedDispatcher.model.SharedModel;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.utility.Debug;
 import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 import org.roaringbitmap.RoaringBitmap;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,10 +30,16 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final DatasetMetadata metadata;
     private final ActorRef<RACommand>  raRef;
     private final ActorRef<LMCommand>  lmRef;
-    private final ActorRef<RCCommand>  rcRef;
     private final ActorRef<AppraiserCommand> apRef;
     private final int cleanThreshold;
     private final ClusterSharding sharding;
+
+    private final ActorRef<RCCommand> rcRef;
+    private boolean noMoreCandidates = false;
+    private boolean finishedReported = false;
+    private int finalRound = -1;
+    private int activeReplays = 0;
+    private int activeMembershipChecks = 0;
 
     public enum CandidateStatus {  REBUILDING,REPLAYING,TRACKED_CLEAN, TRACKED_VIOLATING, UNTRACKED }
     private int raInProgress = 0;
@@ -102,9 +108,55 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 .onMessage(CMCommand.RhsReplayDelta.class, this::onRhsReplayDelta)
                 .onMessage(CMCommand.LhsReplayDelta.class, this::onLhsReplayDelta)
                 .onMessage(CMCommand.MembershipResult.class, this::onMembershipResult)
+                .onMessage(CMCommand.NoMoreCandidates.class, this::onNoMoreCandidates)
                 .onMessage(CMCommand.RhsLiveDelta.class,this::onRhsLiveDelta)
                 .onMessage(CMCommand.LhsLiveDelta.class,this::onLhsLiveDelta)
                 .build();
+    }
+
+    private Behavior<CMCommand> onNoMoreCandidates(CMCommand.NoMoreCandidates msg) {
+        noMoreCandidates = true;
+        finalRound = msg.finalRound();
+        maybeReportFinished();
+        return this;
+    }
+
+    private void maybeReportFinished() {
+        if (!noMoreCandidates)
+            return;
+        if (finishedReported)
+            return;
+        if (raInProgress > 0)
+            return;
+        if (activeReplays > 0)
+            return;
+        if (activeMembershipChecks > 0)
+            return;
+        finishedReported = true;
+
+        List<UnaryPair> unary = collectUnaryResults();
+        List<NaryPair> nary = List.of();
+
+        rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound, unary, nary));
+
+        if (Debug.STATE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.cm(),
+                    lhsOwnerCol, "", String.valueOf(Debug.State.NONE),
+                    "Finished for finalRound={} ", lhsOwnerCol,finalRound);
+
+    }
+
+    private List<UnaryPair> collectUnaryResults() {
+        List<UnaryPair> result = new ArrayList<>();
+        for (Map.Entry<UnaryPair, UnaryState> e : unaryPairs.entrySet()) {
+            UnaryState s = e.getValue();
+            if (s.status != CandidateStatus.TRACKED_CLEAN)
+                continue;
+            if (!s.violatingValues.isEmpty())
+                continue;
+            result.add(e.getKey());
+        }
+        return result;
     }
 
     private Behavior<CMCommand> onLhsLiveDelta(CMCommand.LhsLiveDelta msg) {
@@ -127,6 +179,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
             s.pendingMembershipChecks++;
             rhs.tell(new AACommand.CheckMembership(pair, msg.round(), msg.newValues().clone(), selfEntityRef()));
+            activeMembershipChecks++;
         }
         return this;
     }
@@ -163,6 +216,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                     msg.pair(), msg.round(),msg.missingValues());
 
         UnaryState s = unaryPairs.get(msg.pair());
+        activeMembershipChecks--;
         if (s == null)
             return this;
         if (!isTracked(s))
@@ -184,7 +238,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                         "Deactivated Pair pair={} round={}", msg.pair(),msg.round());
             deactivatePair(msg.pair(), s);
         }
-
+        maybeReportFinished();
         return this;
     }
 
@@ -205,9 +259,6 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         }
         applyLhsReplay(pair, s, msg.newValues(), msg.toRound());
         maybeFinishReplay(pair, s, msg.toRound());
-        //EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
-        //s.pendingMembershipChecks++;
-        //rhs.tell(new AACommand.CheckMembership(pair, msg.toEpochInclusive(), msg.newValues().clone(), selfEntityRef()));
         return this;
     }
 
@@ -228,10 +279,6 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         }
         applyRhsReplay(s, msg.newValues());
         maybeFinishReplay(pair, s, msg.toRound());
-
-//        int before = s.violatingValues.getCardinality();
-//        s.violatingValues.andNot(msg.newValues());
-//        refreshUnaryState(s, msg.toEpochInclusive());
         return this;
     }
 
@@ -246,7 +293,9 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (s == null || s.status != CandidateStatus.REBUILDING)
             return this;
 
+        raInProgress--;
         s.status=CandidateStatus.REPLAYING;
+        activeReplays++;
         s.baselineSeen = true;
         s.violatingValues = msg.result().violationBitmap().clone();
         int round = msg.result().round();
@@ -264,6 +313,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         drainLiveBuffers(pair, s, msg.result().round());
         maybeFinishReplay(pair, s, msg.result().round());
+        maybeReportFinished();
         return this;
     }
 
@@ -355,6 +405,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
         s.pendingMembershipChecks++;
         rhs.tell(new AACommand.CheckMembership(pair, round, values.clone(), selfEntityRef()));
+        activeMembershipChecks++;
     }
 
     private void maybeFinishReplay(UnaryPair pair, UnaryState s, int  round) {
@@ -365,6 +416,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (s.pendingMembershipChecks > 0)
             return;
         refreshUnaryState(s, round);
+        activeReplays--;
         s.baselineSeen = false;
         s.lhsReplaySeen = false;
         s.rhsReplaySeen = false;
@@ -372,6 +424,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         s.pendingLhsReplayValues.clear();
         s.pendingRhsReplayValues.clear();
         s.replayRound = -1;
+        maybeReportFinished();
     }
 
     private void deactivatePair(UnaryPair pair, UnaryState s) {
@@ -385,5 +438,6 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         EntityRef<AACommand> rhs =sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
         lhs.tell(new AACommand.DeactiveUnaryPair(pair, true));
         rhs.tell(new AACommand.DeactiveUnaryPair(pair, false));
+        maybeReportFinished();
     }
 }

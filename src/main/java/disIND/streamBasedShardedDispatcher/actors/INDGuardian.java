@@ -13,12 +13,8 @@ import disIND.streamBasedShardedDispatcher.monitor.DiscoveryStatsActor;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
 import disIND.streamBasedShardedDispatcher.utility.Debug;
-
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
 import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
@@ -45,6 +41,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         AtomicReference<ActorRef<CMCommand>> cmRefHolder = new AtomicReference<>();
         DatasetMetadata metadata = cfg.metadata();
         ActorRef<StatsCommand> statsRef = ctx.spawn(DiscoveryStatsActor.create(), "discovery-stats");
+        this.rcRef = ctx.spawn(ResultCollectorActor.create(metadata,statsRef), "result-collector");
 
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         sharding.init(Entity.of(AttributeActor.TYPE_KEY, entityCtx -> {
@@ -56,14 +53,12 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(),-1,"-",
                     String.valueOf(Debug.State.NONE), " Sharding init: {} columns",cfg.numCols());
 
-        this.rcRef = ctx.spawn(ResultCollectorActor.create(metadata,statsRef), "result-collector");
-
         ActorRef<RACommand> raRef = ctx.spawn(RebuildActor_.create(sharding,metadata,statsRef), "rebuild-actor");
 
         ActorRef<LMCommand> lmRef = ctx.spawn(LatticeManagerActor.create(cfg.maxArity(), cfg.maxConcurrentNra(),
                         metadata,statsRef), "lattice-manager");
 
-        ActorRef<AppraiserCommand> apRef = ctx.spawn(AppraisalActor_.create( sharding, metadata,statsRef), "appraisal-actor");
+        ActorRef<AppraiserCommand> apRef = ctx.spawn(AppraisalActor_.create( sharding, metadata,statsRef,rcRef), "appraisal-actor");
 
         sharding.init(Entity.of(CandidateManagerActor_.TYPE_KEY, entityCtx -> {
                     int lhsCol = Integer.parseInt(entityCtx.getEntityId().substring("cm-lhs-".length()));
@@ -78,20 +73,8 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         lmRef.tell(new LMCommand.InjectNra(nraRef));
 
         this.bdRef = ctx.spawn(BatchDispatcherActor_.create( vidMap, sharding, apRef, metadata,
-                statsRef), "batch-dispatcher");
+                statsRef,rcRef), "batch-dispatcher");
         System.out.println("BD REF = " + bdRef);
-
-//        if (!cfg.colTypes().isEmpty()) {
-//            for (Map.Entry<Integer, ColType> e : cfg.colTypes().entrySet()) {
-//                int colId = e.getKey();
-//                ColType ct = e.getValue();
-//                sharding.entityRefFor(AttributeActor.TYPE_KEY,
-//                                AACommand.entityId(colId))
-//                        .tell(new AACommand.SetPresetType(ct));
-//            }
-//            ctx.getLog().info("[Guardian] Preset types injected for {} columns",
-//                    cfg.colTypes().size());
-//        }
 
         if(Debug.INTERNAL)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(),-1,"-",
@@ -104,10 +87,6 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         return newReceiveBuilder()
                 .onMessage(BDCommand.IngestBatch.class, msg -> {
                     totalRows.addAndGet(msg.numRows());
-                    bdRef.tell(msg);
-                    return this;
-                })
-                .onMessage(BDCommand.IngestionDone.class, msg -> {
                     bdRef.tell(msg);
                     return this;
                 })

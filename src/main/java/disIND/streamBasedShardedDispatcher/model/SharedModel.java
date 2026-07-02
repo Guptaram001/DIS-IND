@@ -1,8 +1,6 @@
 package disIND.streamBasedShardedDispatcher.model;
 
-import akka.actor.Actor;
 import akka.actor.typed.ActorRef;
-import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.prototypeModel.model.AkkaSerializable;
 import disIND.streamBasedShardedDispatcher.structures.BitmapStore;
@@ -177,6 +175,7 @@ public final class SharedModel {
 
     public record InputBatchDetails(int tableId, long startRowId, int  batchId, long epoch, int round, int colId){}
     public record CachedTableBatch(InputBatchDetails inputBatchDetails, List<String[]> rows) {}
+    public record IngestionResult(long totalRows, int finalRound, Map<Integer, Integer> finalBatchByTable) {}
 
     public record ColumnSlice(
             int colId,
@@ -187,15 +186,15 @@ public final class SharedModel {
     public record PendingEpoch(int remaining, ActorRef<BDReply> replyTo) {}
 
     public sealed interface BDReply extends AkkaSerializable permits BDReply.BatchAccepted,
-    BDReply.IngestionFinished{
+    BDReply.DiscoveryFinished{
 
         record BatchAccepted(long epoch) implements BDReply {}
-        record IngestionFinished(long epoch) implements BDReply {}
+        record DiscoveryFinished(int finalRound) implements BDReply {}
     }
 
     public sealed interface BDCommand extends AkkaSerializable
             permits BDCommand.IngestBatch, BDCommand.BatchDispatched, BDCommand.BatchFlushed,
-            BDCommand.IngestionDone, BDCommand.Shutdown,
+            BDCommand.FinishDiscovery, BDCommand.Shutdown,
             BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher, BDCommand.SendTableBatch,
     BDCommand.CheckPoint, BDCommand.MissingBatchRequest, BDCommand.AaCheckpointStatus {
 
@@ -207,7 +206,7 @@ public final class SharedModel {
 
         record BatchFlushed(InputBatchDetails inputBatchDetails, int colId) implements BDCommand {}
 
-        record IngestionDone(ActorRef<BDReply> replyTo) implements BDCommand {}
+        record FinishDiscovery(int finalRound, Map<Integer, Integer> finalBatchByTable, ActorRef<BDReply> replyTo) implements BDCommand {}
 
         record Shutdown() implements BDCommand {}
 
@@ -266,14 +265,15 @@ public final class SharedModel {
     public sealed interface AppraiserCommand extends AkkaSerializable
             permits AppraiserCommand.SketchArrived,
             AppraiserCommand.CheckPoint,
-            AppraiserCommand.IngestionDone, AppraiserCommand.PairStateChanged,
+            AppraiserCommand.FinishDiscovery, AppraiserCommand.PairStateChanged,
             AppraiserCommand.CheckMissingSketches {
 
         record SketchArrived(SketchSummary summary) implements AppraiserCommand {}
         record CheckPoint(int round,long epoch,Map<Integer, Integer> maxBatchIdByTable)implements AppraiserCommand {}
         record CheckMissingSketches(int round) implements AppraiserCommand {}
 
-        record IngestionDone(long epoch, ActorRef<BDCommand> replyTo) implements AppraiserCommand {}
+        record FinishDiscovery(int finalRound, ActorRef<RCCommand> rcRef) implements AppraiserCommand {}
+
         record PairStateChanged(UnaryPair pair, PairState state) implements AppraiserCommand {}
     }
 
@@ -301,7 +301,7 @@ public final class SharedModel {
             CMCommand.DistinctValueDelta, CMCommand.IngestionDone,
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
     CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta,CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
-    CMCommand.MembershipResult{
+    CMCommand.MembershipResult, CMCommand.NoMoreCandidates {
 
         static String entityId(int lhsCol) {return "cm-lhs-" + lhsCol;}
         record UnaryCandidateProposed(UnaryCandidate candidate) implements CMCommand {}
@@ -319,6 +319,7 @@ public final class SharedModel {
                               RoaringBitmap newValues) implements CMCommand {}
         record RhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
                               RoaringBitmap newValues) implements CMCommand {}
+        record NoMoreCandidates(int finalRound) implements CMCommand {}
 
         /**
          * Sent by LM → CM when its queue is fully empty and nraInFlight=0.
@@ -364,12 +365,12 @@ public final class SharedModel {
     public sealed interface RCCommand extends AkkaSerializable
             permits RCCommand.UnaryConfirmed, RCCommand.NaryConfirmed,
             RCCommand.UnaryRetracted, RCCommand.GetReport,
-            RCCommand.PipelineDone {
+            RCCommand.PipelineDone, RCCommand.AwaitDiscoveryFinished, RCCommand.CmDiscoveryComplete {
 
-        record UnaryConfirmed(UnaryPair pair, long epoch)                  implements RCCommand {}
-        record NaryConfirmed(NaryPair pair, long epoch)                    implements RCCommand {}
-        record UnaryRetracted(UnaryPair pair, long epoch)                  implements RCCommand {}
-        record GetReport(ActorRef<IndReport> replyTo)                      implements RCCommand {}
+        record UnaryConfirmed(UnaryPair pair, int round) implements RCCommand {}
+        record NaryConfirmed(NaryPair pair, long epoch)  implements RCCommand {}
+        record UnaryRetracted(UnaryPair pair, long epoch) implements RCCommand {}
+        record GetReport(ActorRef<IndReport> replyTo) implements RCCommand {}
 
         /**
          * Sent by CM once all unary + n-ary evaluations have quiesced and no
@@ -377,6 +378,8 @@ public final class SharedModel {
          * pending GetReport ask so TpchLoader.run() unblocks without a sleep.
          */
         record PipelineDone()                                              implements RCCommand {}
+        record AwaitDiscoveryFinished(int finalRound, ActorRef<BDReply> replyTo) implements RCCommand {}
+        record CmDiscoveryComplete(int lhsOwnerCol, int round, List<UnaryPair> unaryPairs,List<NaryPair> naryPairs) implements RCCommand {}
     }
 
     // ── Report ────────────────────────────────────────────────────────────

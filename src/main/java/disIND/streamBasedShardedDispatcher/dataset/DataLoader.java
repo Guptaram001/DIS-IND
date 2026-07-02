@@ -22,8 +22,6 @@ import java.util.concurrent.CompletionStage;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
-import static disIND.streamBasedShardedDispatcher.utility.InferDataAttributes.*;
-
 public final class DataLoader {
     private static final Pattern PAT_CSV_EXT = Pattern.compile("\\.(csv|tbl)$");
 
@@ -99,15 +97,15 @@ public final class DataLoader {
         }
 
         long startMs = System.currentTimeMillis();
-        long totalRows = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), metadata.totalCols(),
+        IngestionResult ingestion = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), metadata.totalCols(),
                 batchSize, bdRef);
 
-        System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", totalRows, (System.currentTimeMillis() - startMs) / 1000.0);
-        //bdRef.tell(new BDCommand.IngestionDone());
-        CompletionStage<BDReply> doneFuture = AskPattern.ask(bdRef, BDCommand.IngestionDone::new, Duration.ofMinutes(10),
+        System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", ingestion.totalRows(), (System.currentTimeMillis() - startMs) / 1000.0);
+        CompletionStage<BDReply> doneFuture = AskPattern.ask(bdRef, replyTo -> new BDCommand.FinishDiscovery(
+                                ingestion.finalRound(), ingestion.finalBatchByTable(),replyTo), Duration.ofMinutes(30),
                 system.scheduler());
-
         doneFuture.toCompletableFuture().get();
+
         System.out.println("[Loader] Waiting for discovery result...");
         CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(system, BDCommand.GetResultCollector::new,
                 Duration.ofSeconds(5), system.scheduler());
@@ -128,9 +126,8 @@ public final class DataLoader {
         system.tell(new BDCommand.Shutdown());
     }
 
-    private static long ingestAllInterleaved(ActorSystem<BDCommand> system, List<String> files, List<Integer> offsets,
-            List<Integer> nCols, int totalCols, int batchSize, ActorRef<BDCommand> bdRef) throws Exception {
-
+    private static IngestionResult ingestAllInterleaved(ActorSystem<BDCommand> system, List<String> files, List<Integer> offsets,
+                                                                List<Integer> nCols, int totalCols, int batchSize, ActorRef<BDCommand> bdRef) throws Exception {
         int n = files.size();
         BufferedReader[] readers = new BufferedReader[n];
         String[] delims = new String[n];
@@ -215,22 +212,21 @@ public final class DataLoader {
             }
             System.out.printf("[Loader] Round %d: %d rows ingested%n", round, totalRows);
             if(round%10==0){
-                //Trigger checkpoint to BD, since each AA should have received same number of rows if there is in data
                 bdRef.tell(new BDCommand.CheckPoint(round,new HashMap<>(latestBatchByTable)));
             }
         }
+        int finalRound = round;
         System.out.println("[Loader] Per-file row counts:");
         for (int i = 0; i < n; i++) {
             if (nCols.get(i) == 0)
                 continue;
             System.out.printf("  %-25s %,d rows%n", Paths.get(files.get(i)).getFileName(), rowCounts[i]);
         }
-        return totalRows;
+        return new IngestionResult(totalRows, finalRound, new HashMap<>(latestBatchByTable));
     }
 
         private static void sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
         List<String[]> rows,int round,int individualBatchId) throws Exception {
-
 
             System.out.println("[Loader] Sending table batch to "+bdRef+" "+bdRef.path().name()+" tableId="+tableId+" " +
                     "startRowId="+startRowId+" rows="+rows.size());
@@ -243,36 +239,6 @@ public final class DataLoader {
                     .get();
 
         }
-
-    private static void addRowToBuffer(String[] cells, int rowIdx, int totalCols, String[] sentinel,
-            int offset, int fileCols, String[] vals) {
-
-        int base = rowIdx * totalCols;
-        System.arraycopy(sentinel, 0, cells, base, totalCols);
-        int limit = Math.min(vals.length, fileCols);
-        for (int c = 0; c < limit; c++) {
-            cells[base + offset + c] = clean(vals[c]);
-        }
-    }
-
-    private static void sendBatch(ActorSystem<BDCommand> system, String[] cells, int numRows, int totalCols,ActorRef<SharedModel.BDCommand> bdRef)
-            throws Exception {
-
-        //Need to look into retry logic if failed or more robust error handling.
-        String[] copy = Arrays.copyOf(cells, numRows * totalCols);
-//        AskPattern.ask(system,
-//                (ActorRef<BDCommand> replyTo)  -> new BDCommand.IngestBatch(copy, numRows, totalCols, replyTo),
-//                Duration.ofSeconds(30),
-//                system.scheduler()
-//        ).toCompletableFuture().get();
-
-        AskPattern.ask(bdRef,
-                ( ActorRef<BDReply> replyTo ) -> new BDCommand.IngestBatch(copy, numRows, totalCols, replyTo),
-                Duration.ofSeconds(5),
-                system.scheduler()
-        ).toCompletableFuture().get();
-
-    }
 
     private static List<String> listInputFiles(Path dir) throws IOException {
         try (Stream<Path> paths = Files.list(dir)) {
