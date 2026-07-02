@@ -146,6 +146,11 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                 int cur = cursors[localCol];
                 int base = localCol * bufCapacity;
                 rowBuffer[base + cur] = rowId;
+                //ValueId map checking
+                //int id = valueIdMap.getOrInsert(value);
+                //System.out.printf("raw='%s' -> id=%d, round=%d %n", value, id,msg.inputBatchDetails().round());
+                if(value.equals('2'))
+                    return this;
                 vidBuffer[base + cur] = valueIdMap.getOrInsert(value);
                 cursors[localCol] = cur + 1;
             }

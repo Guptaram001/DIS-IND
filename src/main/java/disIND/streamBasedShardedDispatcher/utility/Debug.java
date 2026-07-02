@@ -20,7 +20,7 @@ public final class Debug {
 
 
     public enum State {NONE, REBUILDING, REPLAYING, TRACKED_CLEAN, TRACKED_VIOLATING,INACTIVE}
-    public enum LogType {MESSAGE, FLOW, DELTA, CHECKPOINT, PERF, STATE, INTERNAL}
+    public enum LogType {MESSAGE, FLOW, DELTA, CHECKPOINT, PERF, STATE, INTERNAL,PRUNED}
 
 
     public static final boolean MESSAGE = true;
@@ -29,6 +29,9 @@ public final class Debug {
     public static final boolean PERF = true;
     public static final boolean STATE = true;
     public static final boolean INTERNAL = false;
+    public static final boolean PRUNED_KMV = true;
+    public static final boolean PRUNED_DISTINCT = true;
+    public static final boolean PRUNED_TYPE = true;
 
 
     public static String cm() {

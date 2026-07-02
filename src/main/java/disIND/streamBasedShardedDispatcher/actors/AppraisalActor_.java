@@ -228,7 +228,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                     continue;
 
                 //Data Type Pruning
-                if(!testCompatibility(metadata.colTypes().get(lhs),metadata.colTypes().get(rhs))){
+                if(!testCompatibility(metadata.typeOf(lhs),metadata.typeOf(rhs))){
                     prunedType++;
                     continue;
                 }
@@ -253,7 +253,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
                             " Proposing pair: {} , {} , containment: {}",lhs,rhs,containment);
                 activeCandidates.add(new UnaryPair(lhs, rhs));
                 EntityRef<CMCommand> cmShard = sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhs));
-                cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), epoch)));
+                //cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(new UnaryPair(lhs, rhs), epoch)));
             }
             if(Debug.INTERNAL)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.app(),-1,
@@ -264,11 +264,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
             }
         }
 
-    private void evaluateOneDirection(
-            CheckpointState st,
-            SketchSummary lhsS,
-            SketchSummary rhsS
-    ) {
+    private void evaluateOneDirection(CheckpointState st, SketchSummary lhsS, SketchSummary rhsS) {
         int lhs = lhsS.colId();
         int rhs = rhsS.colId();
 
@@ -294,19 +290,36 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
             return;
         }
 
-        if (!testCompatibility(metadata.colTypes().get(lhs), metadata.colTypes().get(rhs))) {
+        if (!testCompatibility(metadata.typeOf(lhs), metadata.typeOf(rhs))) {
             st.pairState[idx] = PairEvalState.TYPE_PRUNED;
+            if(Debug.PRUNED_TYPE)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.PRUNED), Debug.app(),-1,
+                        Debug.pair(lhs,rhs), String.valueOf(Debug.State.NONE),
+                        " Type Pruned: pair: {}, {}, {}, round: {}, lhsType: {} , rhsType: {}",Debug.pair(lhs,rhs),
+                        metadata.displayName(lhs),metadata.displayName(rhs),metadata.typeOf(lhs),metadata.typeOf(rhs));
             return;
         }
 
         if (lhsS.distinctValues() > rhsS.distinctValues()) {
             st.pairState[idx] = PairEvalState.DISTINCT_PRUNED;
+            if(Debug.PRUNED_DISTINCT)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.PRUNED), Debug.app(),-1,
+                        Debug.pair(lhs,rhs), String.valueOf(Debug.State.NONE),
+                        "Distinct Pruned: pair: {}, {}, {}, round: {}, lhsCount: {}, rhsCount: {}",Debug.pair(lhs,rhs),
+                        metadata.displayName(lhs),metadata.displayName(rhs),lhsS.distinctValues() , rhsS.distinctValues());
             return;
         }
 
         double containment = lhsS.kmv().containmentIn(rhsS.kmv());
+        System.out.println(containment);
         if (containment < UserConfig.KMV_PRUN_THRESHOLD) {
             st.pairState[idx] = PairEvalState.KMV_PRUNED;
+            if(Debug.PRUNED_KMV)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.PRUNED), Debug.app(),-1,
+                        Debug.pair(lhs,rhs), String.valueOf(Debug.State.NONE),
+                        "KMV Pruned: pair: {}, {}, {}, round: {}, containment: {}, lDV: {}, RDV: {}, LK: {}, RK: {}",
+                        Debug.pair(lhs,rhs), metadata.displayName(lhs),metadata.displayName(rhs),st.round,containment
+                ,lhsS.distinctValues(),rhsS.distinctValues(),Arrays.toString(lhsS.kmv().hashes()),Arrays.toString(rhsS.kmv().hashes()));
             return;
         }
 
@@ -315,10 +328,10 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
         if (Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.app(), -1,
                     Debug.pair(lhs, rhs), String.valueOf(Debug.State.NONE),
-                    "Proposing pair round={} epoch={} lhs={} rhs={} containment={}", st.round, st.epoch, lhs, rhs,
-                    containment);
+                    "Proposing pair: {}, IND({}, {}), round={}, containment={}",
+                    Debug.pair(lhs,rhs), metadata.displayName(lhs),metadata.displayName(rhs),st.round, containment);
         EntityRef<CMCommand> cmShard = sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhs));
-        cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(pair, st.epoch)));
+        cmShard.tell(new CMCommand.UnaryCandidateProposed(new UnaryCandidate(pair, st.round)));
     }
 
     private void requestOutstandingSketches() {

@@ -16,17 +16,13 @@ import java.util.Map;
 
 public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     private final ActorRef<StatsCommand> statsRef;
-    private final Map<Integer, String> colNames;
     private final DatasetMetadata metadata;
-    public static Behavior<RCCommand> create(Map<Integer, String> colNames, DatasetMetadata metadata,
-                                             ActorRef<StatsCommand> statsRef) {
-        return Behaviors.setup(ctx -> new ResultCollectorActor(ctx, colNames,metadata,statsRef));
+    public static Behavior<RCCommand> create( DatasetMetadata metadata, ActorRef<StatsCommand> statsRef) {
+        return Behaviors.setup(ctx -> new ResultCollectorActor(ctx,metadata,statsRef));
     }
 
-    private ResultCollectorActor(ActorContext<RCCommand> ctx, Map<Integer, String> colNames, DatasetMetadata metadata,
-                                 ActorRef<StatsCommand> statsRef) {
+    private ResultCollectorActor(ActorContext<RCCommand> ctx, DatasetMetadata metadata, ActorRef<StatsCommand> statsRef) {
         super(ctx);
-        this.colNames = colNames;
         this.metadata = metadata;
         this.statsRef = statsRef;
     }

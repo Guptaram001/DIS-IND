@@ -16,6 +16,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+
 public final class SharedModel {
 
     private SharedModel() {}
@@ -37,20 +38,36 @@ public final class SharedModel {
         }
     }
 
-    public record DatasetMetadata(
-            int totalCols,
-            List<Integer> offsets,
-            List<Integer> nCols,
-            Map<Integer,String> colNames,
-            Map<Integer,ColType> colTypes
-    ) {}
+    public record DatasetMetadata(int totalCols, List<Integer> offsets, List<Integer> nCols,
+            List<String> tableNames, Map<Integer, ColumnInfo> columns) {
+
+        public ColumnInfo column(int globalId) {
+            return columns.get(globalId);
+        }
+
+        public String qualifiedName(int globalId) {
+            return columns.get(globalId).qualifiedName();
+        }
+
+        public int tableOf(int globalId) {
+            return columns.get(globalId).tableId();
+        }
+
+        public ColType typeOf(int globalId) {
+            return columns.get(globalId).type();
+        }
+
+        public String displayName(int globalCol) {
+            return columns().get(globalCol).displayName();
+        }
+    }
 
     public record ScanResult(
             UnaryPair pair,
             int violationCount,
             List<Integer> witnesses,
             RoaringBitmap violationBitmap,
-            long epoch
+            int round
     ) implements AkkaSerializable {}
 
     public record NaryCheckResult(
@@ -60,6 +77,18 @@ public final class SharedModel {
             List<String> witnesses,
             long evalEpoch
     ) implements AkkaSerializable {}
+
+    public record ColumnInfo(int globalId, int tableId, String tableName, int localColumnId,
+            String columnName, ColType type) {
+
+        public String qualifiedName() {
+            return tableName + "." + columnName;
+        }
+
+        public String displayName() {
+            return tableName + "[" + localColumnId + "]";
+        }
+    }
 
     //  Data carriers
 
@@ -228,7 +257,7 @@ public final class SharedModel {
         record SendColumnData(UnaryCandidate candidate, EntityRef<AACommand> rhsRef, EntityRef<CMCommand> cmRef) implements AACommand {}
 
         record CompareBitmap(UnaryCandidate candidate,RoaringBitmap lhsBitmap,EntityRef<CMCommand> cmRef) implements AACommand {}
-        record CheckMembership(UnaryPair pair, long epoch, RoaringBitmap values, EntityRef<CMCommand> replyTo) implements AACommand {}
+        record CheckMembership(UnaryPair pair, int round, RoaringBitmap values, EntityRef<CMCommand> replyTo) implements AACommand {}
         record DeactiveUnaryPair(UnaryPair pair, boolean lhsSide) implements AACommand {}
         record RequestSketch(int round, long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
     }
@@ -248,7 +277,7 @@ public final class SharedModel {
         record PairStateChanged(UnaryPair pair, PairState state) implements AppraiserCommand {}
     }
 
-    public record UnaryCandidate(UnaryPair pair, long evalEpoch) implements AkkaSerializable {}
+    public record UnaryCandidate(UnaryPair pair, int checkpointRound) implements AkkaSerializable {}
 
 
     public sealed interface RACommand extends AkkaSerializable
@@ -283,12 +312,12 @@ public final class SharedModel {
         record IngestionDone() implements CMCommand {}
         record NaryDispatched() implements CMCommand {}
         record DistinctDeltaBatch(int colId, long epoch, RoaringBitmap insertedDistinctValues) implements CMCommand {}
-        record LhsLiveDelta( int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
-        record RhsLiveDelta( int colId, long epoch, RoaringBitmap newValues) implements CMCommand {}
-        record MembershipResult(UnaryPair pair, long epoch, RoaringBitmap missingValues) implements CMCommand {}
-        record LhsReplayDelta(UnaryPair pair, int colId, long fromEpochExclusive, long toEpochInclusive,
+        record LhsLiveDelta( int colId, int round , RoaringBitmap newValues) implements CMCommand {}
+        record RhsLiveDelta( int colId, int round , RoaringBitmap newValues) implements CMCommand {}
+        record MembershipResult(UnaryPair pair, int round, RoaringBitmap missingValues) implements CMCommand {}
+        record LhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
                               RoaringBitmap newValues) implements CMCommand {}
-        record RhsReplayDelta(UnaryPair pair, int colId, long fromEpochExclusive, long toEpochInclusive,
+        record RhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
                               RoaringBitmap newValues) implements CMCommand {}
 
         /**

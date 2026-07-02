@@ -18,16 +18,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
 public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
-    public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold, Map<Integer, String> colNames,
-                         List<Integer> tableOffsets, Map<Integer, ColType> colTypes, DatasetMetadata metadata) {
+    public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold,DatasetMetadata metadata) {
 
         public static Config withAll(DatasetMetadata metadata) {
-            return new Config(metadata.totalCols(), 3, 32, 1, metadata.colNames(), metadata.offsets(), metadata.colTypes(), metadata);
+            return new Config(metadata.totalCols(), 3, 32, 1, metadata);
         }
     }
 
@@ -56,7 +56,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(),-1,"-",
                     String.valueOf(Debug.State.NONE), " Sharding init: {} columns",cfg.numCols());
 
-        this.rcRef = ctx.spawn(ResultCollectorActor.create(cfg.colNames(),metadata,statsRef), "result-collector");
+        this.rcRef = ctx.spawn(ResultCollectorActor.create(metadata,statsRef), "result-collector");
 
         ActorRef<RACommand> raRef = ctx.spawn(RebuildActor_.create(sharding,metadata,statsRef), "rebuild-actor");
 

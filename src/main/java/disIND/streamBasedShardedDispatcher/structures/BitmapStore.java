@@ -24,7 +24,7 @@ public final class BitmapStore {
         return copy;
     }
 
-    public SharedModel.ScanResult compareAgainst(RoaringBitmap lhs, SharedModel.UnaryPair pair, long epoch) {
+    public SharedModel.ScanResult compareAgainst(RoaringBitmap lhs, SharedModel.UnaryPair pair, int round) {
         RoaringBitmap violating = lhs;
         violating.andNot(bitmapStore);
         int count = violating.getCardinality();
@@ -33,6 +33,6 @@ public final class BitmapStore {
         while (it.hasNext() && witnesses.size() < 2) {
             witnesses.add(it.next());
         }
-        return new SharedModel.ScanResult(pair,count,witnesses,violating,epoch);
+        return new SharedModel.ScanResult(pair,count,witnesses,violating,round);
     }
 }

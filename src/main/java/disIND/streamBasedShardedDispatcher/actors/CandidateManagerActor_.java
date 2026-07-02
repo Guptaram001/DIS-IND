@@ -40,8 +40,9 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
     private static class UnaryState {
         CandidateStatus status = CandidateStatus.UNTRACKED;
-        long lastEvaluatedEpoch = -1L;
+        int lastValidatedRound = -1;
         int pendingMembershipChecks = 0;
+        int replayRound = -1;
 
         List<Integer> witnesses = List.of();
         int violatingCount = 0;
@@ -49,11 +50,9 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         RoaringBitmap bufferedLhsNewValues = new RoaringBitmap();
         RoaringBitmap bufferedRhsNewValues = new RoaringBitmap();
-        long bufferedMaxEpoch = -1L;
 
         RoaringBitmap pendingLhsReplayValues = new RoaringBitmap();
         RoaringBitmap pendingRhsReplayValues = new RoaringBitmap();
-        long pendingReplayMaxEpoch = -1L;
 
         boolean baselineSeen = false;
         boolean lhsReplaySeen = false;
@@ -109,6 +108,11 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onLhsLiveDelta(CMCommand.LhsLiveDelta msg) {
+        if (Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),
+                    lhsOwnerCol, "", String.valueOf(Debug.State.NONE),
+                    "Applied LHS live delta col={} round={} values={} ",
+                    msg.colId(), msg.round(), msg.newValues().getCardinality());
         for (Map.Entry<UnaryPair, UnaryState> e : unaryPairs.entrySet()) {
             UnaryPair pair = e.getKey();
             UnaryState s = e.getValue();
@@ -116,14 +120,13 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 continue;
             if (s.status == CandidateStatus.REBUILDING) {
                 s.bufferedLhsNewValues.or(msg.newValues());
-                s.bufferedMaxEpoch = Math.max(s.bufferedMaxEpoch, msg.epoch());
                 continue;
             }
             if (!isTracked(s))
                 continue;
             EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
             s.pendingMembershipChecks++;
-            rhs.tell(new AACommand.CheckMembership(pair, msg.epoch(), msg.newValues().clone(), selfEntityRef()));
+            rhs.tell(new AACommand.CheckMembership(pair, msg.round(), msg.newValues().clone(), selfEntityRef()));
         }
         return this;
     }
@@ -136,19 +139,18 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 continue;
             if (s.status == CandidateStatus.REBUILDING) {
                 s.bufferedRhsNewValues.or(msg.newValues());
-                s.bufferedMaxEpoch = Math.max(s.bufferedMaxEpoch, msg.epoch());
                 continue;
             }
             if (!isTracked(s))
                 continue;
             int before = s.violatingValues.getCardinality();
             s.violatingValues.andNot(msg.newValues());
-            refreshUnaryState(s, msg.epoch());
+            refreshUnaryState(s, msg.round());
             if (Debug.MESSAGE) {
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),
                         lhsOwnerCol, Debug.pairTag(pair), String.valueOf(s.status),
-                        "Applied RHS live delta col={} epoch={} values={} violationsBefore={} violationsAfter={}",
-                        msg.colId(), msg.epoch(), msg.newValues().getCardinality(), before, s.violatingValues.getCardinality());
+                        "Applied RHS live delta col={} round={} values={} violationsBefore={} violationsAfter={}",
+                        msg.colId(), msg.round(), msg.newValues().getCardinality(), before, s.violatingValues.getCardinality());
             }
         }
         return this;
@@ -157,8 +159,8 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private Behavior<CMCommand> onMembershipResult(CMCommand.MembershipResult msg) {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,Debug.pairTag(msg.pair()),
-                    String.valueOf(Debug.State.NONE), "Membership Result received: pair: {}, epoch: {}, missingValues: {}",
-                    msg.pair(), msg.epoch(),msg.missingValues());
+                    String.valueOf(Debug.State.NONE), "Membership Result received: pair: {}, round: {}, missingValues: {}",
+                    msg.pair(), msg.round(),msg.missingValues());
 
         UnaryState s = unaryPairs.get(msg.pair());
         if (s == null)
@@ -166,17 +168,22 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (!isTracked(s))
             return this;
 
-        if(msg.epoch()<s.pendingReplayMaxEpoch)
+        if(msg.round()!=s.replayRound)
             return this;
 
         if (s.pendingMembershipChecks > 0)
             s.pendingMembershipChecks--;
         s.violatingValues.or(msg.missingValues());
         if (s.pendingMembershipChecks == 0)
-            maybeFinishReplay(msg.pair(), s, msg.epoch());
+            maybeFinishReplay(msg.pair(), s, msg.round());
 
-        if (s.violatingValues.getCardinality() > UserConfig.MAX_TRACKED_VIOLATIONS)
+        if (s.violatingValues.getCardinality() > UserConfig.MAX_TRACKED_VIOLATIONS) {
+            if(Debug.STATE)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.cm(),lhsOwnerCol,Debug.pairTag(msg.pair()),
+                        String.valueOf(Debug.State.NONE),
+                        "Deactivated Pair pair={} round={}", msg.pair(),msg.round());
             deactivatePair(msg.pair(), s);
+        }
 
         return this;
     }
@@ -185,20 +192,19 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,"-",
                     String.valueOf(Debug.State.NONE),
-                    "LHS replay delta received col={} fromEpoch={} toEpoch={} values={}",
-                    msg.colId(), msg.fromEpochExclusive(),msg.toEpochInclusive(), msg.newValues().getCardinality());
+                    "LHS replay delta received col={} fromRound={} toRound={} values={}",
+                    msg.colId(), msg.fromRound(),msg.toRound(), msg.newValues().getCardinality());
         UnaryPair pair = msg.pair();
         UnaryState s = unaryPairs.get(pair);
         if (s == null)
             return this;
         s.lhsReplaySeen = true;
-        s.pendingReplayMaxEpoch = Math.max(s.pendingReplayMaxEpoch, msg.toEpochInclusive());
         if (!s.baselineSeen) {
             s.pendingLhsReplayValues.or(msg.newValues());
             return this;
         }
-        applyLhsReplay(pair, s, msg.newValues(), msg.toEpochInclusive());
-        maybeFinishReplay(pair, s, msg.toEpochInclusive());
+        applyLhsReplay(pair, s, msg.newValues(), msg.toRound());
+        maybeFinishReplay(pair, s, msg.toRound());
         //EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
         //s.pendingMembershipChecks++;
         //rhs.tell(new AACommand.CheckMembership(pair, msg.toEpochInclusive(), msg.newValues().clone(), selfEntityRef()));
@@ -213,16 +219,15 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,"-",
                     String.valueOf(Debug.State.NONE),
-                    "RHS replay delta received col={} fromEpoch={} toEpoch={} values={}",
-                    msg.colId(), msg.fromEpochExclusive(), msg.toEpochInclusive(),msg.newValues().getCardinality());
+                    "RHS replay delta received col={} fromRound={} toRound={} values={}",
+                    msg.colId(), msg.fromRound(), msg.toRound(),msg.newValues().getCardinality());
         s.rhsReplaySeen = true;
-        s.pendingReplayMaxEpoch = Math.max(s.pendingReplayMaxEpoch, msg.toEpochInclusive());
         if (!s.baselineSeen) {
             s.pendingRhsReplayValues.or(msg.newValues());
             return this;
         }
         applyRhsReplay(s, msg.newValues());
-        maybeFinishReplay(pair, s, msg.toEpochInclusive());
+        maybeFinishReplay(pair, s, msg.toRound());
 
 //        int before = s.violatingValues.getCardinality();
 //        s.violatingValues.andNot(msg.newValues());
@@ -234,8 +239,8 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private Behavior<CMCommand> onUnaryViolationReport(CMCommand.UnaryViolationReport msg) {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,"-",
-                String.valueOf(Debug.State.REPLAYING), "Unary Report Received: pair: {} , epoch: {} , witnesses: {} , violatingCount: {}",
-                    msg.result().pair(), msg.result().epoch(), msg.result().witnesses(), msg.result().violationCount());
+                String.valueOf(Debug.State.REPLAYING), "Unary Report Received: pair: {} , round: {} , witnesses: {} , violatingCount: {}",
+                    msg.result().pair(), msg.result().round(), msg.result().witnesses(), msg.result().violationCount());
         UnaryPair pair = msg.result().pair();
         UnaryState s = unaryPairs.get(pair);
         if (s == null || s.status != CandidateStatus.REBUILDING)
@@ -244,47 +249,50 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         s.status=CandidateStatus.REPLAYING;
         s.baselineSeen = true;
         s.violatingValues = msg.result().violationBitmap().clone();
-        long epoch = msg.result().epoch();
+        int round = msg.result().round();
 
         if (!s.pendingRhsReplayValues.isEmpty()) {
             applyRhsReplay(s, s.pendingRhsReplayValues);
-            epoch = Math.max(epoch, s.pendingReplayMaxEpoch);
             s.pendingRhsReplayValues.clear();
         }
 
         if (!s.pendingLhsReplayValues.isEmpty()) {
-            applyLhsReplay(pair, s, s.pendingLhsReplayValues, s.pendingReplayMaxEpoch);
-            epoch = Math.max(epoch, s.pendingReplayMaxEpoch);
+            applyLhsReplay(pair, s, s.pendingLhsReplayValues, s.replayRound);
+            round = Math.max(round, s.replayRound);
             s.pendingLhsReplayValues.clear();
         }
 
-        drainLiveBuffers(pair, s, epoch);
-        maybeFinishReplay(pair, s, epoch);
+        drainLiveBuffers(pair, s, msg.result().round());
+        maybeFinishReplay(pair, s, msg.result().round());
         return this;
     }
 
-    private void drainLiveBuffers(UnaryPair pair, UnaryState s, long baselineEpoch) {
-        long mergedEpoch = Math.max(baselineEpoch, s.bufferedMaxEpoch);
+    private void drainLiveBuffers(UnaryPair pair, UnaryState s, int round) {
         if (!s.bufferedRhsNewValues.isEmpty())
             s.violatingValues.andNot(s.bufferedRhsNewValues);
         if (!s.bufferedLhsNewValues.isEmpty())
-            sendMembershipCheck(pair, s, mergedEpoch, s.bufferedLhsNewValues);
+            sendMembershipCheck(pair, s, s.replayRound, s.bufferedLhsNewValues);
 
         s.bufferedLhsNewValues.clear();
         s.bufferedRhsNewValues.clear();
-        s.bufferedMaxEpoch = -1L;
     }
 
     private Behavior<CMCommand> onUnaryCandidateProposed(CMCommand.UnaryCandidateProposed msg) {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,Debug.pairTag(msg.candidate().pair()),
-                    String.valueOf(Debug.State.REBUILDING), " Unary candidate proposed: {}",  msg.candidate().pair().toString());
+                    String.valueOf(Debug.State.REBUILDING), " Unary candidate proposed: {}, round: {}",
+                    msg.candidate().pair().toString(), msg.candidate().checkpointRound());
         UnaryPair pair = msg.candidate().pair();
         UnaryState s = unaryPairs.get(pair);
         if (s == null || s.status == CandidateStatus.UNTRACKED) {
             s = new UnaryState();
             s.status = CandidateStatus.REBUILDING;
             unaryPairs.putIfAbsent(pair, s);
+            s.replayRound = msg.candidate().checkpointRound();
+            s.lastValidatedRound = msg.candidate().checkpointRound();
+            s.baselineSeen = false;
+            s.lhsReplaySeen = false;
+            s.rhsReplaySeen = false;
             //raRef.tell(new RACommand.EvaluateCandidate(unaryCandidateProposed.candidate()));
             EntityRef<AACommand> lhs = sharding.entityRefFor(AttributeActor.TYPE_KEY,
                     AACommand.entityId(msg.candidate().pair().lhsCol()));
@@ -301,10 +309,10 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         return sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsOwnerCol));
     }
 
-    private void refreshUnaryState(UnaryState s, long epoch) {
+    private void refreshUnaryState(UnaryState s, int round) {
         s.violatingCount = s.violatingValues.getCardinality();
         s.witnesses = witnessesFrom(s.violatingValues, UserConfig.MAX_TRACKED_VIOLATIONS);
-        s.lastEvaluatedEpoch = Math.max(s.lastEvaluatedEpoch, epoch);
+        s.lastValidatedRound = Math.max(s.lastValidatedRound, round);
         if (s.status != CandidateStatus.REBUILDING && s.status != CandidateStatus.UNTRACKED) {
             s.status = s.violatingCount == 0 ? CandidateStatus.TRACKED_CLEAN : CandidateStatus.TRACKED_VIOLATING;
         }
@@ -324,10 +332,14 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 s.status == CandidateStatus.REPLAYING;
     }
 
-    private void applyLhsReplay(UnaryPair pair, UnaryState s, RoaringBitmap values, long epoch) {
+    private void applyLhsReplay(UnaryPair pair, UnaryState s, RoaringBitmap values, int  replayRound) {
         if (values == null || values.isEmpty())
             return;
-        sendMembershipCheck(pair, s, epoch, values);
+        if(Debug.MESSAGE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,Debug.pairTag(pair),
+                    String.valueOf(s.status),"Applying LHS Replay -> Membership Check: pair: {}, round {} value {}",
+                    Debug.pairTag(pair),replayRound,values.getCardinality());
+        sendMembershipCheck(pair, s, replayRound, values);
     }
 
     private void applyRhsReplay(UnaryState s, RoaringBitmap values) {
@@ -336,23 +348,30 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         s.violatingValues.andNot(values);
     }
 
-    private void sendMembershipCheck(UnaryPair pair, UnaryState s, long epoch, RoaringBitmap values) {
+    private void sendMembershipCheck(UnaryPair pair, UnaryState s, int round, RoaringBitmap values) {
         if (values == null || values.isEmpty())
             return;
 
         EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
         s.pendingMembershipChecks++;
-        rhs.tell(new AACommand.CheckMembership(pair, epoch, values.clone(), selfEntityRef()));
+        rhs.tell(new AACommand.CheckMembership(pair, round, values.clone(), selfEntityRef()));
     }
 
-    private void maybeFinishReplay(UnaryPair pair, UnaryState s, long epoch) {
+    private void maybeFinishReplay(UnaryPair pair, UnaryState s, int  round) {
         if (!s.baselineSeen)
             return;
         if (!s.lhsReplaySeen || !s.rhsReplaySeen)
             return;
         if (s.pendingMembershipChecks > 0)
             return;
-        refreshUnaryState(s, epoch);
+        refreshUnaryState(s, round);
+        s.baselineSeen = false;
+        s.lhsReplaySeen = false;
+        s.rhsReplaySeen = false;
+
+        s.pendingLhsReplayValues.clear();
+        s.pendingRhsReplayValues.clear();
+        s.replayRound = -1;
     }
 
     private void deactivatePair(UnaryPair pair, UnaryState s) {

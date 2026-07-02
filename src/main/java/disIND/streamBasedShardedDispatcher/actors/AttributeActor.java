@@ -92,6 +92,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         if (summary != null) {
             msg.replyTo().tell(new AppraiserCommand.SketchArrived(summary));
         } else {
+            if(Debug.STATE)
+                formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.attr(),colId,"-",
+                        String.valueOf(Debug.State.NONE),
+                        "Requesting sketch for round {} col {} epoch {}", msg.round(), colId, msg.epoch());
             pendingSketchRequests.computeIfAbsent(msg.round(), r -> new ArrayList<>()).add(msg.replyTo());
         }
         return this;
@@ -100,10 +104,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private Behavior<AACommand> onCheckMembership(AACommand.CheckMembership msg) {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
-                    "Checking membership for col {} epoch {}", colId, msg.epoch());
+                    "Checking membership for col {} epoch {}", colId, msg.round());
         RoaringBitmap missing = msg.values().clone();
         missing.andNot(bitmapStore.getBitmap());
-        msg.replyTo().tell(new CMCommand.MembershipResult(msg.pair(),msg.epoch(), missing));
+        msg.replyTo().tell(new CMCommand.MembershipResult(msg.pair(),msg.round(), missing));
         return this;
     }
 
@@ -117,10 +121,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         EntityRef<CMCommand> cmRef = msg.cmRef();
         //lhsSubscribers.add(sendColumnData.cmRef());
         msg.rhsRef().tell(new AACommand.CompareBitmap(msg.candidate(),lhsBitmap,cmRef));
-        lhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
         RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointEpoch);
-        cmRef.tell(new CMCommand.LhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().evalEpoch(),
-                epochsProcessed, mergedSinceCheckpoint));
+        cmRef.tell(new CMCommand.LhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().checkpointRound(),
+                msg.candidate().checkpointRound(), mergedSinceCheckpoint));
+        lhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
         return this;
     }
 
@@ -132,12 +136,12 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         ScanResult result = checkPoint.bitmapStore().compareAgainst(
                                 msg.lhsBitmap(),
                                 msg.candidate().pair(),
-                                msg.candidate().evalEpoch());
+                                msg.candidate().checkpointRound());
         msg.cmRef().tell(new CMCommand.UnaryViolationReport(result));
-        rhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
         RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointEpoch);
-        msg.cmRef().tell(new CMCommand.RhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().evalEpoch(),
-                epochsProcessed, mergedSinceCheckpoint));
+        msg.cmRef().tell(new CMCommand.RhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().checkpointRound(),
+                msg.candidate().checkpointRound(), mergedSinceCheckpoint));
+        rhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
         return this;
     }
 
@@ -154,7 +158,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private Behavior<AACommand> onCheckPoint(AACommand.CheckPoint msg) {
         if(Debug.CHECKPOINT)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.CHECKPOINT), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
-                    "Received Epoch Complete Checkpoint for Epoch {}  for col {}", msg.epoch(), msg.colId());
+                    "Received Checkpoint Message for round {}  for col {} epoch {}", msg.round(), msg.colId(), msg.epoch());
 
         List<InputBatchDetails> missing = findMissingForCheckpoint(msg.round(), msg.maxBatchIdByTable());
         if (!missing.isEmpty()) {
@@ -193,7 +197,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private Behavior<AACommand> onEmitSketch(AACommand.EmitSketch msg) {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
-                    "Emitting sketch for col {} epoch {}", colId, msg.epoch());
+                    "Emitting sketch for col {} epoch {} round {}", colId, msg.epoch(), msg.round());
         msg.replyTo().tell(new AppraiserCommand.SketchArrived(sketchStore.getSummary(msg.round(),colId, msg.epoch())));
         return this;
     }
@@ -212,8 +216,8 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,"-",
                     String.valueOf(Debug.State.NONE),
-                    "Insert Batch received epcoh: {}, batchID:{} rows:{}",msg.inputBatchDetails().epoch(),
-                    msg.inputBatchDetails().batchId(),msg.rows().length);
+                    "Insert Batch received epoch: {}, batchID:{} rows:{} round {}",msg.inputBatchDetails().epoch(),
+                    msg.inputBatchDetails().batchId(),msg.rows().length, msg.inputBatchDetails().round());
 
         appliedBatchKeys.add(batchKey);
         receivedBatchIdsByTable.computeIfAbsent(ibd.tableId(), t -> new TreeSet<>()).add(ibd.batchId());
@@ -243,26 +247,26 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
         deltaLogDequeue.addLast(deltaBuilder.build());
         if(!newDistinctThisBatch.isEmpty()) {
-            publishLiveDistinctDelta(msg.inputBatchDetails().epoch(), newDistinctThisBatch);
+            publishLiveDistinctDelta(msg.inputBatchDetails().round(), newDistinctThisBatch);
             if(Debug.INTERNAL)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
-                        "Published distinct delta for col {} epoch {} batchID {}" ,
-                        colId, msg.inputBatchDetails().epoch(),msg.inputBatchDetails().batchId());
+                        "Published Live distinct delta for col {} epoch {} batchID {} round {}" ,
+                        colId, msg.inputBatchDetails().epoch(),msg.inputBatchDetails().batchId(), msg.inputBatchDetails().round());
         }
         if (msg.ackTo() != null)
             msg.ackTo().tell(new BDCommand.BatchFlushed(ibd, colId));
         return this;
     }
 
-    private void publishLiveDistinctDelta(long epoch, RoaringBitmap newValues) {
+    private void publishLiveDistinctDelta(int round, RoaringBitmap newValues) {
         if (newValues == null || newValues.isEmpty())
             return;
 
         for (EntityRef<CMCommand> cm : lhsSubscriptions.values())
-            cm.tell(new CMCommand.LhsLiveDelta(colId, epoch, newValues.clone()));
+            cm.tell(new CMCommand.LhsLiveDelta(colId, round, newValues.clone()));
 
         for (EntityRef<CMCommand> cm : rhsSubscriptions.values())
-            cm.tell(new CMCommand.RhsLiveDelta(colId, epoch, newValues.clone()));
+            cm.tell(new CMCommand.RhsLiveDelta(colId, round, newValues.clone()));
     }
 
     private void cleanupOldDeltas(long checkpointEpoch){
@@ -293,7 +297,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             getContext().getLog().info("[ATTRA] Replay LHS delta col={} deltaEpoch={} afterEpoch={} values={}",
                     colId, delta.epoch(), afterEpoch, newValues);
             if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.LhsLiveDelta(pair.lhsCol(), delta.epoch(), newValues));
+                cmRef.tell(new CMCommand.LhsLiveDelta(pair.lhsCol(), (int)delta.epoch(), newValues));
         }
     }
 
@@ -308,7 +312,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             getContext().getLog().info("[ATTRA] Replay RHS delta col={} deltaEpoch={} afterEpoch={} values={}",
                     colId, delta.epoch(), afterEpoch, newValues);
             if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.RhsLiveDelta(pair.rhsCol(), delta.epoch(), newValues));
+                cmRef.tell(new CMCommand.RhsLiveDelta(pair.rhsCol(), (int)delta.epoch(), newValues));
         }
     }
 

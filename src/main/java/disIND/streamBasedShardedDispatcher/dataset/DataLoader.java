@@ -25,43 +25,41 @@ import java.util.stream.Stream;
 import static disIND.streamBasedShardedDispatcher.utility.InferDataAttributes.*;
 
 public final class DataLoader {
-    private static DatasetMetadata metadata;
-
     private static final Pattern PAT_CSV_EXT = Pattern.compile("\\.(csv|tbl)$");
 
     private DataLoader() {}
 
     //Discover the basic metadata of the dataset
     public static INDGuardian.Config discoverConfig(String csvDir) throws IOException {
-
         Path dir = Paths.get(csvDir);
         List<String> files = listInputFiles(dir);
 
-        if (files.isEmpty()) {
+        if (files.isEmpty())
             throw new IllegalArgumentException("[Loader] No .csv or .tbl files in: " + csvDir);
-        }
-        Map<Integer, String> colNames = new LinkedHashMap<>();
-        Map<Integer, ColType> colTypes = new LinkedHashMap<>();
-        List<Integer> ncols = new ArrayList<>();
+
+        Map<Integer, ColumnInfo> columns = new LinkedHashMap<>();
+        List<String> tableNames = new ArrayList<>();
+        List<Integer> nCols = new ArrayList<>();
         List<Integer> offsets = new ArrayList<>();
         int totalCols = 0;
         System.out.println("[Loader] Discovering files and columns:");
 
-        for (String file : files) {
+        for (int tableId = 0; tableId < files.size(); tableId++) {
+            String file = files.get(tableId);
             boolean tbl = isTbl(file);
             String table = tableName(file);
-
+            tableNames.add(table);
             try (BufferedReader br = new BufferedReader(new FileReader(file))) {
                 String firstLine = br.readLine();
-
+                if (firstLine == null)
+                    continue;
                 String delim = delimiterFor(file, firstLine);
                 String[] cols = splitRow(firstLine, delim, tbl);
-                ncols.add(cols.length);
+                nCols.add(cols.length);
                 offsets.add(totalCols);
                 System.out.printf("  %s  %d cols  offset=%d  delim='%s'%n", table, cols.length, totalCols, delim);
-
-                //Inferring Column Basic Details
                 List<String[]> sampleRows = new ArrayList<>();
+
                 for (int i = 0; i < 1000; i++) {
                     String row = br.readLine();
                     if (row == null)
@@ -69,30 +67,27 @@ public final class DataLoader {
                     sampleRows.add(splitRow(row, delim, tbl));
                 }
 
-                if (firstLine == null) {
-                    System.out.printf("  %-25s  empty%n", table);
-                    continue;
-                }
-
-                for (int local = 0; local < cols.length; local++) {
-                    int global = totalCols + local;
-                    String name;
+                for (int localCol = 0; localCol < cols.length; localCol++) {
+                    int globalCol = totalCols + localCol;
+                    String columnName;
                     if (tbl)
-                        name = table + ".c" + local;
+                        columnName = "c" + localCol;
                     else
-                        name = table + "." + InferDataAttributes.clean(cols[local]);
+                        columnName = InferDataAttributes.clean(cols[localCol]);
 
-                    colNames.put(global, name);
-                    colTypes.put(global, InferDataAttributes.inferColType(name, local, sampleRows));
+                    ColType type = InferDataAttributes.inferColType(table + "." + columnName, localCol, sampleRows);
+                    columns.put(globalCol, new ColumnInfo(globalCol, tableId, table, localCol, columnName, type));
                 }
                 totalCols += cols.length;
             }
         }
-        metadata=new DatasetMetadata(totalCols,offsets,ncols,colNames,colTypes);
+
+        DatasetMetadata metadata = new DatasetMetadata(totalCols, offsets, nCols, tableNames, columns);
+
         return INDGuardian.Config.withAll(metadata);
     }
 
-    public static void run(ActorSystem<BDCommand> system, String csvDir, int batchSize, int timeoutSec,
+    public static void run(ActorSystem<BDCommand> system, DatasetMetadata metadata,String csvDir, int batchSize, int timeoutSec,
             String outputFile, ActorRef<SharedModel.BDCommand> bdRef) throws Exception {
 
         Path dir = Paths.get(csvDir);
@@ -303,10 +298,22 @@ public final class DataLoader {
 
     private static String[] splitRow(String line, String delim, boolean tbl) {
         String[] vals = line.split(delim, -1);
-        if (tbl && vals.length > 0 && vals[vals.length - 1].isEmpty()) {
+        if (tbl && vals.length > 0 && vals[vals.length - 1].isEmpty())
             vals = Arrays.copyOf(vals, vals.length - 1);
-        }
+
+        for (int i = 0; i < vals.length; i++)
+            vals[i] = normalize(vals[i]);
         return vals;
+    }
+
+    private static String normalize(String s) {
+        if (s == null)
+            return "";
+        s = s.strip();
+        if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
+            s = s.substring(1, s.length() - 1).strip();
+        }
+        return s;
     }
 
     private static String tableName(String file) {

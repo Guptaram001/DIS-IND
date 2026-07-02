@@ -64,7 +64,7 @@ public class DisINDMain {
         Thread.sleep(3000);
 
         try {
-            DataLoader.run(system, inputDir, batchSize, timeoutSec, outputFile, bdRef);
+            DataLoader.run(system, cfg.metadata(),inputDir, batchSize, timeoutSec, outputFile, bdRef);
         } finally {
             System.out.println("[Main] Terminating actor system.");
             system.terminate();
