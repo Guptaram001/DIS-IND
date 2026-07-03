@@ -61,7 +61,7 @@ public class DisINDMain {
                         ).toCompletableFuture()
                         .get();
 
-        Thread.sleep(3000);
+        //Thread.sleep(3000);
 
         try {
             DataLoader.run(system, cfg.metadata(),inputDir, batchSize, timeoutSec, outputFile, bdRef);

@@ -112,11 +112,6 @@ public final class DataLoader {
 
         ActorRef<RCCommand> rcRef = rcFuture.toCompletableFuture().get();
 
-        CompletionStage<IndReport> reportFuture = AskPattern.ask(rcRef,
-                        RCCommand.GetReport::new,
-                        Duration.ofSeconds(timeoutSec),
-                        system.scheduler());
-
         //IndReport report = reportFuture.toCompletableFuture().get();
         IndReport report = AskPattern.ask(rcRef, RCCommand.GetReport::new, Duration.ofSeconds(30), system.scheduler())
                 .toCompletableFuture().get();
@@ -225,7 +220,7 @@ public final class DataLoader {
         return new IngestionResult(totalRows, finalRound, new HashMap<>(latestBatchByTable));
     }
 
-        private static void sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
+    private static void sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
         List<String[]> rows,int round,int individualBatchId) throws Exception {
 
             System.out.println("[Loader] Sending table batch to "+bdRef+" "+bdRef.path().name()+" tableId="+tableId+" " +

@@ -90,7 +90,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),-1,"-",
                     String.valueOf(Debug.State.NONE), "FinishDiscovery received finalRound={} finalBatchByTable={}",
                     msg.finalRound(), msg.finalBatchByTable());
-
         selfRef.tell(new BDCommand.CheckPoint(msg.finalRound(), msg.finalBatchByTable()));
         rcRef.tell(new RCCommand.AwaitDiscoveryFinished(msg.finalRound(), msg.replyTo()));
         appraiserRef.tell(new AppraiserCommand.FinishDiscovery(msg.finalRound(), rcRef));
@@ -218,13 +217,12 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             return this;
         }
         pendingPerEpoch.remove(ackEpoch);
-
+        if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),msg.colId(),"-",
                     String.valueOf(Debug.State.NONE), " BatchFlushed completed epoch={} col={}",
                     ackEpoch, msg.colId());
         return this;
     }
-
     private Behavior<BDCommand> onMissingBatchRequest(BDCommand.MissingBatchRequest msg) {
         CachedTableBatch cached = batchCache.get(key(msg.tableId(), msg.batchId()));
         if (cached == null) {

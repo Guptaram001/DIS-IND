@@ -257,9 +257,9 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
             if(Debug.PRUNED_KMV)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.PRUNED), Debug.app(),-1,
                         Debug.pair(lhs,rhs), String.valueOf(Debug.State.NONE),
-                        "KMV Pruned: pair: {}, {}, {}, round: {}, containment: {}, lDV: {}, RDV: {}, LK: {}, RK: {}",
+                        "KMV Pruned: pair: {}, {}, {}, round: {}, containment: {}, lDV: {}, RDV: {}",
                         Debug.pair(lhs,rhs), metadata.displayName(lhs),metadata.displayName(rhs),st.round,containment
-                ,lhsS.distinctValues(),rhsS.distinctValues(),Arrays.toString(lhsS.kmv().hashes()),Arrays.toString(rhsS.kmv().hashes()));
+                ,lhsS.distinctValues(),rhsS.distinctValues());
             return;
         }
 

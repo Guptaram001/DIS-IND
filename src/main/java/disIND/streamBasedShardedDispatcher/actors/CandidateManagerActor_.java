@@ -213,7 +213,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,Debug.pairTag(msg.pair()),
                     String.valueOf(Debug.State.NONE), "Membership Result received: pair: {}, round: {}, missingValues: {}",
-                    msg.pair(), msg.round(),msg.missingValues());
+                    msg.pair(), msg.round(),msg.missingValues().getCardinality());
 
         UnaryState s = unaryPairs.get(msg.pair());
         activeMembershipChecks--;
@@ -287,7 +287,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.cm(),lhsOwnerCol,"-",
                 String.valueOf(Debug.State.REPLAYING), "Unary Report Received: pair: {} , round: {} , witnesses: {} , violatingCount: {}",
-                    msg.result().pair(), msg.result().round(), msg.result().witnesses(), msg.result().violationCount());
+                    msg.result().pair(), msg.result().round(), msg.result().witnesses().size(), msg.result().violationCount());
         UnaryPair pair = msg.result().pair();
         UnaryState s = unaryPairs.get(pair);
         if (s == null || s.status != CandidateStatus.REBUILDING)

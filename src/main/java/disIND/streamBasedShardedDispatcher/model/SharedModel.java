@@ -377,7 +377,7 @@ public final class SharedModel {
          * further changes are possible.  RC uses this to immediately satisfy any
          * pending GetReport ask so TpchLoader.run() unblocks without a sleep.
          */
-        record PipelineDone()                                              implements RCCommand {}
+        record PipelineDone() implements RCCommand {}
         record AwaitDiscoveryFinished(int finalRound, ActorRef<BDReply> replyTo) implements RCCommand {}
         record CmDiscoveryComplete(int lhsOwnerCol, int round, List<UnaryPair> unaryPairs,List<NaryPair> naryPairs) implements RCCommand {}
     }
