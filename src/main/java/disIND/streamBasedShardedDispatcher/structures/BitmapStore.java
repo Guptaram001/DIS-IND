@@ -18,6 +18,10 @@ public final class BitmapStore {
         return bitmapStore.clone();
     }
 
+    public boolean contains(int id) {
+        return bitmapStore.contains(id);
+    }
+
     public BitmapStore deepCopy() {
         BitmapStore copy = new BitmapStore();
         copy.bitmapStore.or(this.bitmapStore);

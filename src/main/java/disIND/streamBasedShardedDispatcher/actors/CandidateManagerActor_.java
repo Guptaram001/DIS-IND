@@ -6,6 +6,7 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import akka.actor.typed.javadsl.TimerScheduler;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
@@ -15,6 +16,7 @@ import disIND.streamBasedShardedDispatcher.utility.Debug;
 import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 import org.roaringbitmap.RoaringBitmap;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -33,6 +35,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final ActorRef<AppraiserCommand> apRef;
     private final int cleanThreshold;
     private final ClusterSharding sharding;
+    private final TimerScheduler<CMCommand> timers;
 
     private final ActorRef<RCCommand> rcRef;
     private boolean noMoreCandidates = false;
@@ -81,13 +84,17 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                                              ActorRef<RACommand> raRef, ActorRef<LMCommand> lmRef, ActorRef<RCCommand> rcRef,
                                              int cleanThreshold, DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx ->
-                new CandidateManagerActor_(ctx, lhsOwnerCol,sharding,apRef,raRef, lmRef, rcRef, cleanThreshold, metadata,statsRef));
+                Behaviors.withTimers(timers ->
+                        new CandidateManagerActor_(ctx, timers, lhsOwnerCol, sharding, apRef, raRef, lmRef, rcRef,
+                                cleanThreshold, metadata, statsRef)));
     }
 
-    private CandidateManagerActor_(ActorContext<CMCommand> ctx, int lhsOwnerCol, ClusterSharding sharding,ActorRef<AppraiserCommand> apRef,
+    private CandidateManagerActor_(ActorContext<CMCommand> ctx, TimerScheduler<CMCommand> timers,
+                                   int lhsOwnerCol, ClusterSharding sharding,ActorRef<AppraiserCommand> apRef,
                                    ActorRef<RACommand> raRef, ActorRef<LMCommand> lmRef, ActorRef<RCCommand> rcRef,
                                    int cleanThreshold, DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         super(ctx);
+        this.timers = timers;
         this.lhsOwnerCol = lhsOwnerCol;
         this.sharding = sharding;
         this.apRef=apRef;
@@ -109,6 +116,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 .onMessage(CMCommand.LhsReplayDelta.class, this::onLhsReplayDelta)
                 .onMessage(CMCommand.MembershipResult.class, this::onMembershipResult)
                 .onMessage(CMCommand.NoMoreCandidates.class, this::onNoMoreCandidates)
+                .onMessage(CMCommand.ForceFinish.class, this::onForceFinish)
                 .onMessage(CMCommand.RhsLiveDelta.class,this::onRhsLiveDelta)
                 .onMessage(CMCommand.LhsLiveDelta.class,this::onLhsLiveDelta)
                 .build();
@@ -118,6 +126,32 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         noMoreCandidates = true;
         finalRound = msg.finalRound();
         maybeReportFinished();
+        if (!finishedReported) {
+            timers.startSingleTimer("force-finish-" + finalRound,
+                    new CMCommand.ForceFinish(finalRound),
+                    Duration.ofSeconds(UserConfig.FINAL_CM_DRAIN_TIMEOUT_SEC));
+        }
+        return this;
+    }
+
+    private Behavior<CMCommand> onForceFinish(CMCommand.ForceFinish msg) {
+        if (finishedReported || !noMoreCandidates || msg.finalRound() != finalRound)
+            return this;
+
+        List<UnaryPair> unfinished = unfinishedPairs();
+        if (!unfinished.isEmpty() && Debug.STATE) {
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.cm(),
+                    lhsOwnerCol, "", String.valueOf(Debug.State.NONE),
+                    "Force finishing lhsOwnerCol={} finalRound={} unfinishedPairs={} rebuilding={} replaying={} pendingMembership={}",
+                    lhsOwnerCol, finalRound, unfinished, rebuildingCount(), replayingCount(), pendingMembershipCheckCount());
+        }
+
+        maybeReportFinished();
+        if (!finishedReported) {
+            timers.startSingleTimer("force-finish-" + finalRound,
+                    new CMCommand.ForceFinish(finalRound),
+                    Duration.ofSeconds(UserConfig.FINAL_CM_DRAIN_TIMEOUT_SEC));
+        }
         return this;
     }
 
@@ -126,11 +160,11 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             return;
         if (finishedReported)
             return;
-        if (raInProgress > 0)
+        if (rebuildingCount() > 0)
             return;
-        if (activeReplays > 0)
+        if (replayingCount() > 0)
             return;
-        if (activeMembershipChecks > 0)
+        if (pendingMembershipCheckCount() > 0)
             return;
         finishedReported = true;
 
@@ -142,8 +176,45 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (Debug.STATE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.cm(),
                     lhsOwnerCol, "", String.valueOf(Debug.State.NONE),
-                    "Finished for finalRound={} ", lhsOwnerCol,finalRound);
+                    "Finished lhsOwnerCol={} finalRound={} ", lhsOwnerCol, finalRound);
 
+    }
+
+    private int rebuildingCount() {
+        int count = 0;
+        for (UnaryState s : unaryPairs.values()) {
+            if (s.status == CandidateStatus.REBUILDING)
+                count++;
+        }
+        return count;
+    }
+
+    private int replayingCount() {
+        int count = 0;
+        for (UnaryState s : unaryPairs.values()) {
+            if (s.status == CandidateStatus.REPLAYING)
+                count++;
+        }
+        return count;
+    }
+
+    private int pendingMembershipCheckCount() {
+        int count = 0;
+        for (UnaryState s : unaryPairs.values())
+            count += Math.max(0, s.pendingMembershipChecks);
+        return count;
+    }
+
+    private List<UnaryPair> unfinishedPairs() {
+        List<UnaryPair> out = new ArrayList<>();
+        for (Map.Entry<UnaryPair, UnaryState> e : unaryPairs.entrySet()) {
+            UnaryState s = e.getValue();
+            if (s.status == CandidateStatus.REBUILDING || s.status == CandidateStatus.REPLAYING ||
+                    s.pendingMembershipChecks > 0) {
+                out.add(e.getKey());
+            }
+        }
+        return out;
     }
 
     private List<UnaryPair> collectUnaryResults() {
@@ -170,7 +241,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             UnaryState s = e.getValue();
             if (pair.lhsCol() != msg.colId())
                 continue;
-            if (s.status == CandidateStatus.REBUILDING) {
+            if (s.status == CandidateStatus.REBUILDING || s.status == CandidateStatus.REPLAYING) {
                 s.bufferedLhsNewValues.or(msg.newValues());
                 continue;
             }
@@ -178,7 +249,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 continue;
             EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
             s.pendingMembershipChecks++;
-            rhs.tell(new AACommand.CheckMembership(pair, msg.round(), msg.newValues().clone(), selfEntityRef()));
+            rhs.tell(new AACommand.CheckMembership(pair, msg.round(), msg.newValues(), selfEntityRef()));
             activeMembershipChecks++;
         }
         return this;
@@ -190,7 +261,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             UnaryState s = e.getValue();
             if (pair.rhsCol() != msg.colId())
                 continue;
-            if (s.status == CandidateStatus.REBUILDING) {
+            if (s.status == CandidateStatus.REBUILDING || s.status == CandidateStatus.REPLAYING) {
                 s.bufferedRhsNewValues.or(msg.newValues());
                 continue;
             }
@@ -222,22 +293,19 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (!isTracked(s))
             return this;
 
-        if(msg.round()!=s.replayRound)
+        boolean replayResult = s.status == CandidateStatus.REPLAYING;
+        if(replayResult && msg.round()!=s.replayRound)
             return this;
 
         if (s.pendingMembershipChecks > 0)
             s.pendingMembershipChecks--;
-        s.violatingValues.or(msg.missingValues());
-        if (s.pendingMembershipChecks == 0)
-            maybeFinishReplay(msg.pair(), s, msg.round());
 
-        if (s.violatingValues.getCardinality() > UserConfig.MAX_TRACKED_VIOLATIONS) {
-            if(Debug.STATE)
-                formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.cm(),lhsOwnerCol,Debug.pairTag(msg.pair()),
-                        String.valueOf(Debug.State.NONE),
-                        "Deactivated Pair pair={} round={}", msg.pair(),msg.round());
-            deactivatePair(msg.pair(), s);
-        }
+        s.violatingValues.or(msg.missingValues());
+        if (replayResult && s.pendingMembershipChecks == 0)
+            maybeFinishReplay(msg.pair(), s, msg.round());
+        else if (!replayResult)
+            refreshUnaryState(s, msg.round());
+
         maybeReportFinished();
         return this;
     }
@@ -415,8 +483,17 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             return;
         if (s.pendingMembershipChecks > 0)
             return;
+        if (!s.bufferedRhsNewValues.isEmpty()) {
+            s.violatingValues.andNot(s.bufferedRhsNewValues);
+            s.bufferedRhsNewValues.clear();
+        }
+        if (!s.bufferedLhsNewValues.isEmpty()) {
+            sendMembershipCheck(pair, s, s.replayRound, s.bufferedLhsNewValues);
+            s.bufferedLhsNewValues.clear();
+            return;
+        }
         refreshUnaryState(s, round);
-        activeReplays--;
+        activeReplays = Math.max(0, activeReplays - 1);
         s.baselineSeen = false;
         s.lhsReplaySeen = false;
         s.rhsReplaySeen = false;
@@ -428,6 +505,14 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private void deactivatePair(UnaryPair pair, UnaryState s) {
+        if (s.status == CandidateStatus.REPLAYING && activeReplays > 0)
+            activeReplays--;
+        if (s.status == CandidateStatus.REBUILDING && raInProgress > 0)
+            raInProgress--;
+        if (s.pendingMembershipChecks > 0) {
+            activeMembershipChecks = Math.max(0, activeMembershipChecks - s.pendingMembershipChecks);
+            s.pendingMembershipChecks = 0;
+        }
         s.violatingValues.clear();
         s.witnesses = List.of();
         s.violatingCount = 0;

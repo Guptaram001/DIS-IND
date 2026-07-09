@@ -23,6 +23,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     private boolean discoveryFinished = false;
     private final Map<Integer,List<UnaryPair>> unaryResults = new HashMap<>();
     private final Map<Integer,List<NaryPair>> naryResults = new HashMap<>();
+    private final List<ActorRef<IndReport>> pendingReportReplies = new ArrayList<>();
     public static Behavior<RCCommand> create( DatasetMetadata metadata, ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx -> new ResultCollectorActor(ctx,metadata,statsRef));
     }
@@ -39,29 +40,25 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
         return newReceiveBuilder()
                 .onMessage(RCCommand.AwaitDiscoveryFinished.class, this::onAwaitDiscoveryFinished)
                 .onMessage(RCCommand.CmDiscoveryComplete.class, this::onCmDiscoveryComplete)
+                .onMessage(RCCommand.GetReport.class, this::onGetReport)
                 .build();
     }
 
     private Behavior<RCCommand> onCmDiscoveryComplete(RCCommand.CmDiscoveryComplete msg) {
         unaryResults.put(msg.lhsOwnerCol(), msg.unaryPairs());
         naryResults.put(msg.lhsOwnerCol(), msg.naryPairs());
+        finishedCms.set(msg.lhsOwnerCol());
 
         if (Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.rc(),
                     -1, "", String.valueOf(Debug.State.NONE),
                     " Received CM {} unary={} nary={} ",
                     msg.lhsOwnerCol(),msg.unaryPairs().size(),msg.naryPairs().size());
-        tryFinish();
+        tryFinishDiscovery();
         return this;
     }
 
-    private void tryFinish() {
-
-        if (finishReplyTo == null)
-            return;
-        if (unaryResults.size() != metadata.totalCols())
-            return;
-
+    private IndReport buildReport() {
         List<UnaryPair> allUnary = new ArrayList<>();
         List<NaryPair> allNary = new ArrayList<>();
         for (List<UnaryPair> list : unaryResults.values())
@@ -71,9 +68,20 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
 
         allUnary.sort(Comparator.comparingInt(UnaryPair::lhsCol).thenComparingInt(UnaryPair::rhsCol));
 
-        for (UnaryPair p : allUnary)
-            System.out.printf("IND(%s,%s)%n", metadata.displayName(p.lhsCol()), metadata.displayName(p.rhsCol()));
-        finishReplyTo.tell(new BDReply.DiscoveryFinished(finalRound));
+        Map<Integer, String> names = new HashMap<>();
+        for (int col = 0; col < metadata.totalCols(); col++)
+            names.put(col, metadata.qualifiedName(col));
+
+        return new IndReport(allUnary, allNary, names, finalRound);
+    }
+
+    private Behavior<RCCommand> onGetReport(RCCommand.GetReport msg) {
+        if (!discoveryFinished) {
+            pendingReportReplies.add(msg.replyTo());
+            return this;
+        }
+        msg.replyTo().tell(buildReport());
+        return this;
     }
 
     private Behavior<RCCommand> onAwaitDiscoveryFinished(RCCommand.AwaitDiscoveryFinished msg) {
@@ -92,6 +100,10 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
 
         discoveryFinished = true;
         finishReplyTo.tell(new BDReply.DiscoveryFinished(finalRound));
+        IndReport report = buildReport();
+        for (ActorRef<IndReport> replyTo : pendingReportReplies)
+            replyTo.tell(report);
+        pendingReportReplies.clear();
 
         if (Debug.STATE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.rc(),
