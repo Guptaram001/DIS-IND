@@ -23,15 +23,15 @@ public final class Debug {
     public enum LogType {MESSAGE, FLOW, DELTA, CHECKPOINT, PERF, STATE, INTERNAL,PRUNED}
 
 
-    public static final boolean MESSAGE = true;
-    public static final boolean CHECKPOINT = true;
-    public static final boolean DELTA = true;
+    public static final boolean MESSAGE = false;
+    public static final boolean CHECKPOINT = false;
+    public static final boolean DELTA = false;
     public static final boolean PERF = true;
     public static final boolean STATE = true;
     public static final boolean INTERNAL = false;
-    public static final boolean PRUNED_KMV = true;
-    public static final boolean PRUNED_DISTINCT = true;
-    public static final boolean PRUNED_TYPE = true;
+    public static final boolean PRUNED_KMV = false;
+    public static final boolean PRUNED_DISTINCT = false;
+    public static final boolean PRUNED_TYPE = false;
 
 
     public static String cm() {
@@ -84,5 +84,4 @@ public final class Debug {
     }
 
     }
-
 
