@@ -5,8 +5,6 @@ import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.prototypeModel.model.AkkaSerializable;
 import disIND.streamBasedShardedDispatcher.structures.BitmapStore;
 import disIND.streamBasedShardedDispatcher.structures.ValueToRowsStore;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
-import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.ArrayList;
@@ -164,7 +162,7 @@ public final class SharedModel {
             long requestId
     ) implements AkkaSerializable {}
 
-    public record AttributeDelta(long epoch, Int2ObjectMap<IntArrayList>  inserts){}
+    public record AttributeDelta(long epoch, RoaringBitmap distinctValues) implements AkkaSerializable {}
 
     public record AttributeCheckPoint(
             long epoch,
@@ -301,7 +299,7 @@ public final class SharedModel {
             CMCommand.DistinctValueDelta, CMCommand.IngestionDone,
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
     CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta,CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
-    CMCommand.MembershipResult, CMCommand.NoMoreCandidates {
+    CMCommand.MembershipResult, CMCommand.NoMoreCandidates, CMCommand.ForceFinish {
 
         static String entityId(int lhsCol) {return "cm-lhs-" + lhsCol;}
         record UnaryCandidateProposed(UnaryCandidate candidate) implements CMCommand {}
@@ -320,6 +318,7 @@ public final class SharedModel {
         record RhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
                               RoaringBitmap newValues) implements CMCommand {}
         record NoMoreCandidates(int finalRound) implements CMCommand {}
+        record ForceFinish(int finalRound) implements CMCommand {}
 
         /**
          * Sent by LM → CM when its queue is fully empty and nraInFlight=0.

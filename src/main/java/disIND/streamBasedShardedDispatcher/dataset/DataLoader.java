@@ -8,6 +8,7 @@ import disIND.streamBasedShardedDispatcher.actors.INDGuardian;
 import disIND.streamBasedShardedDispatcher.model.SharedModel;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.utility.InferDataAttributes;
+import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -132,6 +133,7 @@ public final class DataLoader {
         long[] nextRowId = new long[n];
         int[] individualBatchIds = new int[n];
         Map<Integer, Integer> latestBatchByTable = new HashMap<>();
+        Deque<CompletionStage<BDReply>> inFlight = new ArrayDeque<>();
         long totalRows = 0;
         int round = 0;
 
@@ -163,7 +165,8 @@ public final class DataLoader {
                 int batchId = individualBatchIds[i]++;
                 List<String[]> firstBatch = new ArrayList<>(1);
                 firstBatch.add(splitRow(firstLine, delim, true));
-                sendTableBatch(system, bdRef, i, nextRowId[i], firstBatch,round,batchId);
+                inFlight.addLast(sendTableBatch(system, bdRef, i, nextRowId[i], firstBatch,round,batchId));
+                waitForCredit(inFlight);
                 nextRowId[i]++;
                 rowCounts[i]++;
                 totalRows++;
@@ -199,17 +202,20 @@ public final class DataLoader {
 
                 if (!batchRows.isEmpty()) {
                     int batchId = individualBatchIds[i]++;
-                    sendTableBatch(system, bdRef, i, nextRowId[i], batchRows,round,batchId);
+                    inFlight.addLast(sendTableBatch(system, bdRef, i, nextRowId[i], batchRows,round,batchId));
+                    waitForCredit(inFlight);
                     latestBatchByTable.put(i, batchId);
                     nextRowId[i] += batchRows.size();
                     anyActive = true;
                 }
             }
             System.out.printf("[Loader] Round %d: %d rows ingested%n", round, totalRows);
-            if(round%10==0){
+            if(round % UserConfig.CHECKPOINT_INTERVAL == 0){
+                waitForAll(inFlight);
                 bdRef.tell(new BDCommand.CheckPoint(round,new HashMap<>(latestBatchByTable)));
             }
         }
+        waitForAll(inFlight);
         int finalRound = round;
         System.out.println("[Loader] Per-file row counts:");
         for (int i = 0; i < n; i++) {
@@ -220,20 +226,29 @@ public final class DataLoader {
         return new IngestionResult(totalRows, finalRound, new HashMap<>(latestBatchByTable));
     }
 
-    private static void sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
+    private static CompletionStage<BDReply> sendTableBatch(ActorSystem<BDCommand> system, ActorRef<BDCommand> bdRef, int tableId, long startRowId,
         List<String[]> rows,int round,int individualBatchId) throws Exception {
 
             System.out.println("[Loader] Sending table batch to "+bdRef+" "+bdRef.path().name()+" tableId="+tableId+" " +
                     "startRowId="+startRowId+" rows="+rows.size());
-            AskPattern.ask(bdRef, (ActorRef<BDReply> replyTo) -> new BDCommand.SendTableBatch(rows,
+            return AskPattern.ask(bdRef, (ActorRef<BDReply> replyTo) -> new BDCommand.SendTableBatch(rows,
                                     new InputBatchDetails(tableId,startRowId,individualBatchId,-1,round, -1),
-                                    replyTo), Duration.ofSeconds(5),
-                            system.scheduler()
-                    )
-                    .toCompletableFuture()
-                    .get();
+                                    replyTo), Duration.ofSeconds(UserConfig.BATCH_ACK_TIMEOUT_SEC),
+                            system.scheduler());
 
         }
+
+    private static void waitForCredit(Deque<CompletionStage<BDReply>> inFlight) throws Exception {
+        while (inFlight.size() >= UserConfig.DL_BD_CREDIT_WINDOW) {
+            inFlight.removeFirst().toCompletableFuture().get();
+        }
+    }
+
+    private static void waitForAll(Deque<CompletionStage<BDReply>> inFlight) throws Exception {
+        while (!inFlight.isEmpty()) {
+            inFlight.removeFirst().toCompletableFuture().get();
+        }
+    }
 
     private static List<String> listInputFiles(Path dir) throws IOException {
         try (Stream<Path> paths = Files.list(dir)) {
@@ -305,7 +320,7 @@ public final class DataLoader {
                             Comparator.comparingInt(SharedModel.UnaryPair::lhsCol)
                                     .thenComparingInt(SharedModel.UnaryPair::rhsCol))
                     .forEach(p -> sb.append(String.format(
-                            "  %-38s  ⊆  %s%n",
+                            "IND(%s, %s)%n",
                             name(names, p.lhsCol()),
                             name(names, p.rhsCol())
                     )));
@@ -352,8 +367,23 @@ public final class DataLoader {
         }
     }
 
-    private static String name(Map<Integer, String> names, int col) {
-        return names.getOrDefault(col, "col" + col);
+    // private static String name(Map<Integer, String> names, int col) {
+    //     return names.getOrDefault(col, "col" + col);
+    // }
+
+    private static String name(Map<Integer, String> names, int colId) {
+        String n = names.get(colId);
+        if (n == null || n.isBlank()) {
+            return "col[" + colId + "]";
+        }
+        int dotC = n.lastIndexOf(".c");
+        if (dotC >= 0 && dotC + 2 < n.length()) {
+            String table = n.substring(0, dotC);
+            String idx = n.substring(dotC + 2);
+            return table + "[" + idx + "]";
+        }
+
+        return n;
     }
 
     private static String tuple(Map<Integer, String> names, List<Integer> cols) {

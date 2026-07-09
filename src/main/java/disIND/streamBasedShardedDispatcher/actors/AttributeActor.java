@@ -170,7 +170,11 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             return this;
         }
 
-        checkPoint = new AttributeCheckPoint(msg.epoch(), bitmapStore.deepCopy(), valueToRowsStore.deepCopy(),
+//        checkPoint = new AttributeCheckPoint(msg.epoch(), bitmapStore.deepCopy(), valueToRowsStore.deepCopy(),
+//                sketchStore.getSummary(msg.round(),colId, msg.epoch()));
+
+        //Currently not snapshoting valuetorows since not required by unary
+        checkPoint = new AttributeCheckPoint(msg.epoch(), bitmapStore.deepCopy(), null,
                 sketchStore.getSummary(msg.round(),colId, msg.epoch()));
 
         msg.replyTo().tell(new BDCommand.AaCheckpointStatus(msg.round(), colId, true, List.of()));
@@ -236,8 +240,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
                         "Adding row {} to bitmap for value {}",rowI, vid);
 
-            boolean newValue = !valueToRowsStore.containsValue(vid);
-            valueToRowsStore.add(vid, rowI);
+            boolean newValue = !bitmapStore.contains(vid);
             if (newValue){
                 bitmapStore.insertIds(new int[]{vid});
                 newDistinctThisBatch.add(vid);
@@ -263,10 +266,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             return;
 
         for (EntityRef<CMCommand> cm : lhsSubscriptions.values())
-            cm.tell(new CMCommand.LhsLiveDelta(colId, round, newValues.clone()));
+            cm.tell(new CMCommand.LhsLiveDelta(colId, round, newValues));
 
         for (EntityRef<CMCommand> cm : rhsSubscriptions.values())
-            cm.tell(new CMCommand.RhsLiveDelta(colId, round, newValues.clone()));
+            cm.tell(new CMCommand.RhsLiveDelta(colId, round, newValues));
     }
 
     private void cleanupOldDeltas(long checkpointEpoch){
@@ -317,10 +320,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private RoaringBitmap distinctValuesFromDelta(AttributeDelta delta) {
-        RoaringBitmap values = new RoaringBitmap();
-        for (var entry : delta.inserts().int2ObjectEntrySet())
-            values.add(entry.getIntKey());
-        return values;
+        return delta.distinctValues().clone();
     }
 
     private static int findOwnerTable(int colId, DatasetMetadata metadata) {
