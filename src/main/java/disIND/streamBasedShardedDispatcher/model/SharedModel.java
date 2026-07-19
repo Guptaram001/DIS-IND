@@ -162,10 +162,10 @@ public final class SharedModel {
             long requestId
     ) implements AkkaSerializable {}
 
-    public record AttributeDelta(long epoch, RoaringBitmap distinctValues) implements AkkaSerializable {}
+    public record AttributeDelta(int round, RoaringBitmap distinctValues) implements AkkaSerializable {}
 
     public record AttributeCheckPoint(
-            long epoch,
+            int round,
             BitmapStore bitmapStore,
             ValueToRowsStore valueToRowsStore,
             SketchSummary sketchSummary

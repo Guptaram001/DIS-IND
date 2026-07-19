@@ -5,11 +5,11 @@ import org.roaringbitmap.RoaringBitmap;
 
 public class AttributeDeltaBuilder {
 
-    private final long epoch;
+    private final int round;
     private final RoaringBitmap distinctValues = new RoaringBitmap();
 
-    public AttributeDeltaBuilder(long epoch) {
-        this.epoch = epoch;
+    public AttributeDeltaBuilder(int round) {
+        this.round = round;
     }
 
     public void addInsert(int valueId, int row) {
@@ -17,6 +17,6 @@ public class AttributeDeltaBuilder {
     }
 
     public SharedModel.AttributeDelta build() {
-        return new SharedModel.AttributeDelta(epoch, distinctValues);
+        return new SharedModel.AttributeDelta(round, distinctValues);
     }
 }

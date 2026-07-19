@@ -117,11 +117,11 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                     String.valueOf(Debug.State.NONE),
                     "Invoked for sending column col:{} to col: {}", msg.candidate().pair().lhsCol(), msg.candidate().pair().rhsCol());
         RoaringBitmap lhsBitmap = checkPoint.bitmapStore().getBitmap();
-        long checkpointEpoch = checkPoint.epoch();
+        int checkpointRound = checkPoint.round();
         EntityRef<CMCommand> cmRef = msg.cmRef();
         //lhsSubscribers.add(sendColumnData.cmRef());
         msg.rhsRef().tell(new AACommand.CompareBitmap(msg.candidate(),lhsBitmap,cmRef));
-        RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointEpoch);
+        RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointRound);
         cmRef.tell(new CMCommand.LhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().checkpointRound(),
                 msg.candidate().checkpointRound(), mergedSinceCheckpoint));
         lhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
@@ -132,23 +132,23 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,Debug.pairTag(msg.candidate().pair()), String.valueOf(Debug.State.NONE),
                     "Comparing {} ⊆ {}", msg.candidate().pair().lhsCol(), msg.candidate().pair().rhsCol());
-        long checkpointEpoch = checkPoint.epoch();
+        int checkPointRound=checkPoint.round();
         ScanResult result = checkPoint.bitmapStore().compareAgainst(
                                 msg.lhsBitmap(),
                                 msg.candidate().pair(),
                                 msg.candidate().checkpointRound());
         msg.cmRef().tell(new CMCommand.UnaryViolationReport(result));
-        RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointEpoch);
+        RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkPointRound);
         msg.cmRef().tell(new CMCommand.RhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().checkpointRound(),
                 msg.candidate().checkpointRound(), mergedSinceCheckpoint));
         rhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
         return this;
     }
 
-    private RoaringBitmap accumulateDistinctSince(long checkpointEpoch) {
+    private RoaringBitmap accumulateDistinctSince(int checkpointRound) {
         RoaringBitmap accumulated = new RoaringBitmap();
         for (AttributeDelta delta : deltaLogDequeue) {
-            if (delta.epoch() <= checkpointEpoch)
+            if (delta.round() <= checkpointRound)
                 continue;
             accumulated.or(distinctValuesFromDelta(delta));
         }
@@ -174,12 +174,12 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 //                sketchStore.getSummary(msg.round(),colId, msg.epoch()));
 
         //Currently not snapshoting valuetorows since not required by unary
-        checkPoint = new AttributeCheckPoint(msg.epoch(), bitmapStore.deepCopy(), null,
+        checkPoint = new AttributeCheckPoint(msg.round(), bitmapStore.deepCopy(), null,
                 sketchStore.getSummary(msg.round(),colId, msg.epoch()));
 
         msg.replyTo().tell(new BDCommand.AaCheckpointStatus(msg.round(), colId, true, List.of()));
 
-        //cleanupOldDeltas(epochComplete.epoch());
+        cleanupOldDeltas(msg.round());
         publishCheckpointSketch(msg.round(), msg.epoch(), msg.appraiserRef());
         return this;
     }
@@ -229,7 +229,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
 
         int[] valueIds    = msg.valueIds();
         long[] rows   = msg.rows();
-        AttributeDeltaBuilder deltaBuilder = new AttributeDeltaBuilder(msg.inputBatchDetails().epoch());
+        AttributeDeltaBuilder deltaBuilder = new AttributeDeltaBuilder(msg.inputBatchDetails().round());
         RoaringBitmap newDistinctThisBatch = new RoaringBitmap();
 
         for (int i = 0; i < rows.length; i++) {
@@ -272,8 +272,8 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             cm.tell(new CMCommand.RhsLiveDelta(colId, round, newValues));
     }
 
-    private void cleanupOldDeltas(long checkpointEpoch){
-        while(!deltaLogDequeue.isEmpty() && deltaLogDequeue.peekFirst().epoch() <= checkpointEpoch){
+    private void cleanupOldDeltas(int checkpointRound){
+        while(!deltaLogDequeue.isEmpty() && deltaLogDequeue.peekFirst().round() <= checkpointRound){
             deltaLogDequeue.removeFirst();
         }
     }
@@ -294,13 +294,13 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private void replayLhsDeltasToCm(UnaryPair pair, long afterEpoch, EntityRef<CMCommand> cmRef) {
         getContext().getLog().info("[ATTRA] Replaying LHS deltas for col {} epoch {}", pair.lhsCol(), afterEpoch);
         for (AttributeDelta delta : deltaLogDequeue) {
-            if (delta.epoch() <= afterEpoch)
+            if (delta.round() <= afterEpoch)
                 continue;
             RoaringBitmap newValues = distinctValuesFromDelta(delta);
             getContext().getLog().info("[ATTRA] Replay LHS delta col={} deltaEpoch={} afterEpoch={} values={}",
-                    colId, delta.epoch(), afterEpoch, newValues);
+                    colId, delta.round(), afterEpoch, newValues);
             if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.LhsLiveDelta(pair.lhsCol(), (int)delta.epoch(), newValues));
+                cmRef.tell(new CMCommand.LhsLiveDelta(pair.lhsCol(), (int)delta.round(), newValues));
         }
     }
 
@@ -309,13 +309,13 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         getContext().getLog().info("[ATTRA] Replaying RHS deltas for col {} epoch {}", pair.lhsCol(), afterEpoch);
         for (AttributeDelta delta : deltaLogDequeue) {
 
-            if (delta.epoch() <= afterEpoch)
+            if (delta.round() <= afterEpoch)
                 continue;
             RoaringBitmap newValues = distinctValuesFromDelta(delta);
             getContext().getLog().info("[ATTRA] Replay RHS delta col={} deltaEpoch={} afterEpoch={} values={}",
-                    colId, delta.epoch(), afterEpoch, newValues);
+                    colId, delta.round(), afterEpoch, newValues);
             if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.RhsLiveDelta(pair.rhsCol(), (int)delta.epoch(), newValues));
+                cmRef.tell(new CMCommand.RhsLiveDelta(pair.rhsCol(), (int)delta.round(), newValues));
         }
     }
 
