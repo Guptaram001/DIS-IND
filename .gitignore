@@ -31,3 +31,8 @@ dependency-reduced-pom.xml
 *.txt
 /data/
 .DS_Store
+
+
+/Report/
+.vscode/
+/diagnostics/

@@ -1,6 +1,7 @@
 package disIND.streamBasedShardedDispatcher.structures;
 
 import disIND.streamBasedShardedDispatcher.utility.UserConfig;
+import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -11,8 +12,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ValueIdMap {
 
-    private final ConcurrentHashMap<String, Integer> strToId = new ConcurrentHashMap<>();
-    private final List<String> idToStr = Collections.synchronizedList(new ArrayList<>());
+    private final Object2IntOpenHashMap<String> strToId = new Object2IntOpenHashMap<>();
+    //private final List<String> idToStr = Collections.synchronizedList(new ArrayList<>());
     private final AtomicInteger counter = new AtomicInteger(0);
 
     public int getOrInsert(String value) {
@@ -20,7 +21,7 @@ public final class ValueIdMap {
             return stableHashId(value);
         return strToId.computeIfAbsent(value, v -> {
             int id = counter.getAndIncrement();
-            idToStr.add(v);
+            //idToStr.add(v);
             return id;
         });
     }
@@ -31,11 +32,11 @@ public final class ValueIdMap {
         return Optional.ofNullable(strToId.get(value));
     }
 
-    public String getValue(int id) {
-        if (!UserConfig.STORE_VALUE_STRINGS)
-            return String.valueOf(id);
-        return idToStr.get(id);
-    }
+    // public String getValue(int id) {
+    //     if (!UserConfig.STORE_VALUE_STRINGS)
+    //         return String.valueOf(id);
+    //     return idToStr.get(id);
+    // }
 
     public int size() {
         return strToId.size();
