@@ -1,0 +1,66 @@
+x-dis-ind-common: &dis-ind-common
+  build:
+    context: .
+  image: dis-ind:local
+  restart: "no"
+  init: true
+  environment: &dis-ind-environment
+    AKKA_PORT: "2551"
+    AKKA_SEED_HOST: coordinator
+    AKKA_SEED_PORT: "2551"
+    AKKA_MAXIMUM_FRAME_SIZE: "${AKKA_MAXIMUM_FRAME_SIZE:-64 MiB}"
+    AKKA_BUFFER_POOL_SIZE: "${AKKA_BUFFER_POOL_SIZE:-4}"
+    DIS_IND_INPUT_DIR: /data/input
+    DIS_IND_BATCH_SIZE: "${DIS_IND_BATCH_SIZE-}"
+    DIS_IND_MAX_TRACKED_VIOLATIONS: "${DIS_IND_MAX_TRACKED_VIOLATIONS-}"
+    DIS_IND_KMV_PRUNE_THRESHOLD: "${DIS_IND_KMV_PRUNE_THRESHOLD-}"
+    DIS_IND_CHECKPOINT_INTERVAL: "${DIS_IND_CHECKPOINT_INTERVAL-}"
+    DIS_IND_DL_BD_CREDIT_WINDOW: "${DIS_IND_DL_BD_CREDIT_WINDOW-}"
+    DIS_IND_BD_AA_CREDIT_WINDOW: "${DIS_IND_BD_AA_CREDIT_WINDOW-}"
+    DIS_IND_BATCH_ACK_TIMEOUT_SECONDS: "${DIS_IND_BATCH_ACK_TIMEOUT_SECONDS-}"
+    DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS: "${DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS-}"
+    DIS_IND_STORE_VALUE_STRINGS: "${DIS_IND_STORE_VALUE_STRINGS-}"
+    DIS_IND_EXPECTED_CLUSTER_SIZE: "${DIS_IND_EXPECTED_CLUSTER_SIZE:-3}"
+    DIS_IND_CLUSTER_START_TIMEOUT_SECONDS: "120"
+    DIS_IND_DIAGNOSTICS_DIR: /data/diagnostics
+    JAVA_XMS: "${JAVA_XMS:-512m}"
+    JAVA_XMX: "${JAVA_XMX:-2g}"
+  volumes:
+    - "${DIS_IND_DATA_DIR:-./data/tpch-10-corrected}:/data/input:ro"
+    - "${DIS_IND_DIAGNOSTICS_DIR:-./diagnostics/docker-current}:/data/diagnostics"
+  networks:
+    - dis-ind
+  healthcheck:
+    test: ["CMD-SHELL", "kill -0 1"]
+    interval: 5s
+    timeout: 2s
+    retries: 12
+    start_period: 10s
+
+services:
+  coordinator:
+    <<: *dis-ind-common
+    hostname: coordinator
+    environment:
+      <<: *dis-ind-environment
+      AKKA_HOSTNAME: coordinator
+      DIS_IND_NODE_ROLE: coordinator
+      DIS_IND_OUTPUT_FILE: /data/output/ind-report.txt
+      JAVA_XMX: "${COORDINATOR_JAVA_XMX:-1g}"
+    volumes:
+      - "${DIS_IND_DATA_DIR:-./data/tpch-10-corrected}:/data/input:ro"
+      - "${DIS_IND_OUTPUT_DIR:-./output}:/data/output"
+      - "${DIS_IND_DIAGNOSTICS_DIR:-./diagnostics/docker-current}:/data/diagnostics"
+
+  worker:
+    <<: *dis-ind-common
+    environment:
+      <<: *dis-ind-environment
+      DIS_IND_NODE_ROLE: worker
+    depends_on:
+      coordinator:
+        condition: service_healthy
+
+networks:
+  dis-ind:
+    driver: bridge
