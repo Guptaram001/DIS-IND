@@ -252,7 +252,7 @@ public class AppraisalActor_ extends AbstractBehavior<AppraiserCommand> {
 
         double containment = lhsS.kmv().containmentIn(rhsS.kmv());
         //System.out.println(containment);
-        if (containment < UserConfig.KMV_PRUN_THRESHOLD) {
+        if (containment < UserConfig.KMV_PRUNE_THRESHOLD) {
             st.pairState[idx] = PairEvalState.KMV_PRUNED;
             if(Debug.PRUNED_KMV)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.PRUNED), Debug.app(),-1,

@@ -233,7 +233,7 @@ public final class DataLoader {
                     "startRowId="+startRowId+" rows="+rows.size());
             return AskPattern.ask(bdRef, (ActorRef<BDReply> replyTo) -> new BDCommand.SendTableBatch(rows,
                                     new InputBatchDetails(tableId,startRowId,individualBatchId,-1,round, -1),
-                                    replyTo), Duration.ofSeconds(UserConfig.BATCH_ACK_TIMEOUT_SEC),
+                                    replyTo), Duration.ofSeconds(UserConfig.BATCH_ACK_TIMEOUT_SECONDS),
                             system.scheduler());
 
         }

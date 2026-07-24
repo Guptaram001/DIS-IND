@@ -5,6 +5,8 @@ import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.*;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.typed.Cluster;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
 import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
@@ -18,6 +20,7 @@ import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 public class AttributeActor extends AbstractBehavior<AACommand> {
     public static final EntityTypeKey<AACommand> TYPE_KEY = EntityTypeKey.create(AACommand.class, "AttributeActor");
     private final ActorRef<StatsCommand> statsRef;
+    private final ClusterSharding sharding;
     private final DatasetMetadata metadata;
     private final int ownerTableId;
 
@@ -53,11 +56,19 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                            DatasetMetadata metadata ) {
         super(ctx);
         this.colId  = colId;
+        this.sharding = ClusterSharding.get(ctx.getSystem());
         this.valueIdMap = valueIdMap;
         this.cmRef= cmRef;
         this.statsRef= statsRef;
         this.metadata=metadata;
         this.ownerTableId = findOwnerTable(colId, metadata);
+        getContext().getLog().info("[PLACEMENT] type=AA col={} node={}",
+                colId, Cluster.get(ctx.getSystem()).selfMember().address());
+        if(Debug.STATE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
+                    "PLACEMENT type=AA col={} node={}",
+                    colId, Cluster.get(ctx.getSystem()).selfMember().address());
+       
     }
 
 
@@ -106,8 +117,9 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
                     "Checking membership for col {} epoch {}", colId, msg.round());
         RoaringBitmap missing = msg.values().clone();
-        missing.andNot(bitmapStore.getBitmap());
-        msg.replyTo().tell(new CMCommand.MembershipResult(msg.pair(),msg.round(), missing));
+        bitmapStore.removeContainedFrom(missing);
+        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(msg.replyOwnerCol()))
+                .tell(new CMCommand.MembershipResult(msg.pair(), msg.round(), missing));
         return this;
     }
 
@@ -118,13 +130,16 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                     "Invoked for sending column col:{} to col: {}", msg.candidate().pair().lhsCol(), msg.candidate().pair().rhsCol());
         RoaringBitmap lhsBitmap = checkPoint.bitmapStore().getBitmap();
         int checkpointRound = checkPoint.round();
-        EntityRef<CMCommand> cmRef = msg.cmRef();
+        EntityRef<CMCommand> cmRef = sharding.entityRefFor(
+                CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(msg.candidate().pair().lhsCol()));
+        EntityRef<AACommand> rhsRef = sharding.entityRefFor(
+                AttributeActor.TYPE_KEY, AACommand.entityId(msg.candidate().pair().rhsCol()));
         //lhsSubscribers.add(sendColumnData.cmRef());
-        msg.rhsRef().tell(new AACommand.CompareBitmap(msg.candidate(),lhsBitmap,cmRef));
+        rhsRef.tell(new AACommand.CompareBitmap(msg.candidate(), lhsBitmap));
         RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkpointRound);
         cmRef.tell(new CMCommand.LhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().checkpointRound(),
                 msg.candidate().checkpointRound(), mergedSinceCheckpoint));
-        lhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
+        lhsSubscriptions.put(msg.candidate().pair(), cmRef);
         return this;
     }
 
@@ -137,11 +152,13 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                                 msg.lhsBitmap(),
                                 msg.candidate().pair(),
                                 msg.candidate().checkpointRound());
-        msg.cmRef().tell(new CMCommand.UnaryViolationReport(result));
+        EntityRef<CMCommand> cmRef = sharding.entityRefFor(
+                CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(msg.candidate().pair().lhsCol()));
+        cmRef.tell(new CMCommand.UnaryViolationReport(result));
         RoaringBitmap mergedSinceCheckpoint = accumulateDistinctSince(checkPointRound);
-        msg.cmRef().tell(new CMCommand.RhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().checkpointRound(),
+        cmRef.tell(new CMCommand.RhsReplayDelta(msg.candidate().pair(), colId, msg.candidate().checkpointRound(),
                 msg.candidate().checkpointRound(), mergedSinceCheckpoint));
-        rhsSubscriptions.put(msg.candidate().pair(), msg.cmRef());
+        rhsSubscriptions.put(msg.candidate().pair(), cmRef);
         return this;
     }
 

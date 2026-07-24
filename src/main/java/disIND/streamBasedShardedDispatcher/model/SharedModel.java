@@ -251,10 +251,10 @@ public final class SharedModel {
 
         record GetSnapshot(long epoch, ActorRef<RACommand> replyTo) implements AACommand {}
 
-        record SendColumnData(UnaryCandidate candidate, EntityRef<AACommand> rhsRef, EntityRef<CMCommand> cmRef) implements AACommand {}
+        record SendColumnData(UnaryCandidate candidate) implements AACommand {}
 
-        record CompareBitmap(UnaryCandidate candidate,RoaringBitmap lhsBitmap,EntityRef<CMCommand> cmRef) implements AACommand {}
-        record CheckMembership(UnaryPair pair, int round, RoaringBitmap values, EntityRef<CMCommand> replyTo) implements AACommand {}
+        record CompareBitmap(UnaryCandidate candidate, RoaringBitmap lhsBitmap) implements AACommand {}
+        record CheckMembership(UnaryPair pair, int round, RoaringBitmap values, int replyOwnerCol) implements AACommand {}
         record DeactiveUnaryPair(UnaryPair pair, boolean lhsSide) implements AACommand {}
         record RequestSketch(int round, long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
     }

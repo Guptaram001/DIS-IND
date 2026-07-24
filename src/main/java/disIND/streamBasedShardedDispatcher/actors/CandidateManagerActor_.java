@@ -8,6 +8,7 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.javadsl.TimerScheduler;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.typed.Cluster;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
@@ -104,6 +105,12 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         this.cleanThreshold = cleanThreshold;
         this.metadata = metadata;
         this.statsRef = statsRef;
+        getContext().getLog().info("[PLACEMENT] type=CM col={} node={}",
+                lhsOwnerCol, Cluster.get(ctx.getSystem()).selfMember().address());
+        if(Debug.STATE)
+            formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.attr(),lhsOwnerCol,"-",
+         String.valueOf(Debug.State.NONE),"PLACEMENT type=AA col={} node={}",
+                    lhsOwnerCol, Cluster.get(ctx.getSystem()).selfMember().address());
     }
 
 
@@ -129,7 +136,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (!finishedReported) {
             timers.startSingleTimer("force-finish-" + finalRound,
                     new CMCommand.ForceFinish(finalRound),
-                    Duration.ofSeconds(UserConfig.FINAL_CM_DRAIN_TIMEOUT_SEC));
+                    Duration.ofSeconds(UserConfig.FINAL_CM_DRAIN_TIMEOUT_SECONDS));
         }
         return this;
     }
@@ -150,7 +157,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (!finishedReported) {
             timers.startSingleTimer("force-finish-" + finalRound,
                     new CMCommand.ForceFinish(finalRound),
-                    Duration.ofSeconds(UserConfig.FINAL_CM_DRAIN_TIMEOUT_SEC));
+                    Duration.ofSeconds(UserConfig.FINAL_CM_DRAIN_TIMEOUT_SECONDS));
         }
         return this;
     }
@@ -249,7 +256,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 continue;
             EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
             s.pendingMembershipChecks++;
-            rhs.tell(new AACommand.CheckMembership(pair, msg.round(), msg.newValues(), selfEntityRef()));
+            rhs.tell(new AACommand.CheckMembership(pair, msg.round(), msg.newValues(), lhsOwnerCol));
             activeMembershipChecks++;
         }
         return this;
@@ -414,10 +421,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             //raRef.tell(new RACommand.EvaluateCandidate(unaryCandidateProposed.candidate()));
             EntityRef<AACommand> lhs = sharding.entityRefFor(AttributeActor.TYPE_KEY,
                     AACommand.entityId(msg.candidate().pair().lhsCol()));
-            EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY,
-                    AACommand.entityId(msg.candidate().pair().rhsCol()));
-            EntityRef<CMCommand> cmSelf = selfEntityRef();
-            lhs.tell(new AACommand.SendColumnData(msg.candidate(),rhs,cmSelf));
+            lhs.tell(new AACommand.SendColumnData(msg.candidate()));
             raInProgress++;
         }
         return this;
@@ -472,7 +476,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         EntityRef<AACommand> rhs = sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(pair.rhsCol()));
         s.pendingMembershipChecks++;
-        rhs.tell(new AACommand.CheckMembership(pair, round, values.clone(), selfEntityRef()));
+        rhs.tell(new AACommand.CheckMembership(pair, round, values.clone(), lhsOwnerCol));
         activeMembershipChecks++;
     }
 

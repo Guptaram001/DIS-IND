@@ -18,6 +18,16 @@ public final class BitmapStore {
         return bitmapStore.clone();
     }
 
+    /**
+     * Removes every value held by this store from the caller-owned bitmap.
+     *
+     * <p>The right-hand bitmap passed to {@code andNot} is read-only, so this
+     * avoids cloning the complete store for every membership check.</p>
+     */
+    public void removeContainedFrom(RoaringBitmap values) {
+        values.andNot(bitmapStore);
+    }
+
     public boolean contains(int id) {
         return bitmapStore.contains(id);
     }
