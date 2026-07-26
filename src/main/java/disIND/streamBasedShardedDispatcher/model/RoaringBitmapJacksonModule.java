@@ -1,4 +1,4 @@
-package disIND.streamBasedShardedDispatcher.serialization;
+package disIND.streamBasedShardedDispatcher.model;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
