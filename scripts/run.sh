@@ -63,7 +63,7 @@ RUN_DIR="$DIAGNOSTICS_BASE/run-$RUN_ID"
 JAR_FILE="$PROJECT_DIR/target/dis-ind-1.0.0.jar"
 DOCKER_DISTRIBUTED="${DOCKER_DISTRIBUTED:-0}"
 WORKERS="${WORKERS:-3}"
-INPUT_DIR="${INPUT_DIR:-$PROJECT_DIR/data/tpch-10-corrected}"
+INPUT_DIR="${INPUT_DIR:-$PROJECT_DIR/data/tpch-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 DIS_IND_BATCH_SIZE="${DIS_IND_BATCH_SIZE:-}"
 
@@ -110,6 +110,8 @@ export_docker_application_arguments() {
             --batch-ack-timeout-seconds) export DIS_IND_BATCH_ACK_TIMEOUT_SECONDS="$value" ;;
             --final-cm-drain-timeout-seconds) export DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS="$value" ;;
             --store-value-strings) export DIS_IND_STORE_VALUE_STRINGS="$value" ;;
+            --value-id-hot-entries) export DIS_IND_VALUE_ID_HOT_ENTRIES="$value" ;;
+            --value-id-disk-dir) export DIS_IND_VALUE_ID_DISK_DIR="$value" ;;
             *)
                 echo "Unknown application option: $option" >&2
                 exit 1
