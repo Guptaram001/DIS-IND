@@ -39,7 +39,6 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
     private INDGuardian(ActorContext<BDCommand> ctx, Config cfg) {
         super(ctx);
-        ValueIdMap vidMap = new ValueIdMap();
         AtomicReference<ActorRef<CMCommand>> cmRefHolder = new AtomicReference<>();
         DatasetMetadata metadata = cfg.metadata();
         ClusterSingleton singletons = ClusterSingleton.get(ctx.getSystem());
@@ -49,7 +48,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         sharding.init(Entity.of(AttributeActor.TYPE_KEY, entityCtx -> {
                     int colId = Integer.parseInt(entityCtx.getEntityId().substring("col-".length()));
-                    return AttributeActor.create(colId, vidMap, cmRefHolder,statsRef,metadata);
+                    return AttributeActor.create(colId, cmRefHolder,statsRef,metadata);
                 }).withRole("worker")
         );
         if(Debug.INTERNAL)
@@ -77,7 +76,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
         lmRef.tell(new LMCommand.InjectNra(nraRef));
 
-        this.bdRef = singletons.init(SingletonActor.of(BatchDispatcherActor_.create(vidMap, sharding, apRef, metadata,
+        this.bdRef = singletons.init(SingletonActor.of(BatchDispatcherActor_.create(sharding, apRef, metadata,
                         statsRef, rcRef), "batch-dispatcher"));
 
         if(Debug.INTERNAL)

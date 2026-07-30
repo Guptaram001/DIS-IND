@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 
 public final class SharedModel {
@@ -172,7 +173,17 @@ public final class SharedModel {
     ) {}
 
     public record InputBatchDetails(int tableId, long startRowId, int  batchId, long epoch, int round, int colId){}
-    public record CachedTableBatch(InputBatchDetails inputBatchDetails, List<String[]> rows) {}
+    public record ColumnBatch(int colId, long[] rowIds, int[] valueIds) implements AkkaSerializable {
+        public ColumnBatch {
+            Objects.requireNonNull(rowIds, "rowIds");
+            Objects.requireNonNull(valueIds, "valueIds");
+            if (rowIds.length != valueIds.length) {
+                throw new IllegalArgumentException("rowIds and valueIds must have the same length");
+            }
+        }
+    }
+    public record CachedTableBatch(InputBatchDetails inputBatchDetails,
+            List<ColumnBatch> columns,int numRows) {}
     public record IngestionResult(long totalRows, int finalRound, Map<Integer, Integer> finalBatchByTable) {}
 
     public record ColumnSlice(
@@ -198,7 +209,8 @@ public final class SharedModel {
 
         record IngestBatch(String[] cells, int numRows, int numCols, ActorRef<BDReply> replyTo) implements BDCommand {}
 
-        record SendTableBatch(List<String []> rows, InputBatchDetails inputBatchDetails,ActorRef<BDReply> replyTo) implements BDCommand {}
+        record SendTableBatch(List<ColumnBatch> columns,int numRows,InputBatchDetails inputBatchDetails,ActorRef<BDReply> replyTo) 
+        implements BDCommand {}
 
         record BatchDispatched(long epoch) implements BDCommand {}
 

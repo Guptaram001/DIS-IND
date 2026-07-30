@@ -25,7 +25,6 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final int ownerTableId;
 
     private final int colId;
-    private final ValueIdMap valueIdMap;
     private final AtomicReference<ActorRef<CMCommand>> cmRef;
     private final Map<UnaryPair, EntityRef<CMCommand>> lhsSubscriptions = new HashMap<>();
     private final Map<UnaryPair, EntityRef<CMCommand>> rhsSubscriptions = new HashMap<>();
@@ -44,20 +43,18 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         return tableId + ":" + batchId;
     }
 
-    public static Behavior<AACommand> create(int colId, ValueIdMap vidMap,
-                                             AtomicReference<ActorRef<CMCommand>> cmRef, ActorRef<StatsCommand> statsRef,
-    DatasetMetadata metadata) {
-        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, vidMap, cmRef
+    public static Behavior<AACommand> create(int colId,AtomicReference<ActorRef<CMCommand>> cmRef, 
+        ActorRef<StatsCommand> statsRef,DatasetMetadata metadata) {
+        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, cmRef
         ,statsRef,metadata));
     }
 
-    private AttributeActor(ActorContext<AACommand> ctx, int colId, ValueIdMap valueIdMap,
+    private AttributeActor(ActorContext<AACommand> ctx, int colId,
                            AtomicReference<ActorRef<CMCommand>> cmRef,ActorRef<StatsCommand> statsRef,
                            DatasetMetadata metadata ) {
         super(ctx);
         this.colId  = colId;
         this.sharding = ClusterSharding.get(ctx.getSystem());
-        this.valueIdMap = valueIdMap;
         this.cmRef= cmRef;
         this.statsRef= statsRef;
         this.metadata=metadata;

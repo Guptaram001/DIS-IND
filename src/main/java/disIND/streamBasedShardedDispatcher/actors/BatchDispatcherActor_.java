@@ -14,7 +14,6 @@ import disIND.streamBasedShardedDispatcher.utility.Debug;
 import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 
 import java.util.ArrayDeque;
-import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
@@ -25,11 +24,9 @@ import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private final ActorRef<StatsCommand> statsRef;
     private final  DatasetMetadata metadata;
-    private final ValueIdMap valueIdMap;
     private final ClusterSharding sharding;
     private final ActorRef<AppraiserCommand> appraiserRef;
     private final ActorRef<BDCommand> selfRef;
-    private int[]  cursors;
 
     private final ActorRef<RCCommand> rcRef;
     private ActorRef<BDReply> finishReplyTo;
@@ -37,11 +34,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private boolean finishRequested = false;
 
     private long epoch     = 0L;
-    private long[] rowBuffer;
-    private int[] vidBuffer;
-    private int bufCapacity = 0;
-    private int localBufCols = 0;
-
     private final Map<Long, PendingEpoch> pendingPerEpoch = new HashMap<>();
     private final Map<Integer, Integer> inFlightByCol = new HashMap<>();
     private final Map<Integer, Deque<ColumnDispatch>> queuedByCol = new HashMap<>();
@@ -57,22 +49,20 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
 
 
-    public static Behavior<BDCommand> create(ValueIdMap vidMap, ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
+    public static Behavior<BDCommand> create(ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
                                              DatasetMetadata metadata,ActorRef<StatsCommand> statsRef,ActorRef<RCCommand> rcRef) {
         return Behaviors.setup(ctx ->
-                new BatchDispatcherActor_(ctx,  vidMap, sharding, appraiserRef,metadata,statsRef,rcRef));
+                new BatchDispatcherActor_(ctx, sharding, appraiserRef,metadata,statsRef,rcRef));
     }
 
-    private BatchDispatcherActor_(ActorContext<BDCommand> ctx, ValueIdMap valueIdMap,
-                                  ClusterSharding sharding, ActorRef<AppraiserCommand> appraiserRef,
-                                  DatasetMetadata metadata,ActorRef<StatsCommand> statsRef,ActorRef<RCCommand> rcRef) {
+    private BatchDispatcherActor_(ActorContext<BDCommand> ctx, ClusterSharding sharding,
+                                  ActorRef<AppraiserCommand> appraiserRef,DatasetMetadata metadata,
+                                  ActorRef<StatsCommand> statsRef,ActorRef<RCCommand> rcRef) {
         super(ctx);
         getContext().getLog().info("BD STARTED");
-        this.valueIdMap   = valueIdMap;
         this.sharding     = sharding;
         this.appraiserRef = appraiserRef;
         this.selfRef      = ctx.getSelf();
-        this.cursors      = new int[metadata.totalCols()];
         this.metadata     = metadata;
         this.statsRef     = statsRef;
         this.rcRef        = rcRef;
@@ -150,84 +140,40 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private Behavior<BDCommand> onSendTableBatch(BDCommand.SendTableBatch msg) {
         epoch++;
 
-        InputBatchDetails ibd = msg.inputBatchDetails();
-        batchCache.put(key(ibd.tableId(), ibd.batchId()), new CachedTableBatch(ibd, msg.rows()));
+        InputBatchDetails incomingDetails = msg.inputBatchDetails();
+        InputBatchDetails ibd = new InputBatchDetails(incomingDetails.tableId(),incomingDetails.startRowId(),
+                incomingDetails.batchId(),epoch,incomingDetails.round(),-1);
+        batchCache.put(key(ibd.tableId(), ibd.batchId()),
+                new CachedTableBatch(ibd, msg.columns(), msg.numRows()));
 
-        int tableId = msg.inputBatchDetails().tableId();
-        List<String[]> rows = msg.rows();
-
-        if (rows.isEmpty()) {
+        if (msg.columns().isEmpty()) {
             if (msg.replyTo() != null)
                 msg.replyTo().tell(new BDReply.BatchAccepted(epoch));
+            statsRef.tell(new StatsCommand.RowBatchProcessed(msg.numRows()));
             return this;
         }
 
-        int offset = metadata.offsets().get(tableId);
-        int localCols = metadata.nCols().get(tableId);
-        int numRows = rows.size();
-
-        if (numRows > bufCapacity || localCols > localBufCols) {
-            bufCapacity = Math.max(bufCapacity, numRows);
-            localBufCols = Math.max(localBufCols, localCols);
-
-            rowBuffer = new long[localBufCols * bufCapacity];
-            vidBuffer = new int[localBufCols * bufCapacity];
-            cursors = new int[localBufCols];
-        }
-        Arrays.fill(cursors, 0);
-
-        for (int r = 0; r < numRows; r++) {
-            String[] row = rows.get(r);
-            long rowId = msg.inputBatchDetails().startRowId() + r;
-            int limit = Math.min(localCols, row.length);
-            for (int localCol = 0; localCol < limit; localCol++) {
-                String value = row[localCol];
-                if (value == null || value.isEmpty())
-                    continue;
-                int cur = cursors[localCol];
-                int base = localCol * bufCapacity;
-                rowBuffer[base + cur] = rowId;
-                //ValueId map checking
-                //int id = valueIdMap.getOrInsert(value);
-                //System.out.printf("raw='%s' -> id=%d, round=%d %n", value, id,msg.inputBatchDetails().round());
-                vidBuffer[base + cur] = valueIdMap.getOrInsert(value);
-                cursors[localCol] = cur + 1;
-            }
-        }
-
-        int expected = 0;
+        int expected = msg.columns().size();
         Deque<ColumnDispatch> dispatches = new ArrayDeque<>();
-        for (int localCol = 0; localCol < localCols; localCol++) {
-            int count = cursors[localCol];
-            if (count == 0)
-                continue;
-            expected++;
-            int globalCol = offset + localCol;
-            int base = localCol * bufCapacity;
-            long[] rArr = Arrays.copyOfRange(rowBuffer, base, base + count);
-            int[] vArr = Arrays.copyOfRange(vidBuffer, base, base + count);
+        for (ColumnBatch column : msg.columns()) {
+            int globalCol = column.colId();
             if(Debug.MESSAGE)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),globalCol,"-",
                         String.valueOf(Debug.State.NONE), "Sending table batch: {} rows, {} cols",
-                        msg.rows().size(), metadata.totalCols());
+                        msg.numRows(), metadata.totalCols());
 
-            InputBatchDetails detailsForCol = new InputBatchDetails(msg.inputBatchDetails().tableId(),
-                    msg.inputBatchDetails().startRowId(), msg.inputBatchDetails().batchId(), epoch,
-                    msg.inputBatchDetails().round(), globalCol);
+            InputBatchDetails detailsForCol = new InputBatchDetails(ibd.tableId(), ibd.startRowId(), 
+            ibd.batchId(), epoch, ibd.round(), globalCol);
 
-            dispatches.addLast(new ColumnDispatch(globalCol, detailsForCol, rArr, vArr));
+            dispatches.addLast(new ColumnDispatch(globalCol, detailsForCol, column.rowIds(),
+             column.valueIds()));
         }
-        if (expected == 0) {
-            if (msg.replyTo() != null)
-                msg.replyTo().tell(new BDReply.BatchAccepted(epoch));
-        } else {
-            pendingPerEpoch.put(epoch, new PendingEpoch(expected, msg.replyTo()));
-            while (!dispatches.isEmpty()) {
-                enqueueOrSend(dispatches.removeFirst());
-            }
+        pendingPerEpoch.put(epoch, new PendingEpoch(expected, msg.replyTo()));
+        while (!dispatches.isEmpty()) {
+            enqueueOrSend(dispatches.removeFirst());
         }
 
-        statsRef.tell(new StatsCommand.RowBatchProcessed(rows.size()));
+        statsRef.tell(new StatsCommand.RowBatchProcessed(msg.numRows()));
         return this;
     }
 
@@ -268,37 +214,14 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
     private void resendBatchToColumn(CachedTableBatch cached, int globalCol) {
         InputBatchDetails ibd = cached.inputBatchDetails();
 
-        int offset = metadata.offsets().get(ibd.tableId());
-        int localCol = globalCol - offset;
+        ColumnBatch column = cached.columns().stream().filter(candidate -> candidate.colId() == globalCol)
+                .findFirst().orElse(null);
+        if (column == null) return;
 
-        if (localCol < 0 || localCol >= metadata.nCols().get(ibd.tableId())) {
-            return;
-        }
+        InputBatchDetails resendDetails = new InputBatchDetails(ibd.tableId(), ibd.startRowId(), 
+        ibd.batchId(), ibd.epoch(),ibd.round(), globalCol);
 
-        List<String[]> rows = cached.rows();
-        long[] rArr = new long[rows.size()];
-        int[] vArr = new int[rows.size()];
-        int count = 0;
-
-        for (int r = 0; r < rows.size(); r++) {
-            String[] row = rows.get(r);
-            if (localCol >= row.length) continue;
-
-            String value = row[localCol];
-            if (value == null || value.isEmpty()) continue;
-
-            rArr[count] = ibd.startRowId() + r;
-            vArr[count] = valueIdMap.getOrInsert(value);
-            count++;
-        }
-
-        rArr = Arrays.copyOf(rArr, count);
-        vArr = Arrays.copyOf(vArr, count);
-
-        InputBatchDetails resendDetails = new InputBatchDetails(ibd.tableId(), ibd.startRowId(), ibd.batchId(), ibd.epoch(),
-                ibd.round(), globalCol);
-
-        enqueueOrSend(new ColumnDispatch(globalCol, resendDetails, rArr, vArr));
+        enqueueOrSend(new ColumnDispatch(globalCol, resendDetails, column.rowIds(), column.valueIds()));
     }
 
     private void enqueueOrSend(ColumnDispatch dispatch) {
