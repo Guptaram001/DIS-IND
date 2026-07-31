@@ -23,6 +23,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final ClusterSharding sharding;
     private final DatasetMetadata metadata;
     private final int ownerTableId;
+    private final NodeValueToRowsStore nodeValueToRowsStore;
 
     private final int colId;
     private final AtomicReference<ActorRef<CMCommand>> cmRef;
@@ -30,7 +31,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final Map<UnaryPair, EntityRef<CMCommand>> rhsSubscriptions = new HashMap<>();
 
     private final BitmapStore bitmapStore=new BitmapStore();
-    private final ValueToRowsStore valueToRowsStore = new ValueToRowsStore();
+    private final ValueToRowsStore valueToRowsDelta = new ValueToRowsStore();
     private final SketchStore sketchStore = new SketchStore();
     private long epochsProcessed = 0L;
 
@@ -43,21 +44,21 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         return tableId + ":" + batchId;
     }
 
-    public static Behavior<AACommand> create(int colId,AtomicReference<ActorRef<CMCommand>> cmRef, 
-        ActorRef<StatsCommand> statsRef,DatasetMetadata metadata) {
-        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, cmRef
-        ,statsRef,metadata));
+    public static Behavior<AACommand> create(int colId,AtomicReference<ActorRef<CMCommand>> cmRef,
+        ActorRef<StatsCommand> statsRef,DatasetMetadata metadata, NodeValueToRowsStore nodeValueToRowsStore) {
+        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, cmRef,statsRef,metadata,nodeValueToRowsStore));
     }
 
     private AttributeActor(ActorContext<AACommand> ctx, int colId,
                            AtomicReference<ActorRef<CMCommand>> cmRef,ActorRef<StatsCommand> statsRef,
-                           DatasetMetadata metadata ) {
+                           DatasetMetadata metadata, NodeValueToRowsStore nodeValueToRowsStore) {
         super(ctx);
         this.colId  = colId;
         this.sharding = ClusterSharding.get(ctx.getSystem());
         this.cmRef= cmRef;
         this.statsRef= statsRef;
         this.metadata=metadata;
+        this.nodeValueToRowsStore = nodeValueToRowsStore;
         this.ownerTableId = findOwnerTable(colId, metadata);
         getContext().getLog().info("[PLACEMENT] type=AA col={} node={}",
                 colId, Cluster.get(ctx.getSystem()).selfMember().address());
@@ -184,12 +185,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             return this;
         }
 
-//        checkPoint = new AttributeCheckPoint(msg.epoch(), bitmapStore.deepCopy(), valueToRowsStore.deepCopy(),
-//                sketchStore.getSummary(msg.round(),colId, msg.epoch()));
-
-        //Currently not snapshoting valuetorows since not required by unary
-        checkPoint = new AttributeCheckPoint(msg.round(), bitmapStore.deepCopy(), null,
-                sketchStore.getSummary(msg.round(),colId, msg.epoch()));
+        nodeValueToRowsStore.mergeCheckpoint(colId, msg.round(), valueToRowsDelta);
+        valueToRowsDelta.clear();
+        checkPoint = new AttributeCheckPoint(msg.round(), bitmapStore.deepCopy(),
+            sketchStore.getSummary(msg.round(),colId, msg.epoch()));
 
         msg.replyTo().tell(new BDCommand.AaCheckpointStatus(msg.round(), colId, true, List.of()));
 
@@ -259,6 +258,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                 bitmapStore.insertIds(new int[]{vid});
                 newDistinctThisBatch.add(vid);
             }
+            valueToRowsDelta.add(vid, rowI);
             deltaBuilder.addInsert(vid,rowI);
         }
 
@@ -301,35 +301,6 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             for (ActorRef<AppraiserCommand> ref : waiters) {
                 ref.tell(new AppraiserCommand.SketchArrived(summary));
             }
-        }
-    }
-
-
-    private void replayLhsDeltasToCm(UnaryPair pair, long afterEpoch, EntityRef<CMCommand> cmRef) {
-        getContext().getLog().info("[ATTRA] Replaying LHS deltas for col {} epoch {}", pair.lhsCol(), afterEpoch);
-        for (AttributeDelta delta : deltaLogDequeue) {
-            if (delta.round() <= afterEpoch)
-                continue;
-            RoaringBitmap newValues = distinctValuesFromDelta(delta);
-            getContext().getLog().info("[ATTRA] Replay LHS delta col={} deltaEpoch={} afterEpoch={} values={}",
-                    colId, delta.round(), afterEpoch, newValues);
-            if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.LhsLiveDelta(pair.lhsCol(), (int)delta.round(), newValues));
-        }
-    }
-
-
-    private void replayRhsDeltasToCm(UnaryPair pair, long afterEpoch, EntityRef<CMCommand> cmRef) {
-        getContext().getLog().info("[ATTRA] Replaying RHS deltas for col {} epoch {}", pair.lhsCol(), afterEpoch);
-        for (AttributeDelta delta : deltaLogDequeue) {
-
-            if (delta.round() <= afterEpoch)
-                continue;
-            RoaringBitmap newValues = distinctValuesFromDelta(delta);
-            getContext().getLog().info("[ATTRA] Replay RHS delta col={} deltaEpoch={} afterEpoch={} values={}",
-                    colId, delta.round(), afterEpoch, newValues);
-            if (!newValues.isEmpty())
-                cmRef.tell(new CMCommand.RhsLiveDelta(pair.rhsCol(), (int)delta.round(), newValues));
         }
     }
 

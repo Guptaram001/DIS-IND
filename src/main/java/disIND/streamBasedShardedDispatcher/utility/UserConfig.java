@@ -6,9 +6,9 @@ import java.util.Map;
 public final class UserConfig {
     private UserConfig() {}
 
-    public static final String DEFAULT_INPUT_DIR = "data/tpch-10-corrected";
+    public static final String DEFAULT_INPUT_DIR = "data/tpch-1";
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
-    public static final int DEFAULT_BATCH_SIZE = 15000;
+    public static final int DEFAULT_BATCH_SIZE = 25000;
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
@@ -16,7 +16,11 @@ public final class UserConfig {
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
     public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
-    public static final boolean DEFAULT_STORE_VALUE_STRINGS = false;
+    public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
+    public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
+    public static final String DEFAULT_VALUE_ID_DISK_DIR =System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
+    public static final String DEFAULT_VALUE_TO_ROWS_DISK_DIR =
+            System.getProperty("java.io.tmpdir") + "/dis-ind-value-to-rows";
 
     public static String inputDir = DEFAULT_INPUT_DIR;
     public static String outputDir = DEFAULT_OUTPUT_FILE;
@@ -29,6 +33,9 @@ public final class UserConfig {
     public static int BATCH_ACK_TIMEOUT_SECONDS = DEFAULT_BATCH_ACK_TIMEOUT_SECONDS;
     public static int FINAL_CM_DRAIN_TIMEOUT_SECONDS = DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS;
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
+    public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
+    public static String VALUE_ID_DISK_DIR = DEFAULT_VALUE_ID_DISK_DIR;
+    public static String VALUE_TO_ROWS_DISK_DIR = DEFAULT_VALUE_TO_ROWS_DISK_DIR;
 
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
@@ -44,6 +51,9 @@ public final class UserConfig {
         CLI_PROPERTIES.put("batch-ack-timeout-seconds", "dis.ind.batch-ack-timeout-seconds");
         CLI_PROPERTIES.put("final-cm-drain-timeout-seconds", "dis.ind.final-cm-drain-timeout-seconds");
         CLI_PROPERTIES.put("store-value-strings", "dis.ind.store-value-strings");
+        CLI_PROPERTIES.put("value-id-hot-entries", "dis.ind.value-id-hot-entries");
+        CLI_PROPERTIES.put("value-id-disk-dir", "dis.ind.value-id-disk-dir");
+        CLI_PROPERTIES.put("value-to-rows-disk-dir", "dis.ind.value-to-rows-disk-dir");
     }
 
     /**
@@ -73,6 +83,12 @@ public final class UserConfig {
                 "dis.ind.final-cm-drain-timeout-seconds", DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS);
         STORE_VALUE_STRINGS = booleanSetting("DIS_IND_STORE_VALUE_STRINGS",
                 "dis.ind.store-value-strings", DEFAULT_STORE_VALUE_STRINGS);
+        VALUE_ID_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
+                "dis.ind.value-id-hot-entries", DEFAULT_VALUE_ID_HOT_ENTRIES);
+        VALUE_ID_DISK_DIR = stringSetting("DIS_IND_VALUE_ID_DISK_DIR",
+                "dis.ind.value-id-disk-dir", DEFAULT_VALUE_ID_DISK_DIR);
+        VALUE_TO_ROWS_DISK_DIR = stringSetting("DIS_IND_VALUE_TO_ROWS_DISK_DIR",
+                "dis.ind.value-to-rows-disk-dir", DEFAULT_VALUE_TO_ROWS_DISK_DIR);
     }
 
     private static void applyCommandLine(String[] args) {
@@ -134,11 +150,9 @@ public final class UserConfig {
     private static double doubleSetting(String environmentName,String propertyName,double fallback) {
 
         String value = stringSetting(environmentName,propertyName,null);
-
         if (value == null) {
             return fallback;
         }
-
         try {
             double parsed = Double.parseDouble(value);
             return parsed;

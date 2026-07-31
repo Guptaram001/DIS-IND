@@ -4,7 +4,6 @@ import akka.actor.typed.ActorRef;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.prototypeModel.model.AkkaSerializable;
 import disIND.streamBasedShardedDispatcher.structures.BitmapStore;
-import disIND.streamBasedShardedDispatcher.structures.ValueToRowsStore;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.ArrayList;
@@ -168,7 +167,6 @@ public final class SharedModel {
     public record AttributeCheckPoint(
             int round,
             BitmapStore bitmapStore,
-            ValueToRowsStore valueToRowsStore,
             SketchSummary sketchSummary
     ) {}
 

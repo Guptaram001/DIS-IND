@@ -8,6 +8,7 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.Entity;
+import akka.cluster.typed.Cluster;
 import akka.cluster.typed.ClusterSingleton;
 import akka.cluster.typed.SingletonActor;
 import disIND.streamBasedShardedDispatcher.model.SharedModel.*;
@@ -17,6 +18,8 @@ import disIND.streamBasedShardedDispatcher.structures.*;
 import disIND.streamBasedShardedDispatcher.utility.Debug;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.nio.file.Path;
+import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 
 import static disIND.streamBasedShardedDispatcher.utility.Debug.formLog;
 
@@ -32,6 +35,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private final ActorRef<BDCommand> bdRef;
     private final ActorRef<RCCommand> rcRef;
     private final AtomicLong totalRows = new AtomicLong(0L);
+    private final NodeValueToRowsStore nodeValueToRowsStore;
 
     public static Behavior<BDCommand> create(Config cfg) {
         return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg));
@@ -44,11 +48,13 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ClusterSingleton singletons = ClusterSingleton.get(ctx.getSystem());
         ActorRef<StatsCommand> statsRef = singletons.init(SingletonActor.of(DiscoveryStatsActor.create(), "discovery-stats"));
         this.rcRef = singletons.init(SingletonActor.of(ResultCollectorActor.create(metadata, statsRef), "result-collector"));
+        String nodeId = Cluster.get(ctx.getSystem()).selfMember().address().toString().replaceAll("[^A-Za-z0-9._-]", "_");
+        this.nodeValueToRowsStore = new NodeValueToRowsStore(Path.of(UserConfig.VALUE_TO_ROWS_DISK_DIR, nodeId));
 
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         sharding.init(Entity.of(AttributeActor.TYPE_KEY, entityCtx -> {
                     int colId = Integer.parseInt(entityCtx.getEntityId().substring("col-".length()));
-                    return AttributeActor.create(colId, cmRefHolder,statsRef,metadata);
+                    return AttributeActor.create(colId, cmRefHolder,statsRef,metadata,nodeValueToRowsStore);
                 }).withRole("worker")
         );
         if(Debug.INTERNAL)
