@@ -18,6 +18,9 @@ set -uo pipefail
 #
 # Local single-JVM run:
 #
+#   ./scripts/run.sh columnbased
+#   ./scripts/run.sh valuebased
+#
 #   CPU_CORES=4 \
 #   AKKA_WORKERS=4 \
 #   JAVA_XMS=4g \
@@ -66,6 +69,46 @@ WORKERS="${WORKERS:-3}"
 INPUT_DIR="${INPUT_DIR:-$PROJECT_DIR/data/tpch-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 DIS_IND_BATCH_SIZE="${DIS_IND_BATCH_SIZE:-}"
+DIS_IND_MODE="${DIS_IND_MODE:-columnbased}"
+
+case "${1:-}" in
+    columnbased|column-based|column)
+        DIS_IND_MODE="columnbased"
+        shift
+        ;;
+    valuebased|value-based|value)
+        DIS_IND_MODE="valuebased"
+        shift
+        ;;
+    --mode)
+        if (( "$#" < 2 )); then
+            echo "--mode requires columnbased or valuebased" >&2
+            exit 1
+        fi
+        DIS_IND_MODE="$2"
+        shift 2
+        ;;
+    --mode=*)
+        DIS_IND_MODE="${1#*=}"
+        shift
+        ;;
+esac
+
+case "$DIS_IND_MODE" in
+    columnbased|column-based|column)
+        DIS_IND_MODE="columnbased"
+        DIS_IND_MAIN_CLASS="disIND.DisINDMain"
+        ;;
+    valuebased|value-based|value)
+        DIS_IND_MODE="valuebased"
+        DIS_IND_MAIN_CLASS="disIND.ValueBasedMain"
+        ;;
+    *)
+        echo "Unknown mode '$DIS_IND_MODE'; choose columnbased or valuebased" >&2
+        exit 1
+        ;;
+esac
+export DIS_IND_MODE DIS_IND_MAIN_CLASS
 
 # Empty means "use the JVM/Akka default". Supplying values makes the run reproducible
 CPU_CORES="${CPU_CORES:-}"
@@ -233,6 +276,8 @@ run_distributed_docker() {
     {
         echo "run_id=$RUN_ID"
         echo "mode=docker-distributed"
+        echo "algorithm=$DIS_IND_MODE"
+        echo "main_class=$DIS_IND_MAIN_CLASS"
         echo "project_dir=$PROJECT_DIR"
         echo "started_at=$(timestamp)"
         echo "input_dir=$input_dir_abs"
@@ -251,6 +296,7 @@ run_distributed_docker() {
     } > "$RUN_DIR/run-info.txt" 2>&1
 
     echo "Starting the DIS-IND Docker cluster"
+    echo "Algorithm: $DIS_IND_MODE"
     echo "Topology: 1 coordinator + $WORKERS worker replica(s)"
     echo "Input dataset: $input_dir_abs"
     echo "Diagnostics directory: $RUN_DIR"
@@ -444,7 +490,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
         exit 1
     fi
     echo "Building the shaded application JAR..."
-    (cd "$PROJECT_DIR" && "$MAVEN_BIN" -DskipTests package) \
+    (cd "$PROJECT_DIR" && "$MAVEN_BIN" -DskipTests clean package) \
         > >(tee "$RUN_DIR/maven-build.log") 2>&1
 fi
 
@@ -455,6 +501,9 @@ if [[ ! -f "$JAR_FILE" ]]; then
 fi
 
 JVM_OPTIONS=(
+    # Local execution is a one-node Akka cluster. application.conf keeps a
+    # three-worker minimum for distributed runs
+    "-Dakka.cluster.role.worker.min-nr-of-members=1"
     "-XX:+HeapDumpOnOutOfMemoryError"
     "-XX:HeapDumpPath=$RUN_DIR"
     "-XX:ErrorFile=$RUN_DIR/hs_err_pid%p.log"
@@ -513,6 +562,8 @@ fi
     echo "run_id=$RUN_ID"
     echo "project_dir=$PROJECT_DIR"
     echo "jar=$JAR_FILE"
+    echo "algorithm=$DIS_IND_MODE"
+    echo "main_class=$DIS_IND_MAIN_CLASS"
     echo "started_at=$(timestamp)"
     echo "sample_interval_seconds=$SAMPLE_INTERVAL"
     echo "thread_dump_interval_seconds=$THREAD_DUMP_INTERVAL"
@@ -545,12 +596,12 @@ stop_processes() {
 
 trap 'stop_processes TERM' INT TERM
 
-echo "Starting disIND.DisINDMain"
+echo "Starting $DIS_IND_MAIN_CLASS ($DIS_IND_MODE)"
 echo "Diagnostics directory: $RUN_DIR"
 
 (
     cd "$PROJECT_DIR" || exit 1
-    exec "$JAVA_BIN" "${JVM_OPTIONS[@]}" -jar "$JAR_FILE" "$@"
+    exec "$JAVA_BIN" "${JVM_OPTIONS[@]}" -cp "$JAR_FILE" "$DIS_IND_MAIN_CLASS" "$@"
 ) \
     > >(tee "$RUN_DIR/application-console.log") 2>&1 &
 APP_PID=$!

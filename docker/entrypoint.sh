@@ -12,6 +12,7 @@ set -eu
 : "${JAVA_XMS:=512m}"
 : "${JAVA_XMX:=2g}"
 : "${DIS_IND_DIAGNOSTICS_DIR:=/data/diagnostics}"
+: "${DIS_IND_MAIN_CLASS:=disIND.DisINDMain}"
 
 export AKKA_HOSTNAME AKKA_PORT
 
@@ -27,5 +28,6 @@ exec java \
   "-Dakka.cluster.roles.0=${DIS_IND_NODE_ROLE}" \
   "-Dakka.cluster.seed-nodes.0=akka://disIND@${AKKA_SEED_HOST}:${AKKA_SEED_PORT}" \
   ${JAVA_OPTS:-} \
-  -jar /opt/dis-ind/dis-ind.jar \
+  -cp /opt/dis-ind/dis-ind.jar \
+  "${DIS_IND_MAIN_CLASS}" \
   "$@"
