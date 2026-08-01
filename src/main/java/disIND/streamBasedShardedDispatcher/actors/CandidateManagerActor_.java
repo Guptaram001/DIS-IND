@@ -105,12 +105,20 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         this.cleanThreshold = cleanThreshold;
         this.metadata = metadata;
         this.statsRef = statsRef;
-        getContext().getLog().info("[PLACEMENT] type=CM col={} node={}",
-                lhsOwnerCol, Cluster.get(ctx.getSystem()).selfMember().address());
+        ColumnInfo column = metadata.column(lhsOwnerCol);
+        getContext().getLog().info(
+                "[PLACEMENT] type=CM col={} tableId={} table={} localCol={} columnName={} qualifiedName={} dataType={} node={}",
+                lhsOwnerCol, column.tableId(), placementToken(column.tableName()), column.localColumnId(),
+                placementToken(column.columnName()), placementToken(column.qualifiedName()), column.type(),
+                Cluster.get(ctx.getSystem()).selfMember().address());
         if(Debug.STATE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.attr(),lhsOwnerCol,"-",
          String.valueOf(Debug.State.NONE),"PLACEMENT type=AA col={} node={}",
                     lhsOwnerCol, Cluster.get(ctx.getSystem()).selfMember().address());
+    }
+
+    private static String placementToken(String value) {
+        return value.replaceAll("\\s+", "_");
     }
 
 

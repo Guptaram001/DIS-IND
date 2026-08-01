@@ -349,10 +349,16 @@ run_distributed_docker() {
                     next
                 container = substr($0, 1, separator - 1)
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", container)
-                type = col = node = ""
+                type = col = tableId = table = localCol = columnName = qualifiedName = dataType = node = ""
                 for (i = 1; i <= NF; i++) {
                     if ($i ~ /^type=/) { type = $i; sub(/^type=/, "", type) }
                     if ($i ~ /^col=/)  { col = $i;  sub(/^col=/, "", col) }
+                    if ($i ~ /^tableId=/) { tableId = $i; sub(/^tableId=/, "", tableId) }
+                    if ($i ~ /^table=/) { table = $i; sub(/^table=/, "", table) }
+                    if ($i ~ /^localCol=/) { localCol = $i; sub(/^localCol=/, "", localCol) }
+                    if ($i ~ /^columnName=/) { columnName = $i; sub(/^columnName=/, "", columnName) }
+                    if ($i ~ /^qualifiedName=/) { qualifiedName = $i; sub(/^qualifiedName=/, "", qualifiedName) }
+                    if ($i ~ /^dataType=/) { dataType = $i; sub(/^dataType=/, "", dataType) }
                     if ($i ~ /^node=/) { node = $i; sub(/^node=/, "", node) }
                 }
                 if (type != "" && col != "") {
@@ -361,13 +367,22 @@ run_distributed_docker() {
                     address[key] = node
                     entityType[key] = type
                     entityCol[key] = col
+                    entityTableId[key] = tableId
+                    entityTable[key] = table
+                    entityLocalCol[key] = localCol
+                    entityColumnName[key] = columnName
+                    entityQualifiedName[key] = qualifiedName
+                    entityDataType[key] = dataType
                 }
             }
             END {
                 print "Final observed sharded-entity placement"
-                print "container\ttype\tcolumn\tnode"
+                print "container\ttype\tglobal_column\ttable_id\ttable\tlocal_column\tcolumn_name\tqualified_name\tdata_type\tnode"
                 for (key in owner) {
-                    print owner[key] "\t" entityType[key] "\t" entityCol[key] "\t" address[key]
+                    print owner[key] "\t" entityType[key] "\t" entityCol[key] "\t" \
+                        entityTableId[key] "\t" entityTable[key] "\t" entityLocalCol[key] "\t" \
+                        entityColumnName[key] "\t" entityQualifiedName[key] "\t" \
+                        entityDataType[key] "\t" address[key]
                     count[owner[key] SUBSEP entityType[key]]++
                 }
                 print "\nEntity counts by container"

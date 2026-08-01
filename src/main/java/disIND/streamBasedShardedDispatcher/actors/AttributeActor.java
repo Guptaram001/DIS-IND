@@ -60,8 +60,12 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         this.metadata=metadata;
         this.nodeValueToRowsStore = nodeValueToRowsStore;
         this.ownerTableId = findOwnerTable(colId, metadata);
-        getContext().getLog().info("[PLACEMENT] type=AA col={} node={}",
-                colId, Cluster.get(ctx.getSystem()).selfMember().address());
+        ColumnInfo column = metadata.column(colId);
+        getContext().getLog().info(
+                "[PLACEMENT] type=AA col={} tableId={} table={} localCol={} columnName={} qualifiedName={} dataType={} node={}",
+                colId, column.tableId(), placementToken(column.tableName()), column.localColumnId(),
+                placementToken(column.columnName()), placementToken(column.qualifiedName()), column.type(),
+                Cluster.get(ctx.getSystem()).selfMember().address());
         if(Debug.STATE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
                     "PLACEMENT type=AA col={} node={}",
@@ -317,6 +321,10 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             }
         }
         throw new IllegalArgumentException("No table owns colId=" + colId);
+    }
+
+    private static String placementToken(String value) {
+        return value.replaceAll("\\s+", "_");
     }
 
 }
