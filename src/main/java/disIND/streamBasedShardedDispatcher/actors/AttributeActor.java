@@ -252,7 +252,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         for (int i = 0; i < rows.length; i++) {
             int vid  = valueIds[i];
             int rowI = (int) rows[i];
-            sketchStore.insert(vid);
+
             if(Debug.INTERNAL)
                 formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.attr(),colId,"-", String.valueOf(Debug.State.NONE),
                         "Adding row {} to bitmap for value {}",rowI, vid);
@@ -260,6 +260,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             boolean newValue = !bitmapStore.contains(vid);
             if (newValue){
                 bitmapStore.insertIds(new int[]{vid});
+                sketchStore.insert(vid);
                 newDistinctThisBatch.add(vid);
             }
             valueToRowsDelta.add(vid, rowI);

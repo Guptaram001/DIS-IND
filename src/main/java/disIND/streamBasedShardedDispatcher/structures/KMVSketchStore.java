@@ -1,6 +1,7 @@
 package disIND.streamBasedShardedDispatcher.structures;
 
 import disIND.streamBasedShardedDispatcher.model.SharedModel;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.Arrays;
 
@@ -8,6 +9,7 @@ public final class KMVSketchStore {
 
     private final int k;
     private final long[] hashes;
+    private final LongOpenHashSet retainedHashes;
     private int size = 0;
     private long maxHash = Long.MAX_VALUE;
 
@@ -16,6 +18,7 @@ public final class KMVSketchStore {
             throw new IllegalArgumentException("KMV size must be positive");
         this.k = k;
         this.hashes = new long[k];
+        this.retainedHashes = new LongOpenHashSet(k);
     }
 
     public int k() { return k;}
@@ -30,10 +33,11 @@ public final class KMVSketchStore {
 
     public void addHash(long hash) {
         long unsignedHash = hash & Long.MAX_VALUE;
-        if (contains(unsignedHash))
+        if (retainedHashes.contains(unsignedHash))
             return;
         if (size < k) {
             hashes[size++] = unsignedHash;
+            retainedHashes.add(unsignedHash);
             recomputeMax();
             return;
         }
@@ -44,16 +48,11 @@ public final class KMVSketchStore {
                     maxIndex = i;
                 }
             }
+            retainedHashes.remove(hashes[maxIndex]);
             hashes[maxIndex] = unsignedHash;
+            retainedHashes.add(unsignedHash);
             recomputeMax();
         }
-    }
-
-    private boolean contains(long h) {
-        for (int i = 0; i < size; i++) {
-            if (hashes[i] == h) return true;
-        }
-        return false;
     }
 
     private void recomputeMax() {
