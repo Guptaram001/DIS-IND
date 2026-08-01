@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+.vscode
+.DS_Store
+target
+diagnostics
+logs
+Report
+temp
+data
+*.iml
