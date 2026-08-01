@@ -14,6 +14,7 @@ public final class UserConfig {
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 4;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
+    public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
     public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
     public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
@@ -31,6 +32,7 @@ public final class UserConfig {
     public static int CHECKPOINT_INTERVAL = DEFAULT_CHECKPOINT_INTERVAL;
     public static int DL_BD_CREDIT_WINDOW = DEFAULT_DL_BD_CREDIT_WINDOW;
     public static int BD_AA_CREDIT_WINDOW = DEFAULT_BD_AA_CREDIT_WINDOW;
+    public static int VALUE_OWNER_BUCKETS = DEFAULT_VALUE_OWNER_BUCKETS;
     public static int BATCH_ACK_TIMEOUT_SECONDS = DEFAULT_BATCH_ACK_TIMEOUT_SECONDS;
     public static int FINAL_CM_DRAIN_TIMEOUT_SECONDS = DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS;
     public static int CHECKPOINT_WRITERS_PER_NODE = DEFAULT_CHECKPOINT_WRITERS_PER_NODE;
@@ -50,6 +52,7 @@ public final class UserConfig {
         CLI_PROPERTIES.put("checkpoint-interval", "dis.ind.checkpoint-interval");
         CLI_PROPERTIES.put("dl-bd-credit-window", "dis.ind.dl-bd-credit-window");
         CLI_PROPERTIES.put("bd-aa-credit-window", "dis.ind.bd-aa-credit-window");
+        CLI_PROPERTIES.put("value-owner-buckets", "dis.ind.value-owner-buckets");
         CLI_PROPERTIES.put("batch-ack-timeout-seconds", "dis.ind.batch-ack-timeout-seconds");
         CLI_PROPERTIES.put("final-cm-drain-timeout-seconds", "dis.ind.final-cm-drain-timeout-seconds");
         CLI_PROPERTIES.put("checkpoint-writers-per-node", "dis.ind.checkpoint-writers-per-node");
@@ -80,6 +83,8 @@ public final class UserConfig {
                 "dis.ind.dl-bd-credit-window", DEFAULT_DL_BD_CREDIT_WINDOW);
         BD_AA_CREDIT_WINDOW = positiveIntSetting("DIS_IND_BD_AA_CREDIT_WINDOW",
                 "dis.ind.bd-aa-credit-window", DEFAULT_BD_AA_CREDIT_WINDOW);
+        VALUE_OWNER_BUCKETS = positiveIntSetting("DIS_IND_VALUE_OWNER_BUCKETS",
+                "dis.ind.value-owner-buckets", DEFAULT_VALUE_OWNER_BUCKETS);
         BATCH_ACK_TIMEOUT_SECONDS = positiveIntSetting("DIS_IND_BATCH_ACK_TIMEOUT_SECONDS",
                 "dis.ind.batch-ack-timeout-seconds", DEFAULT_BATCH_ACK_TIMEOUT_SECONDS);
         FINAL_CM_DRAIN_TIMEOUT_SECONDS = positiveIntSetting("DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS",

@@ -234,8 +234,8 @@ public final class DataLoader {
             List<Integer> offsets,List<Integer> nCols,int tableId,long startRowId,List<String[]> rows,int round,int individualBatchId) {
 
         List<ColumnBatch> columns = columnize(rows, startRowId, offsets.get(tableId), nCols.get(tableId), valueIdMap);
-        System.out.println("[Loader] Sending columnar batch to " + bdRef + " "+ bdRef.path().name() + " tableId=" + tableId
-                + " startRowId=" + startRowId + " rows=" + rows.size()+ " columns=" + columns.size());
+       // System.out.println("[Loader] Sending columnar batch to " + bdRef + " "+ bdRef.path().name() + " tableId=" + tableId
+         //       + " startRowId=" + startRowId + " rows=" + rows.size()+ " columns=" + columns.size());
         return AskPattern.ask(bdRef,
                 (ActorRef<BDReply> replyTo) -> new BDCommand.SendTableBatch(columns,rows.size(),new InputBatchDetails(
                                 tableId, startRowId, individualBatchId, -1, round, -1),replyTo),

@@ -239,6 +239,8 @@ run_distributed_docker() {
     export DIS_IND_DATA_DIR="$input_dir_abs"
     export DIS_IND_OUTPUT_DIR="$output_dir_abs"
     export DIS_IND_DIAGNOSTICS_DIR="$RUN_DIR"
+    export DIS_IND_VALUE_ID_DISK_DIR="${DIS_IND_VALUE_ID_DISK_DIR:-/data/diagnostics/value-ids}"
+    export DIS_IND_VALUE_TO_ROWS_DISK_DIR="${DIS_IND_VALUE_TO_ROWS_DISK_DIR:-/data/diagnostics/value-to-rows}"
     export DIS_IND_EXPECTED_CLUSTER_SIZE=$((WORKERS + 1))
     if [[ -n "$DIS_IND_BATCH_SIZE" ]]; then
         export DIS_IND_BATCH_SIZE
@@ -283,6 +285,8 @@ run_distributed_docker() {
         echo "input_dir=$input_dir_abs"
         echo "output_dir=$output_dir_abs"
         echo "batch_size=${DIS_IND_BATCH_SIZE:-UserConfig default}"
+        echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
+        echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
         echo "workers=$WORKERS"
         echo "expected_cluster_size=$DIS_IND_EXPECTED_CLUSTER_SIZE"
         echo "sample_interval_seconds=$SAMPLE_INTERVAL"
@@ -473,6 +477,8 @@ fi
 mkdir -p "$OUTPUT_DIR"
 export DIS_IND_INPUT_DIR="${DIS_IND_INPUT_DIR:-$INPUT_DIR}"
 export DIS_IND_OUTPUT_FILE="${DIS_IND_OUTPUT_FILE:-$OUTPUT_DIR/ind-report.txt}"
+export DIS_IND_VALUE_ID_DISK_DIR="${DIS_IND_VALUE_ID_DISK_DIR:-$RUN_DIR/value-ids}"
+export DIS_IND_VALUE_TO_ROWS_DISK_DIR="${DIS_IND_VALUE_TO_ROWS_DISK_DIR:-$RUN_DIR/value-to-rows}"
 if [[ -n "$DIS_IND_BATCH_SIZE" ]]; then
     export DIS_IND_BATCH_SIZE
 fi
@@ -564,6 +570,8 @@ fi
     echo "jar=$JAR_FILE"
     echo "algorithm=$DIS_IND_MODE"
     echo "main_class=$DIS_IND_MAIN_CLASS"
+    echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
+    echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
     echo "started_at=$(timestamp)"
     echo "sample_interval_seconds=$SAMPLE_INTERVAL"
     echo "thread_dump_interval_seconds=$THREAD_DUMP_INTERVAL"

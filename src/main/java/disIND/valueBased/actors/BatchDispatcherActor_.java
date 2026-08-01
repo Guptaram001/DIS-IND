@@ -13,11 +13,10 @@ import disIND.valueBased.structures.*;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 
 import static disIND.valueBased.utility.Debug.formLog;
 
@@ -35,8 +34,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
     private long epoch     = 0L;
     private final Map<Long, PendingEpoch> pendingPerEpoch = new HashMap<>();
-    private final Map<Integer, Integer> inFlightByCol = new HashMap<>();
-    private final Map<Integer, Deque<ColumnDispatch>> queuedByCol = new HashMap<>();
     private final Map<Integer, CheckpointCleanup> checkpointCleanups = new HashMap<>();
 
     private final Map<String, CachedTableBatch> batchCache = new HashMap<>();
@@ -44,7 +41,6 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         return tableId + ":" + batchId;
     }
 
-    private record ColumnDispatch(int globalCol, InputBatchDetails details, long[] rows, int[] valueIds) {}
     private record CheckpointCleanup(Map<Integer, Integer> maxBatchIdByTable, int remaining, boolean clean) {}
 
 
@@ -73,6 +69,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         return newReceiveBuilder()
                 .onMessage(BDCommand.SendTableBatch.class, this::onSendTableBatch)
                 .onMessage(BDCommand.BatchFlushed.class, this::onBatchFlushed)
+                .onMessage(BDCommand.ValueBucketFlushed.class, this::onValueBucketFlushed)
                 .onMessage(BDCommand.FinishDiscovery.class, this::onFinishDiscovery)
                 .onMessage(BDCommand.CheckPoint.class,this::onCheckPoint)
                 .onMessage(BDCommand.MissingBatchRequest.class, this::onMissingBatchRequest)
@@ -91,7 +88,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                     msg.finalRound(), msg.finalBatchByTable());
         selfRef.tell(new BDCommand.CheckPoint(msg.finalRound(), msg.finalBatchByTable()));
         rcRef.tell(new RCCommand.AwaitDiscoveryFinished(msg.finalRound(), msg.replyTo()));
-        appraiserRef.tell(new AppraiserCommand.FinishDiscovery(msg.finalRound(), rcRef));
+        rcRef.tell(new RCCommand.PipelineDone());
 
         return this;
     }
@@ -122,16 +119,7 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),-1,"-",
                     String.valueOf(Debug.State.NONE), "Received CheckPoint Message for round: {}", msg.round());
-
-        // Notify all the ATTRA regarding epoch complete to snapshot
-        checkpointCleanups.put(msg.round(),
-                new CheckpointCleanup(new HashMap<>(msg.maxBatchIdByTable()), metadata.totalCols(), true));
-        for (int col = 0; col < metadata.totalCols(); col++) {
-            sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(col)).tell(new AACommand.CheckPoint(epoch,col,
-                    msg.round(),msg.maxBatchIdByTable(),selfRef,appraiserRef));
-        }
-        //Notify the APPA to start asking sketches--- > may need to change since too long waiting time.
-        appraiserRef.tell(new AppraiserCommand.CheckPoint(msg.round(),epoch,msg.maxBatchIdByTable()));
+        evictCachedBatchesThrough(msg.maxBatchIdByTable());
 
         return this;
     }
@@ -153,26 +141,24 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
             return this;
         }
 
-        int expected = msg.columns().size();
-        Deque<ColumnDispatch> dispatches = new ArrayDeque<>();
-        for (ColumnBatch column : msg.columns()) {
-            int globalCol = column.colId();
-            if(Debug.MESSAGE)
-                formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),globalCol,"-",
-                        String.valueOf(Debug.State.NONE), "Sending table batch: {} rows, {} cols",
-                        msg.numRows(), metadata.totalCols());
-
-            InputBatchDetails detailsForCol = new InputBatchDetails(ibd.tableId(), ibd.startRowId(), 
-            ibd.batchId(), epoch, ibd.round(), globalCol);
-
-            dispatches.addLast(new ColumnDispatch(globalCol, detailsForCol, column.rowIds(),
-             column.valueIds()));
+        Map<Integer, List<ValueOwnerActor.ValueCount>> valueBuckets =bucketByValue(msg.columns());
+        int inputValues = msg.columns().stream().mapToInt(column -> column.valueIds().length).sum();
+        int aggregatedValueColumns = valueBuckets.values().stream().mapToInt(List::size).sum();
+        getContext().getLog().info("[VALUE-DISPATCH] epoch={} tableId={} batchId={} inputValues={} "
+                        + "aggregatedValueColumns={} targetBuckets={}",epoch, ibd.tableId(), ibd.batchId(), inputValues,
+                aggregatedValueColumns, valueBuckets.size());
+        int expected = valueBuckets.size();
+        if (expected == 0) {
+            if (msg.replyTo() != null)
+                msg.replyTo().tell(new BDReply.BatchAccepted(epoch));
+            statsRef.tell(new StatsCommand.RowBatchProcessed(msg.numRows()));
+            return this;
         }
         pendingPerEpoch.put(epoch, new PendingEpoch(expected, msg.replyTo()));
-        while (!dispatches.isEmpty()) {
-            enqueueOrSend(dispatches.removeFirst());
-        }
-
+        valueBuckets.forEach((bucketId, values) ->sharding.entityRefFor(ValueOwnerActor.TYPE_KEY,
+                                ValueOwnerActor.entityId(bucketId))
+                                .tell(new ValueOwnerActor.StoreBatch(epoch, ibd.tableId(),
+                                ibd.batchId(), bucketId, values, selfRef)));
         statsRef.tell(new StatsCommand.RowBatchProcessed(msg.numRows()));
         return this;
     }
@@ -180,23 +166,51 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
 
     private Behavior<BDCommand> onBatchFlushed(BDCommand.BatchFlushed msg) {
         //Currently not properly acking from the ATTRA. it is acking but not tested fully .
-        releaseAaCredit(msg.colId());
         long ackEpoch = msg.inputBatchDetails().epoch();
-        PendingEpoch p = pendingPerEpoch.get(ackEpoch);
-        if (p == null) return this;
-        int remaining = p.remaining() - 1;
-        if (remaining > 0) {
-            pendingPerEpoch.put(ackEpoch, new PendingEpoch(remaining, p.replyTo()));
-            return this;
-        }
-        pendingPerEpoch.remove(ackEpoch);
-        if (p.replyTo() != null)
-            p.replyTo().tell(new BDReply.BatchAccepted(ackEpoch));
+        completeEpochPart(ackEpoch);
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.bd(),msg.colId(),"-",
                     String.valueOf(Debug.State.NONE), " BatchFlushed completed epoch={} col={}",
                     ackEpoch, msg.colId());
         return this;
+    }
+
+    private Behavior<BDCommand> onValueBucketFlushed(BDCommand.ValueBucketFlushed msg) {
+        completeEpochPart(msg.epoch());
+        return this;
+    }
+
+    private void completeEpochPart(long ackEpoch) {
+        PendingEpoch p = pendingPerEpoch.get(ackEpoch);
+        if (p == null) return;
+        int remaining = p.remaining() - 1;
+        if (remaining > 0) {
+            pendingPerEpoch.put(ackEpoch, new PendingEpoch(remaining, p.replyTo()));
+            return;
+        }
+        pendingPerEpoch.remove(ackEpoch);
+        if (p.replyTo() != null)
+            p.replyTo().tell(new BDReply.BatchAccepted(ackEpoch));
+    }
+
+    static Map<Integer, List<ValueOwnerActor.ValueCount>> bucketByValue(List<ColumnBatch> columns) {
+        Map<Integer, Map<Long, Integer>> countsByBucket = new HashMap<>();
+        for (ColumnBatch column : columns) {
+            for (int valueId : column.valueIds()) {
+                int bucketId = Math.floorMod(valueId, UserConfig.VALUE_OWNER_BUCKETS);
+                long valueAndColumn = ((long) valueId << 32)| (column.colId() & 0xffffffffL);
+                countsByBucket.computeIfAbsent(bucketId, ignored -> new HashMap<>())
+                        .merge(valueAndColumn, 1, Integer::sum);
+            }
+        }
+        Map<Integer, List<ValueOwnerActor.ValueCount>> result = new HashMap<>();
+        countsByBucket.forEach((bucketId, counts) -> 
+        {List<ValueOwnerActor.ValueCount> values = new ArrayList<>(counts.size());
+            counts.forEach((key, count) -> values.add(new ValueOwnerActor.ValueCount(
+                    (int) (key >> 32), (int) (long) key, count)));
+            result.put(bucketId, List.copyOf(values));
+        });
+        return result;
     }
     private Behavior<BDCommand> onMissingBatchRequest(BDCommand.MissingBatchRequest msg) {
         CachedTableBatch cached = batchCache.get(key(msg.tableId(), msg.batchId()));
@@ -207,54 +221,9 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                         msg.tableId(), msg.colId(),msg.batchId());
             return this;
         }
-        resendBatchToColumn(cached, msg.colId());
+        getContext().getLog().debug("Ignoring attribute missing-batch request in value-owner mode table={} batch={} col={}",
+                msg.tableId(), msg.batchId(), msg.colId());
         return this;
-    }
-
-    private void resendBatchToColumn(CachedTableBatch cached, int globalCol) {
-        InputBatchDetails ibd = cached.inputBatchDetails();
-
-        ColumnBatch column = cached.columns().stream().filter(candidate -> candidate.colId() == globalCol)
-                .findFirst().orElse(null);
-        if (column == null) return;
-
-        InputBatchDetails resendDetails = new InputBatchDetails(ibd.tableId(), ibd.startRowId(), 
-        ibd.batchId(), ibd.epoch(),ibd.round(), globalCol);
-
-        enqueueOrSend(new ColumnDispatch(globalCol, resendDetails, column.rowIds(), column.valueIds()));
-    }
-
-    private void enqueueOrSend(ColumnDispatch dispatch) {
-        int inFlight = inFlightByCol.getOrDefault(dispatch.globalCol(), 0);
-        if (inFlight < UserConfig.BD_AA_CREDIT_WINDOW) {
-            sendToAa(dispatch);
-            return;
-        }
-        queuedByCol.computeIfAbsent(dispatch.globalCol(), ignored -> new ArrayDeque<>()).addLast(dispatch);
-    }
-
-    private void sendToAa(ColumnDispatch dispatch) {
-        inFlightByCol.merge(dispatch.globalCol(), 1, Integer::sum);
-        sharding.entityRefFor(AttributeActor.TYPE_KEY, AACommand.entityId(dispatch.globalCol()))
-                .tell(new AACommand.InsertBatch(dispatch.details(), dispatch.rows(), dispatch.valueIds(), selfRef));
-    }
-
-    private void releaseAaCredit(int colId) {
-        int remaining = inFlightByCol.getOrDefault(colId, 0) - 1;
-        if (remaining <= 0)
-            inFlightByCol.remove(colId);
-        else
-            inFlightByCol.put(colId, remaining);
-
-        Deque<ColumnDispatch> queue = queuedByCol.get(colId);
-        if (queue == null || queue.isEmpty())
-            return;
-
-        while (inFlightByCol.getOrDefault(colId, 0) < UserConfig.BD_AA_CREDIT_WINDOW && !queue.isEmpty()) {
-            sendToAa(queue.removeFirst());
-        }
-        if (queue.isEmpty())
-            queuedByCol.remove(colId);
     }
 
     private void evictCachedBatchesThrough(Map<Integer, Integer> maxBatchIdByTable) {

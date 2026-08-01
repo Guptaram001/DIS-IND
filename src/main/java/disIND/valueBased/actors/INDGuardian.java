@@ -67,11 +67,12 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                     return AttributeActor.create(colId, cmRefHolder,statsRef,metadata,nodeValueToRowsStore, checkpointWriter);
                 }).withRole("worker")
         );
+        sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY,entityCtx -> ValueOwnerActor.create(entityCtx.getEntityId()))
+        .withRole("worker"));
         if(Debug.INTERNAL)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(),-1,"-",
                     String.valueOf(Debug.State.NONE), " Sharding init: {} columns",cfg.numCols());
 
-       
 
         ActorRef<AppraiserCommand> apRef = singletons.init(SingletonActor.of(AppraisalActor_.create(sharding, metadata, statsRef, rcRef),
                      "appraisal-actor"));
@@ -83,7 +84,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                 }).withRole("worker")
         );
 
-        
+    
 
         this.bdRef = singletons.init(SingletonActor.of(BatchDispatcherActor_.create(sharding, apRef, metadata,
                         statsRef, rcRef), "batch-dispatcher"));

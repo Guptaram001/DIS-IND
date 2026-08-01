@@ -31,7 +31,7 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
     private final ActorRef<StatsCommand> statsRef;
     private final DatasetMetadata metadata;
-
+  
     private final ActorRef<AppraiserCommand> apRef;
     private final int cleanThreshold;
     private final ClusterSharding sharding;
@@ -81,11 +81,11 @@ public class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
 
     public static Behavior<CMCommand> create(int lhsOwnerCol,ClusterSharding sharding,ActorRef<AppraiserCommand> apRef,
-                                             ActorRef<RCCommand> rcRef,
+                                      ActorRef<RCCommand> rcRef,
                                              int cleanThreshold, DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx ->
                 Behaviors.withTimers(timers ->
-                        new CandidateManagerActor_(ctx, timers, lhsOwnerCol, sharding, apRef, rcRef,
+                        new CandidateManagerActor_(ctx, timers, lhsOwnerCol, sharding, apRef,  rcRef,
                                 cleanThreshold, metadata, statsRef)));
     }
 

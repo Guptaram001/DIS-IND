@@ -13,14 +13,10 @@ import akka.cluster.MemberStatus;
 import akka.cluster.Member;
 import akka.cluster.typed.Cluster;
 import com.typesafe.config.ConfigFactory;
-import disIND.prototypeModel.actors.InputReaderActor;
-import disIND.prototypeModel.actors.ValueOwnerActor;
-import disIND.prototypeModel.dataset.CSVLoader;
-import disIND.prototypeModel.model.RawEvent;
-import disIND.streamBasedShardedDispatcher.actors.INDGuardian;
-import disIND.streamBasedShardedDispatcher.dataset.DataLoader;
-import disIND.streamBasedShardedDispatcher.model.SharedModel;
-import disIND.streamBasedShardedDispatcher.utility.UserConfig;
+import disIND.valueBased.actors.INDGuardian;
+import disIND.valueBased.dataset.DataLoader;
+import disIND.valueBased.model.SharedModel;
+import disIND.valueBased.utility.UserConfig;
 
 import java.time.Duration;
 import java.util.List;

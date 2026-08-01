@@ -2,8 +2,7 @@ package disIND.valueBased.model;
 
 import akka.actor.typed.ActorRef;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
-import disIND.prototypeModel.model.AkkaSerializable;
-import disIND.streamBasedShardedDispatcher.model.WorkType;
+import disIND.valueBased.model.AkkaSerializable;
 import disIND.valueBased.structures.BitmapStore;
 import org.roaringbitmap.RoaringBitmap;
 
@@ -170,8 +169,6 @@ public final class SharedModel {
             BitmapStore bitmapStore,
             SketchSummary sketchSummary
     ) {}
-    public record Ack(long batchId,long targetId,WorkType type) implements AkkaSerializable {}
-
 
     public record InputBatchDetails(int tableId, long startRowId, int  batchId, long epoch, int round, int colId){}
     public record ColumnBatch(int colId, long[] rowIds, int[] valueIds) implements AkkaSerializable {
@@ -206,7 +203,8 @@ public final class SharedModel {
             permits BDCommand.IngestBatch, BDCommand.BatchDispatched, BDCommand.BatchFlushed,
             BDCommand.FinishDiscovery, BDCommand.Shutdown,
             BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher, BDCommand.SendTableBatch,
-    BDCommand.CheckPoint, BDCommand.MissingBatchRequest, BDCommand.AaCheckpointStatus {
+    BDCommand.CheckPoint, BDCommand.MissingBatchRequest, BDCommand.AaCheckpointStatus,
+    BDCommand.ValueBucketFlushed {
 
         record IngestBatch(String[] cells, int numRows, int numCols, ActorRef<BDReply> replyTo) implements BDCommand {}
 
@@ -227,6 +225,7 @@ public final class SharedModel {
         record CheckPoint(int round, Map<Integer, Integer> maxBatchIdByTable) implements BDCommand {}
         record MissingBatchRequest(int tableId, int batchId, int colId) implements BDCommand {}
         record AaCheckpointStatus(int round, int colId, boolean clean, List<InputBatchDetails> missing) implements BDCommand {}
+        record ValueBucketFlushed(long epoch, int bucketId) implements BDCommand {}
 
     }
 

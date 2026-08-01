@@ -23,7 +23,7 @@ public final class Debug {
     public enum LogType {MESSAGE, FLOW, DELTA, CHECKPOINT, PERF, STATE, INTERNAL,PRUNED}
 
 
-    public static final boolean MESSAGE = false;
+    public static final boolean MESSAGE = true;
     public static final boolean CHECKPOINT = false;
     public static final boolean DELTA = false;
     public static final boolean PERF = true;
@@ -60,6 +60,10 @@ public final class Debug {
 
     public static String rc() {
         return "RC";
+    }
+
+    public static String vo() {
+        return "VO";
     }
 
     public static String pair(int lhs, int rhs) {
