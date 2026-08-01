@@ -2,6 +2,7 @@ package disIND.streamBasedShardedDispatcher.actors;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
+import akka.actor.typed.Props;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
@@ -18,6 +19,8 @@ import disIND.streamBasedShardedDispatcher.structures.*;
 import disIND.streamBasedShardedDispatcher.utility.Debug;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.ArrayList;
+import java.util.List;
 import java.nio.file.Path;
 import disIND.streamBasedShardedDispatcher.utility.UserConfig;
 
@@ -50,11 +53,18 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         this.rcRef = singletons.init(SingletonActor.of(ResultCollectorActor.create(metadata, statsRef), "result-collector"));
         String nodeId = Cluster.get(ctx.getSystem()).selfMember().address().toString().replaceAll("[^A-Za-z0-9._-]", "_");
         this.nodeValueToRowsStore = new NodeValueToRowsStore(Path.of(UserConfig.VALUE_TO_ROWS_DISK_DIR, nodeId));
+        List<ActorRef<CheckpointWriterActor.Command>> checkpointWriters = new ArrayList<>(UserConfig.CHECKPOINT_WRITERS_PER_NODE);
+        for (int writerIndex = 0; writerIndex < UserConfig.CHECKPOINT_WRITERS_PER_NODE; writerIndex++) {
+            checkpointWriters.add(ctx.spawn(CheckpointWriterActor.create(nodeValueToRowsStore),"checkpoint-writer-" + writerIndex,
+                    Props.empty().withDispatcherFromConfig("checkpoint-io-dispatcher")));
+        }
 
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         sharding.init(Entity.of(AttributeActor.TYPE_KEY, entityCtx -> {
                     int colId = Integer.parseInt(entityCtx.getEntityId().substring("col-".length()));
-                    return AttributeActor.create(colId, cmRefHolder,statsRef,metadata,nodeValueToRowsStore);
+                    ActorRef<CheckpointWriterActor.Command> checkpointWriter =checkpointWriters.get(Math.floorMod(colId, 
+                        checkpointWriters.size()));
+                    return AttributeActor.create(colId, cmRefHolder,statsRef,metadata,nodeValueToRowsStore, checkpointWriter);
                 }).withRole("worker")
         );
         if(Debug.INTERNAL)

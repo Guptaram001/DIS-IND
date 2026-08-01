@@ -112,6 +112,8 @@ export_docker_application_arguments() {
             --store-value-strings) export DIS_IND_STORE_VALUE_STRINGS="$value" ;;
             --value-id-hot-entries) export DIS_IND_VALUE_ID_HOT_ENTRIES="$value" ;;
             --value-id-disk-dir) export DIS_IND_VALUE_ID_DISK_DIR="$value" ;;
+            --value-to-rows-disk-dir) export DIS_IND_VALUE_TO_ROWS_DISK_DIR="$value" ;;
+            --checkpoint-writers-per-node) export DIS_IND_CHECKPOINT_WRITERS_PER_NODE="$value" ;;
             *)
                 echo "Unknown application option: $option" >&2
                 exit 1

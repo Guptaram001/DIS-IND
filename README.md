@@ -180,8 +180,10 @@ files in JDK Mission Control to inspect allocation hot spots by class and stack
 trace.
 
 `placement-summary.txt` records the final observed worker for every sharded
-attribute actor (`AA`) and candidate-manager actor (`CM`), followed by entity
-counts per worker. During a run, watch placement changes with:
+attribute actor (`AA`) and candidate-manager actor (`CM`). Each placement
+includes the global column ID, table and local-column IDs, column and qualified
+names, inferred data type and node address, followed by entity counts per
+worker. During a run, watch placement changes with:
 
 ```bash
 docker compose logs -f | rg --line-buffered '\[PLACEMENT\]'

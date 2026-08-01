@@ -232,9 +232,10 @@ public final class SharedModel {
             permits AACommand.InsertBatch, AACommand.SetPresetType,
             AACommand.GetSketch, AACommand.GetBitmap,
             AACommand.DeltaScan, AACommand.GetColumnSlice,
-            AACommand.UpdateWatermarks,AACommand.EmitSketch, AACommand.CheckPoint, AACommand.GetSnapshot,
-        AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership, AACommand.DeactiveUnaryPair,
-            AACommand.RequestSketch {
+            AACommand.UpdateWatermarks, AACommand.EmitSketch, AACommand.CheckPoint, AACommand.GetSnapshot,
+            AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership, AACommand.DeactiveUnaryPair,
+            AACommand.RequestSketch, AACommand.CheckpointPersisted,
+            AACommand.CheckpointPersistenceFailed, AACommand.RetryCheckpointPersistence {
 
         static String entityId(int colId) { return "col-" + colId; }
 
@@ -267,6 +268,9 @@ public final class SharedModel {
         record CheckMembership(UnaryPair pair, int round, RoaringBitmap values, int replyOwnerCol) implements AACommand {}
         record DeactiveUnaryPair(UnaryPair pair, boolean lhsSide) implements AACommand {}
         record RequestSketch(int round, long epoch, ActorRef<AppraiserCommand> replyTo) implements AACommand {}
+        record CheckpointPersisted(int round) implements AACommand {}
+        record CheckpointPersistenceFailed(int round, String reason) implements AACommand {}
+        record RetryCheckpointPersistence(int round) implements AACommand {}
     }
 
 

@@ -12,6 +12,8 @@ import disIND.streamBasedShardedDispatcher.monitor.StatsCommand;
 import disIND.streamBasedShardedDispatcher.structures.*;
 import disIND.streamBasedShardedDispatcher.utility.Debug;
 import org.roaringbitmap.RoaringBitmap;
+
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -24,6 +26,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final DatasetMetadata metadata;
     private final int ownerTableId;
     private final NodeValueToRowsStore nodeValueToRowsStore;
+    private final ActorRef<CheckpointWriterActor.Command> checkpointWriter;
 
     private final int colId;
     private final AtomicReference<ActorRef<CMCommand>> cmRef;
@@ -31,7 +34,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final Map<UnaryPair, EntityRef<CMCommand>> rhsSubscriptions = new HashMap<>();
 
     private final BitmapStore bitmapStore=new BitmapStore();
-    private final ValueToRowsStore valueToRowsDelta = new ValueToRowsStore();
+    private ValueToRowsStore valueToRowsDelta = new ValueToRowsStore();
     private final SketchStore sketchStore = new SketchStore();
     private long epochsProcessed = 0L;
 
@@ -39,19 +42,28 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     private final Deque<AttributeDelta> deltaLogDequeue = new ArrayDeque<>();
     private final Map<Integer, NavigableSet<Integer>> receivedBatchIdsByTable = new HashMap<>();
     private final Set<String> appliedBatchKeys = new HashSet<>();
+    private final NavigableMap<Integer, PendingCheckpoint> pendingCheckpoints = new TreeMap<>();
+    private final Deque<AACommand> deferredUntilCheckpoint = new ArrayDeque<>();
+    private Integer checkpointWriteInFlightRound;
+
+    private record PendingCheckpoint(AACommand.CheckPoint request,AttributeCheckPoint attributeCheckPoint,
+            ValueToRowsStore frozenDelta) {}
 
     private static String key(int tableId, int batchId) {
         return tableId + ":" + batchId;
     }
 
     public static Behavior<AACommand> create(int colId,AtomicReference<ActorRef<CMCommand>> cmRef,
-        ActorRef<StatsCommand> statsRef,DatasetMetadata metadata, NodeValueToRowsStore nodeValueToRowsStore) {
-        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, cmRef,statsRef,metadata,nodeValueToRowsStore));
+        ActorRef<StatsCommand> statsRef,DatasetMetadata metadata, NodeValueToRowsStore nodeValueToRowsStore,
+        ActorRef<CheckpointWriterActor.Command> checkpointWriter) {
+        return Behaviors.setup(ctx -> new AttributeActor(ctx, colId, cmRef,statsRef,metadata,
+                nodeValueToRowsStore, checkpointWriter));
     }
 
     private AttributeActor(ActorContext<AACommand> ctx, int colId,
                            AtomicReference<ActorRef<CMCommand>> cmRef,ActorRef<StatsCommand> statsRef,
-                           DatasetMetadata metadata, NodeValueToRowsStore nodeValueToRowsStore) {
+                           DatasetMetadata metadata, NodeValueToRowsStore nodeValueToRowsStore,
+                           ActorRef<CheckpointWriterActor.Command> checkpointWriter) {
         super(ctx);
         this.colId  = colId;
         this.sharding = ClusterSharding.get(ctx.getSystem());
@@ -59,6 +71,7 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
         this.statsRef= statsRef;
         this.metadata=metadata;
         this.nodeValueToRowsStore = nodeValueToRowsStore;
+        this.checkpointWriter = checkpointWriter;
         this.ownerTableId = findOwnerTable(colId, metadata);
         ColumnInfo column = metadata.column(colId);
         getContext().getLog().info(
@@ -85,6 +98,9 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
                 .onMessage(AACommand.CheckMembership.class,this::onCheckMembership)
                 .onMessage(AACommand.DeactiveUnaryPair.class,this::onDeactivePair)
                 .onMessage(AACommand.RequestSketch.class, this::onRequestSketch)
+                .onMessage(AACommand.CheckpointPersisted.class, this::onCheckpointPersisted)
+                .onMessage(AACommand.CheckpointPersistenceFailed.class, this::onCheckpointPersistenceFailed)
+                .onMessage(AACommand.RetryCheckpointPersistence.class, this::onRetryCheckpointPersistence)
                 .build();
     }
 
@@ -126,6 +142,11 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private Behavior<AACommand> onSendColumnData(AACommand.SendColumnData msg) {
+        if (checkPoint == null) {
+            deferredUntilCheckpoint.addLast(msg);
+            getContext().getLog().warn("Deferring column-data request until a checkpoint is durable col={}", colId);
+            return this;
+        }
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,Debug.pairTag(msg.candidate().pair()),
                     String.valueOf(Debug.State.NONE),
@@ -146,6 +167,11 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
     }
 
     private Behavior<AACommand> onCompareBitmap(AACommand.CompareBitmap msg) {
+        if (checkPoint == null) {
+            deferredUntilCheckpoint.addLast(msg);
+            getContext().getLog().warn("Deferring bitmap comparison until a checkpoint is durable col={}", colId);
+            return this;
+        }
         if(Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.attr(),colId,Debug.pairTag(msg.candidate().pair()), String.valueOf(Debug.State.NONE),
                     "Comparing {} ⊆ {}", msg.candidate().pair().lhsCol(), msg.candidate().pair().rhsCol());
@@ -189,16 +215,82 @@ public class AttributeActor extends AbstractBehavior<AACommand> {
             return this;
         }
 
-        nodeValueToRowsStore.mergeCheckpoint(colId, msg.round(), valueToRowsDelta);
-        valueToRowsDelta.clear();
-        checkPoint = new AttributeCheckPoint(msg.round(), bitmapStore.deepCopy(),
-            sketchStore.getSummary(msg.round(),colId, msg.epoch()));
+        if (pendingCheckpoints.containsKey(msg.round())) {
+            return this;
+        }
 
-        msg.replyTo().tell(new BDCommand.AaCheckpointStatus(msg.round(), colId, true, List.of()));
-
-        cleanupOldDeltas(msg.round());
-        publishCheckpointSketch(msg.round(), msg.epoch(), msg.appraiserRef());
+        ValueToRowsStore frozenDelta = valueToRowsDelta;
+        valueToRowsDelta = new ValueToRowsStore();
+        AttributeCheckPoint prepared = new AttributeCheckPoint(msg.round(), bitmapStore.deepCopy(),
+                sketchStore.getSummary(msg.round(),colId, msg.epoch()));
+        pendingCheckpoints.put(msg.round(), new PendingCheckpoint(msg, prepared, frozenDelta));
+        submitNextCheckpoint();
         return this;
+    }
+
+    private Behavior<AACommand> onCheckpointPersisted(AACommand.CheckpointPersisted msg) {
+        if (!Objects.equals(checkpointWriteInFlightRound, msg.round())) {
+            getContext().getLog().warn("Ignoring unexpected checkpoint completion col={} round={} inFlight={}",
+                    colId, msg.round(), checkpointWriteInFlightRound);
+            return this;
+        }
+
+        PendingCheckpoint pending = pendingCheckpoints.remove(msg.round());
+        checkpointWriteInFlightRound = null;
+        if (pending == null) {
+            submitNextCheckpoint();
+            return this;
+        }
+
+        AACommand.CheckPoint request = pending.request();
+        checkPoint = pending.attributeCheckPoint();
+        request.replyTo().tell(new BDCommand.AaCheckpointStatus(
+                request.round(), colId, true, List.of()));
+        cleanupOldDeltas(request.round());
+        publishCheckpointSketch(request.round(), request.epoch(), request.appraiserRef());
+        releaseCheckpointDependentCommands();
+        submitNextCheckpoint();
+        return this;
+    }
+
+    private Behavior<AACommand> onCheckpointPersistenceFailed(AACommand.CheckpointPersistenceFailed msg) {
+        if (!Objects.equals(checkpointWriteInFlightRound, msg.round())) {
+            return this;
+        }
+        checkpointWriteInFlightRound = null;
+        getContext().getLog().error("Will retry checkpoint persistence col={} round={} reason={}",
+                colId, msg.round(), msg.reason());
+        getContext().scheduleOnce(
+                Duration.ofSeconds(1),
+                getContext().getSelf(),
+                new AACommand.RetryCheckpointPersistence(msg.round()));
+        return this;
+    }
+
+    private Behavior<AACommand> onRetryCheckpointPersistence(
+            AACommand.RetryCheckpointPersistence msg) {
+        if (checkpointWriteInFlightRound == null
+                && pendingCheckpoints.containsKey(msg.round())
+                && pendingCheckpoints.firstKey() == msg.round()) {
+            submitNextCheckpoint();
+        }
+        return this;
+    }
+
+    private void submitNextCheckpoint() {
+        if (checkpointWriteInFlightRound != null || pendingCheckpoints.isEmpty()) {
+            return;
+        }
+        Map.Entry<Integer, PendingCheckpoint> next = pendingCheckpoints.firstEntry();
+        checkpointWriteInFlightRound = next.getKey();
+        checkpointWriter.tell(new CheckpointWriterActor.PersistCheckpoint(
+                colId, next.getKey(), next.getValue().frozenDelta(), getContext().getSelf()));
+    }
+
+    private void releaseCheckpointDependentCommands() {
+        while (!deferredUntilCheckpoint.isEmpty()) {
+            getContext().getSelf().tell(deferredUntilCheckpoint.removeFirst());
+        }
     }
 
     private List<InputBatchDetails> findMissingForCheckpoint(int round, Map<Integer, Integer> maxBatchIdByTable) {

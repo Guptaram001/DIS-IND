@@ -16,6 +16,7 @@ public final class UserConfig {
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
     public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
+    public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
     public static final String DEFAULT_VALUE_ID_DISK_DIR =System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
@@ -32,6 +33,7 @@ public final class UserConfig {
     public static int BD_AA_CREDIT_WINDOW = DEFAULT_BD_AA_CREDIT_WINDOW;
     public static int BATCH_ACK_TIMEOUT_SECONDS = DEFAULT_BATCH_ACK_TIMEOUT_SECONDS;
     public static int FINAL_CM_DRAIN_TIMEOUT_SECONDS = DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS;
+    public static int CHECKPOINT_WRITERS_PER_NODE = DEFAULT_CHECKPOINT_WRITERS_PER_NODE;
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
     public static String VALUE_ID_DISK_DIR = DEFAULT_VALUE_ID_DISK_DIR;
@@ -50,6 +52,7 @@ public final class UserConfig {
         CLI_PROPERTIES.put("bd-aa-credit-window", "dis.ind.bd-aa-credit-window");
         CLI_PROPERTIES.put("batch-ack-timeout-seconds", "dis.ind.batch-ack-timeout-seconds");
         CLI_PROPERTIES.put("final-cm-drain-timeout-seconds", "dis.ind.final-cm-drain-timeout-seconds");
+        CLI_PROPERTIES.put("checkpoint-writers-per-node", "dis.ind.checkpoint-writers-per-node");
         CLI_PROPERTIES.put("store-value-strings", "dis.ind.store-value-strings");
         CLI_PROPERTIES.put("value-id-hot-entries", "dis.ind.value-id-hot-entries");
         CLI_PROPERTIES.put("value-id-disk-dir", "dis.ind.value-id-disk-dir");
@@ -81,6 +84,8 @@ public final class UserConfig {
                 "dis.ind.batch-ack-timeout-seconds", DEFAULT_BATCH_ACK_TIMEOUT_SECONDS);
         FINAL_CM_DRAIN_TIMEOUT_SECONDS = positiveIntSetting("DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS",
                 "dis.ind.final-cm-drain-timeout-seconds", DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS);
+        CHECKPOINT_WRITERS_PER_NODE = positiveIntSetting("DIS_IND_CHECKPOINT_WRITERS_PER_NODE",
+                "dis.ind.checkpoint-writers-per-node", DEFAULT_CHECKPOINT_WRITERS_PER_NODE);
         STORE_VALUE_STRINGS = booleanSetting("DIS_IND_STORE_VALUE_STRINGS",
                 "dis.ind.store-value-strings", DEFAULT_STORE_VALUE_STRINGS);
         VALUE_ID_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
