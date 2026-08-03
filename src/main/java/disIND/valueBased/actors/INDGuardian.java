@@ -39,6 +39,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private final ActorRef<RCCommand> rcRef;
     private final AtomicLong totalRows = new AtomicLong(0L);
     private final NodeValueToRowsStore nodeValueToRowsStore;
+    private final ValueOwnerMembershipStore valueOwnerMembershipStore;
 
     public static Behavior<BDCommand> create(Config cfg) {
         return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg));
@@ -53,6 +54,8 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         this.rcRef = singletons.init(SingletonActor.of(ResultCollectorActor.create(metadata, statsRef), "result-collector"));
         String nodeId = Cluster.get(ctx.getSystem()).selfMember().address().toString().replaceAll("[^A-Za-z0-9._-]", "_");
         this.nodeValueToRowsStore = new NodeValueToRowsStore(Path.of(UserConfig.VALUE_TO_ROWS_DISK_DIR, nodeId));
+        this.valueOwnerMembershipStore = new ValueOwnerMembershipStore(Path.of(UserConfig.VALUE_OWNER_DISK_DIR, nodeId),
+                UserConfig.VALUE_OWNER_HOT_ENTRIES);
         List<ActorRef<CheckpointWriterActor.Command>> checkpointWriters = new ArrayList<>(UserConfig.CHECKPOINT_WRITERS_PER_NODE);
         for (int writerIndex = 0; writerIndex < UserConfig.CHECKPOINT_WRITERS_PER_NODE; writerIndex++) {
             checkpointWriters.add(ctx.spawn(CheckpointWriterActor.create(nodeValueToRowsStore),"checkpoint-writer-" + writerIndex,
@@ -67,8 +70,9 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                     return AttributeActor.create(colId, cmRefHolder,statsRef,metadata,nodeValueToRowsStore, checkpointWriter);
                 }).withRole("worker")
         );
-        sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY,entityCtx -> ValueOwnerActor.create(entityCtx.getEntityId()))
-        .withRole("worker"));
+        sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY,entityCtx -> ValueOwnerActor.create(
+                        entityCtx.getEntityId(), sharding, metadata, valueOwnerMembershipStore)).withRole("worker")
+                .withEntityProps(Props.empty().withDispatcherFromConfig("checkpoint-io-dispatcher")));
         if(Debug.INTERNAL)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(),-1,"-",
                     String.valueOf(Debug.State.NONE), " Sharding init: {} columns",cfg.numCols());

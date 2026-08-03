@@ -88,7 +88,11 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
                     msg.finalRound(), msg.finalBatchByTable());
         selfRef.tell(new BDCommand.CheckPoint(msg.finalRound(), msg.finalBatchByTable()));
         rcRef.tell(new RCCommand.AwaitDiscoveryFinished(msg.finalRound(), msg.replyTo()));
-        rcRef.tell(new RCCommand.PipelineDone());
+        for (int bucketId = 0; bucketId < UserConfig.VALUE_OWNER_BUCKETS; bucketId++) {
+            sharding.entityRefFor(ValueOwnerActor.TYPE_KEY, ValueOwnerActor.entityId(bucketId))
+                    .tell(new ValueOwnerActor.FinalizeMembership(msg.finalRound(), UserConfig.VALUE_OWNER_BUCKETS,
+                            metadata.totalCols()));
+        }
 
         return this;
     }
@@ -144,8 +148,8 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         Map<Integer, List<ValueOwnerActor.ValueCount>> valueBuckets =bucketByValue(msg.columns());
         int inputValues = msg.columns().stream().mapToInt(column -> column.valueIds().length).sum();
         int aggregatedValueColumns = valueBuckets.values().stream().mapToInt(List::size).sum();
-        getContext().getLog().info("[VALUE-DISPATCH] epoch={} tableId={} batchId={} inputValues={} "
-                        + "aggregatedValueColumns={} targetBuckets={}",epoch, ibd.tableId(), ibd.batchId(), inputValues,
+        getContext().getLog().info("[VALUE-DISPATCH] round={} epoch={} tableId={} batchId={} inputValues={} "
+                        + "aggregatedValueColumns={} targetBuckets={}",msg.inputBatchDetails().round(),epoch, ibd.tableId(), ibd.batchId(), inputValues,
                 aggregatedValueColumns, valueBuckets.size());
         int expected = valueBuckets.size();
         if (expected == 0) {
@@ -156,9 +160,8 @@ public class BatchDispatcherActor_  extends AbstractBehavior<BDCommand> {
         }
         pendingPerEpoch.put(epoch, new PendingEpoch(expected, msg.replyTo()));
         valueBuckets.forEach((bucketId, values) ->sharding.entityRefFor(ValueOwnerActor.TYPE_KEY,
-                                ValueOwnerActor.entityId(bucketId))
-                                .tell(new ValueOwnerActor.StoreBatch(epoch, ibd.tableId(),
-                                ibd.batchId(), bucketId, values, selfRef)));
+                                ValueOwnerActor.entityId(bucketId)).tell(new ValueOwnerActor.StoreBatch(epoch, ibd.tableId(),
+                                ibd.batchId(), ibd.round(), bucketId, values, selfRef)));
         statsRef.tell(new StatsCommand.RowBatchProcessed(msg.numRows()));
         return this;
     }

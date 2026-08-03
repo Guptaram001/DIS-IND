@@ -9,6 +9,8 @@ set -uo pipefail
 #
 #   DOCKER_DISTRIBUTED=1 \
 #   WORKERS=2 \
+#   WORKER_CPUS=1.0 \
+#   COORDINATOR_CPUS=1.0 \
 #   INPUT_DIR=./data/tpch-10-corrected \
 #   OUTPUT_DIR=./output \
 #   SAMPLE_INTERVAL=5 \
@@ -66,6 +68,8 @@ RUN_DIR="$DIAGNOSTICS_BASE/run-$RUN_ID"
 JAR_FILE="$PROJECT_DIR/target/dis-ind-1.0.0.jar"
 DOCKER_DISTRIBUTED="${DOCKER_DISTRIBUTED:-0}"
 WORKERS="${WORKERS:-3}"
+WORKER_CPUS="${WORKER_CPUS:-1.0}"
+COORDINATOR_CPUS="${COORDINATOR_CPUS:-1.0}"
 INPUT_DIR="${INPUT_DIR:-$PROJECT_DIR/data/tpch-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 DIS_IND_BATCH_SIZE="${DIS_IND_BATCH_SIZE:-}"
@@ -156,6 +160,8 @@ export_docker_application_arguments() {
             --value-id-hot-entries) export DIS_IND_VALUE_ID_HOT_ENTRIES="$value" ;;
             --value-id-disk-dir) export DIS_IND_VALUE_ID_DISK_DIR="$value" ;;
             --value-to-rows-disk-dir) export DIS_IND_VALUE_TO_ROWS_DISK_DIR="$value" ;;
+            --value-owner-disk-dir) export DIS_IND_VALUE_OWNER_DISK_DIR="$value" ;;
+            --value-owner-hot-entries) export DIS_IND_VALUE_OWNER_HOT_ENTRIES="$value" ;;
             --checkpoint-writers-per-node) export DIS_IND_CHECKPOINT_WRITERS_PER_NODE="$value" ;;
             *)
                 echo "Unknown application option: $option" >&2
@@ -173,6 +179,7 @@ require_positive_integer() {
         exit 1
     fi
 }
+
 
 require_memory_size() {
     local setting_name="$1"
@@ -210,6 +217,8 @@ require_positive_integer "GC_CONCURRENT_THREADS" "$GC_CONCURRENT_THREADS"
 require_positive_integer "SAMPLE_INTERVAL" "$SAMPLE_INTERVAL"
 require_positive_integer "THREAD_DUMP_INTERVAL" "$THREAD_DUMP_INTERVAL"
 require_positive_integer "WORKERS" "$WORKERS"
+require_positive_integer "WORKER_CPUS" "$WORKER_CPUS"
+require_positive_integer "COORDINATOR_CPUS" "$COORDINATOR_CPUS"
 require_memory_size "JAVA_XMS" "$JAVA_XMS"
 require_memory_size "JAVA_XMX" "$JAVA_XMX"
 require_memory_size "COORDINATOR_JAVA_XMX" "$COORDINATOR_JAVA_XMX"
@@ -241,7 +250,10 @@ run_distributed_docker() {
     export DIS_IND_DIAGNOSTICS_DIR="$RUN_DIR"
     export DIS_IND_VALUE_ID_DISK_DIR="${DIS_IND_VALUE_ID_DISK_DIR:-/data/diagnostics/value-ids}"
     export DIS_IND_VALUE_TO_ROWS_DISK_DIR="${DIS_IND_VALUE_TO_ROWS_DISK_DIR:-/data/diagnostics/value-to-rows}"
+    export DIS_IND_VALUE_OWNER_DISK_DIR="${DIS_IND_VALUE_OWNER_DISK_DIR:-/data/diagnostics/value-owners}"
     export DIS_IND_EXPECTED_CLUSTER_SIZE=$((WORKERS + 1))
+    export WORKER_CPUS
+    export COORDINATOR_CPUS
     if [[ -n "$DIS_IND_BATCH_SIZE" ]]; then
         export DIS_IND_BATCH_SIZE
     else
@@ -287,7 +299,11 @@ run_distributed_docker() {
         echo "batch_size=${DIS_IND_BATCH_SIZE:-UserConfig default}"
         echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
         echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
+        echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
+        echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES}"
         echo "workers=$WORKERS"
+        echo "worker_cpu_limit=$WORKER_CPUS"
+        echo "coordinator_cpu_limit=$COORDINATOR_CPUS"
         echo "expected_cluster_size=$DIS_IND_EXPECTED_CLUSTER_SIZE"
         echo "sample_interval_seconds=$SAMPLE_INTERVAL"
         echo "java_xms_per_container=$JAVA_XMS"
@@ -302,6 +318,7 @@ run_distributed_docker() {
     echo "Starting the DIS-IND Docker cluster"
     echo "Algorithm: $DIS_IND_MODE"
     echo "Topology: 1 coordinator + $WORKERS worker replica(s)"
+    echo "CPU limits: $COORDINATOR_CPUS coordinator core(s), $WORKER_CPUS core(s) per worker"
     echo "Input dataset: $input_dir_abs"
     echo "Diagnostics directory: $RUN_DIR"
 
@@ -477,8 +494,10 @@ fi
 mkdir -p "$OUTPUT_DIR"
 export DIS_IND_INPUT_DIR="${DIS_IND_INPUT_DIR:-$INPUT_DIR}"
 export DIS_IND_OUTPUT_FILE="${DIS_IND_OUTPUT_FILE:-$OUTPUT_DIR/ind-report.txt}"
+export DIS_IND_DIAGNOSTICS_DIR="${DIS_IND_DIAGNOSTICS_DIR:-$RUN_DIR}"
 export DIS_IND_VALUE_ID_DISK_DIR="${DIS_IND_VALUE_ID_DISK_DIR:-$RUN_DIR/value-ids}"
 export DIS_IND_VALUE_TO_ROWS_DISK_DIR="${DIS_IND_VALUE_TO_ROWS_DISK_DIR:-$RUN_DIR/value-to-rows}"
+export DIS_IND_VALUE_OWNER_DISK_DIR="${DIS_IND_VALUE_OWNER_DISK_DIR:-$RUN_DIR/value-owners}"
 if [[ -n "$DIS_IND_BATCH_SIZE" ]]; then
     export DIS_IND_BATCH_SIZE
 fi
@@ -572,6 +591,8 @@ fi
     echo "main_class=$DIS_IND_MAIN_CLASS"
     echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
     echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
+    echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
+    echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES}"
     echo "started_at=$(timestamp)"
     echo "sample_interval_seconds=$SAMPLE_INTERVAL"
     echo "thread_dump_interval_seconds=$THREAD_DUMP_INTERVAL"

@@ -12,7 +12,7 @@ public final class UserConfig {
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
-    public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 4;
+    public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 8;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
@@ -20,9 +20,12 @@ public final class UserConfig {
     public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
+    public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 200_000;
     public static final String DEFAULT_VALUE_ID_DISK_DIR =System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
     public static final String DEFAULT_VALUE_TO_ROWS_DISK_DIR =
             System.getProperty("java.io.tmpdir") + "/dis-ind-value-to-rows";
+    public static final String DEFAULT_VALUE_OWNER_DISK_DIR =
+            System.getProperty("java.io.tmpdir") + "/dis-ind-value-owners";
 
     public static String inputDir = DEFAULT_INPUT_DIR;
     public static String outputDir = DEFAULT_OUTPUT_FILE;
@@ -38,8 +41,10 @@ public final class UserConfig {
     public static int CHECKPOINT_WRITERS_PER_NODE = DEFAULT_CHECKPOINT_WRITERS_PER_NODE;
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
+    public static int VALUE_OWNER_HOT_ENTRIES = DEFAULT_VALUE_OWNER_HOT_ENTRIES;
     public static String VALUE_ID_DISK_DIR = DEFAULT_VALUE_ID_DISK_DIR;
     public static String VALUE_TO_ROWS_DISK_DIR = DEFAULT_VALUE_TO_ROWS_DISK_DIR;
+    public static String VALUE_OWNER_DISK_DIR = DEFAULT_VALUE_OWNER_DISK_DIR;
 
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
@@ -60,6 +65,8 @@ public final class UserConfig {
         CLI_PROPERTIES.put("value-id-hot-entries", "dis.ind.value-id-hot-entries");
         CLI_PROPERTIES.put("value-id-disk-dir", "dis.ind.value-id-disk-dir");
         CLI_PROPERTIES.put("value-to-rows-disk-dir", "dis.ind.value-to-rows-disk-dir");
+        CLI_PROPERTIES.put("value-owner-hot-entries", "dis.ind.value-owner-hot-entries");
+        CLI_PROPERTIES.put("value-owner-disk-dir", "dis.ind.value-owner-disk-dir");
     }
 
     /**
@@ -99,6 +106,10 @@ public final class UserConfig {
                 "dis.ind.value-id-disk-dir", DEFAULT_VALUE_ID_DISK_DIR);
         VALUE_TO_ROWS_DISK_DIR = stringSetting("DIS_IND_VALUE_TO_ROWS_DISK_DIR",
                 "dis.ind.value-to-rows-disk-dir", DEFAULT_VALUE_TO_ROWS_DISK_DIR);
+        VALUE_OWNER_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_OWNER_HOT_ENTRIES",
+                "dis.ind.value-owner-hot-entries", DEFAULT_VALUE_OWNER_HOT_ENTRIES);
+        VALUE_OWNER_DISK_DIR = stringSetting("DIS_IND_VALUE_OWNER_DISK_DIR",
+                "dis.ind.value-owner-disk-dir", DEFAULT_VALUE_OWNER_DISK_DIR);
     }
 
     private static void applyCommandLine(String[] args) {

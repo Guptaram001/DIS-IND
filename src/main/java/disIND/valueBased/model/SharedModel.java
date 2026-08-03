@@ -192,6 +192,13 @@ public final class SharedModel {
 
     public record PendingEpoch(int remaining, ActorRef<BDReply> replyTo) {}
 
+    public record CandidateViolationDelta(int rhsCol,int countDelta) implements AkkaSerializable {
+        public CandidateViolationDelta {
+            if (countDelta == 0)
+                throw new IllegalArgumentException("countDelta must be non zero");
+        }
+    }
+
     public sealed interface BDReply extends AkkaSerializable permits BDReply.BatchAccepted,
     BDReply.DiscoveryFinished{
 
@@ -315,7 +322,8 @@ public final class SharedModel {
             CMCommand.DistinctValueDelta, CMCommand.IngestionDone,
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
     CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta,CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
-    CMCommand.MembershipResult, CMCommand.NoMoreCandidates, CMCommand.ForceFinish {
+    CMCommand.MembershipResult, CMCommand.ValueOwnerMembershipUpdate, CMCommand.ValueOwnerDrained,
+    CMCommand.NoMoreCandidates, CMCommand.ForceFinish {
 
         static String entityId(int lhsCol) {return "cm-lhs-" + lhsCol;}
         record UnaryCandidateProposed(UnaryCandidate candidate) implements CMCommand {}
@@ -329,6 +337,12 @@ public final class SharedModel {
         record LhsLiveDelta( int colId, int round , RoaringBitmap newValues) implements CMCommand {}
         record RhsLiveDelta( int colId, int round , RoaringBitmap newValues) implements CMCommand {}
         record MembershipResult(UnaryPair pair, int round, RoaringBitmap missingValues) implements CMCommand {}
+        record ValueOwnerMembershipUpdate(long epoch,int round,int bucketId,List<CandidateViolationDelta> deltas) implements CMCommand {
+            public ValueOwnerMembershipUpdate {
+                deltas = List.copyOf(deltas);
+            }
+        }
+        record ValueOwnerDrained(int finalRound,int bucketId,int expectedBuckets) implements CMCommand {}
         record LhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
                               RoaringBitmap newValues) implements CMCommand {}
         record RhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,

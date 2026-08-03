@@ -21,10 +21,12 @@ x-dis-ind-common: &dis-ind-common
     DIS_IND_BATCH_ACK_TIMEOUT_SECONDS: "${DIS_IND_BATCH_ACK_TIMEOUT_SECONDS-}"
     DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS: "${DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS-}"
     DIS_IND_STORE_VALUE_STRINGS: "${DIS_IND_STORE_VALUE_STRINGS-}"
-    DIS_IND_VALUE_ID_HOT_ENTRIES: "${DIS_IND_VALUE_ID_HOT_ENTRIES:-100000}"
+    DIS_IND_VALUE_ID_HOT_ENTRIES: "${DIS_IND_VALUE_ID_HOT_ENTRIES-}"
     DIS_IND_VALUE_ID_DISK_DIR: /data/diagnostics/value-ids
     DIS_IND_VALUE_TO_ROWS_DISK_DIR: /data/diagnostics/value-to-rows
-    DIS_IND_EXPECTED_CLUSTER_SIZE: "${DIS_IND_EXPECTED_CLUSTER_SIZE:-3}"
+    DIS_IND_VALUE_OWNER_DISK_DIR: /data/diagnostics/value-owners
+    DIS_IND_VALUE_OWNER_HOT_ENTRIES: "${DIS_IND_VALUE_OWNER_HOT_ENTRIES-}"
+    DIS_IND_EXPECTED_CLUSTER_SIZE: "${DIS_IND_EXPECTED_CLUSTER_SIZE-}"
     DIS_IND_CLUSTER_START_TIMEOUT_SECONDS: "120"
     DIS_IND_DIAGNOSTICS_DIR: /data/diagnostics
     JAVA_XMS: "${JAVA_XMS:-512m}"
@@ -44,6 +46,7 @@ x-dis-ind-common: &dis-ind-common
 services:
   coordinator:
     <<: *dis-ind-common
+    cpus: "${COORDINATOR_CPUS:-2.0}"
     hostname: coordinator
     environment:
       <<: *dis-ind-environment
@@ -58,6 +61,7 @@ services:
 
   worker:
     <<: *dis-ind-common
+    cpus: "${WORKER_CPUS:-2.0}"
     environment:
       <<: *dis-ind-environment
       DIS_IND_NODE_ROLE: worker
