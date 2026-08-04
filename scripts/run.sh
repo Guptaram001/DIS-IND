@@ -68,8 +68,8 @@ RUN_DIR="$DIAGNOSTICS_BASE/run-$RUN_ID"
 JAR_FILE="$PROJECT_DIR/target/dis-ind-1.0.0.jar"
 DOCKER_DISTRIBUTED="${DOCKER_DISTRIBUTED:-0}"
 WORKERS="${WORKERS:-3}"
-WORKER_CPUS="${WORKER_CPUS:-1.0}"
-COORDINATOR_CPUS="${COORDINATOR_CPUS:-1.0}"
+WORKER_CPUS="${WORKER_CPUS:-1}"
+COORDINATOR_CPUS="${COORDINATOR_CPUS:-1}"
 INPUT_DIR="${INPUT_DIR:-$PROJECT_DIR/data/tpch-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 DIS_IND_BATCH_SIZE="${DIS_IND_BATCH_SIZE:-}"
@@ -271,8 +271,8 @@ run_distributed_docker() {
         $(memory_size_to_bytes "$COORDINATOR_JAVA_XMX") +
         $(memory_size_to_bytes "$JAVA_XMX") * WORKERS
     ))
-    if (( aggregate_heap_bytes * 100 > docker_memory_bytes * 75 )); then
-        echo "ERROR: aggregate JVM Xmx is more than 75% of Docker memory." >&2
+    if (( aggregate_heap_bytes * 100 > docker_memory_bytes * 85 )); then
+        echo "ERROR: aggregate JVM Xmx is more than 85% of Docker memory." >&2
         echo "  Docker memory: $docker_memory_bytes bytes" >&2
         echo "  JVM heap capacity: $aggregate_heap_bytes bytes (1 coordinator + $WORKERS workers)" >&2
         echo "Leave room for Akka direct buffers, metaspace, JFR, Docker, and the VM." >&2
@@ -300,7 +300,7 @@ run_distributed_docker() {
         echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
         echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
         echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
-        echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES}"
+        echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES:-UserConfig default}"
         echo "workers=$WORKERS"
         echo "worker_cpu_limit=$WORKER_CPUS"
         echo "coordinator_cpu_limit=$COORDINATOR_CPUS"
@@ -592,7 +592,7 @@ fi
     echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
     echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
     echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
-    echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES}"
+    echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES:-UserConfig default}"
     echo "started_at=$(timestamp)"
     echo "sample_interval_seconds=$SAMPLE_INTERVAL"
     echo "thread_dump_interval_seconds=$THREAD_DUMP_INTERVAL"

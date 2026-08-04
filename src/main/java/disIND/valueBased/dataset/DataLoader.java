@@ -187,9 +187,13 @@ public final class DataLoader {
 
         System.out.println("[Loader] Interleaved round-robin ingestion started...");
         boolean anyActive = true;
+        long addedRows=0;
+        int numberOfColsSent=0;
         while (anyActive) {
             anyActive = false;
             round++;
+            addedRows=totalRows;
+            numberOfColsSent=0;
             for (int i = 0; i < n; i++) {
                 if (!active[i])
                     continue;
@@ -209,7 +213,7 @@ public final class DataLoader {
                     rowCounts[i]++;
                     totalRows++;
                 }
-
+                numberOfColsSent+=nCols.get(i);
                 if (!batchRows.isEmpty()) {
                     int batchId = individualBatchIds[i]++;
                     inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), offsets, nCols,
@@ -220,7 +224,8 @@ public final class DataLoader {
                     anyActive = true;
                 }
             }
-            System.out.printf("[Loader] Round %d: %d rows ingested%n", round, totalRows);
+            System.out.printf("[Loader] Round %d: %d rows added: %d rows  with %d cols ingested %n", round, totalRows,
+            totalRows-addedRows,numberOfColsSent);
         }
         waitForAll(inFlight);
         int finalRound = round;
