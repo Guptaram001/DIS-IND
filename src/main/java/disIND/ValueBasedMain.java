@@ -57,19 +57,8 @@ public class ValueBasedMain {
                     "DIS_IND_NODE_ROLE must be either 'coordinator' or 'worker': " + nodeRole);
         }
 
-        //Direct reference to BDActor, instead of numerous calls at send batch
-        ActorRef<SharedModel.BDCommand> bdRef = AskPattern.ask(
-                                system,
-                                SharedModel.BDCommand.GetBatchDispatcher::new,
-                                Duration.ofSeconds(10),
-                                system.scheduler()
-                        ).toCompletableFuture()
-                        .get();
-
-        //Thread.sleep(3000);
-
         try {
-            DataLoader.run(system, cfg.metadata(),inputDir, batchSize, timeoutSec, outputFile, bdRef);
+            DataLoader.run(system, cfg.metadata(), inputDir, batchSize, timeoutSec, outputFile);
         } finally {
             System.out.println("[Main] Terminating actor system.");
             system.terminate();

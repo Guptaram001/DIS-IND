@@ -6,18 +6,14 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
-import akka.actor.typed.javadsl.TimerScheduler;
-import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.typed.Cluster;
-import disIND.valueBased.model.SharedModel.AppraiserCommand;
 import disIND.valueBased.model.SharedModel.CMCommand;
 import disIND.valueBased.model.SharedModel.CandidateViolationDelta;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.model.SharedModel.NaryPair;
 import disIND.valueBased.model.SharedModel.RCCommand;
 import disIND.valueBased.model.SharedModel.UnaryPair;
-import disIND.valueBased.monitor.StatsCommand;
 import disIND.valueBased.utility.Debug;
 
 import java.nio.file.Path;
@@ -42,14 +38,12 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private int finalRound = -1;
     private boolean finishedReported;
 
-    public static Behavior<CMCommand> create(int lhsOwnerCol,ClusterSharding sharding,ActorRef<AppraiserCommand> apRef,
-            ActorRef<RCCommand> rcRef,int cleanThreshold,DatasetMetadata metadata,ActorRef<StatsCommand> statsRef) {
-        return Behaviors.setup(ctx ->Behaviors.withTimers(timers ->
-                        new CandidateManagerActor_(ctx, timers, lhsOwnerCol, rcRef, metadata)));
+    public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef,DatasetMetadata metadata) {
+        return Behaviors.setup(ctx -> new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
     }
 
-    private CandidateManagerActor_(ActorContext<CMCommand> context,TimerScheduler<CMCommand> timers,int lhsOwnerCol,
-            ActorRef<RCCommand> rcRef,DatasetMetadata metadata) {
+    private CandidateManagerActor_(ActorContext<CMCommand> context, int lhsOwnerCol,ActorRef<RCCommand> rcRef,
+        DatasetMetadata metadata) {
         super(context);
         this.lhsOwnerCol = lhsOwnerCol;
         this.rcRef = rcRef;
