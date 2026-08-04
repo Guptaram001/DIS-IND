@@ -24,6 +24,7 @@ public final class NodeValueToRowsStore implements AutoCloseable {
     private static final int MULTI_GET_CHUNK_SIZE = 4_096;
     private static final byte VALUE_ROWS_PREFIX = 1;
     private static final byte CURRENT_PREFIX = 2;
+    private static final byte APPLIED_BATCH_PREFIX = 3;
 
     static {
         RocksDB.loadLibrary();
@@ -83,6 +84,48 @@ public final class NodeValueToRowsStore implements AutoCloseable {
                 database.write(durableWriteOptions, checkpoint);
             } catch (RocksDBException exception) {
                 throw storageFailure("merge checkpoint " + round + " for column " + colId, exception);
+            }
+        } finally {
+            columnLock.unlock();
+            lifecycleRead.unlock();
+        }
+    }
+
+    /**
+     * Atomically appends one attribute batch and records an idempotency marker.
+     * Unlike checkpoint rounds, batches may be retried or arrive with gaps.
+     */
+    public void appendBatch(int colId, int tableId, int batchId, ValueToRowsStore delta) {
+        Lock lifecycleRead = lifecycleLock.readLock();
+        Lock columnLock = columnLock(colId);
+        lifecycleRead.lock();
+        columnLock.lock();
+        try {
+            ensureOpen();
+            byte[] appliedKey = appliedBatchKey(colId, tableId, batchId);
+            try {
+                if (database.get(appliedKey) != null)
+                    return;
+                try (WriteBatch batch = new WriteBatch()) {
+                    List<byte[]> keys = new ArrayList<>(MULTI_GET_CHUNK_SIZE);
+                    List<IntArrayList> rows = new ArrayList<>(MULTI_GET_CHUNK_SIZE);
+                    try {
+                        delta.forEach((valueId, newRows) -> {
+                            keys.add(valueRowsKey(colId, valueId));
+                            rows.add(newRows);
+                            if (keys.size() == MULTI_GET_CHUNK_SIZE)
+                                mergeValueChunk(keys, rows, batch);
+                        });
+                        mergeValueChunk(keys, rows, batch);
+                    } catch (StorageRuntimeException exception) {
+                        throw exception.rocksCause;
+                    }
+                    batch.put(appliedKey, encodeInt(1));
+                    database.write(durableWriteOptions, batch);
+                }
+            } catch (RocksDBException exception) {
+                throw storageFailure("append table " + tableId + " batch " + batchId
+                        + " for column " + colId, exception);
             }
         } finally {
             columnLock.unlock();
@@ -215,6 +258,11 @@ public final class NodeValueToRowsStore implements AutoCloseable {
 
     private static byte[] currentKey(int colId) {
         return ByteBuffer.allocate(1 + Integer.BYTES).put(CURRENT_PREFIX).putInt(colId).array();
+    }
+
+    private static byte[] appliedBatchKey(int colId, int tableId, int batchId) {
+        return ByteBuffer.allocate(1 + Integer.BYTES * 3)
+                .put(APPLIED_BATCH_PREFIX).putInt(colId).putInt(tableId).putInt(batchId).array();
     }
 
     private static int decodeValueId(byte[] key) {

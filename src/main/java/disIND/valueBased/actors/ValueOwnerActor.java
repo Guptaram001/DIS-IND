@@ -10,19 +10,19 @@ import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.typed.Cluster;
 import disIND.valueBased.model.AkkaSerializable;
-import disIND.valueBased.model.SharedModel.BDCommand;
 import disIND.valueBased.model.SharedModel.CMCommand;
 import disIND.valueBased.model.SharedModel.CandidateViolationDelta;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.WorkerValueIdStore;
 import disIND.valueBased.utility.Debug;
+import disIND.valueBased.utility.UserConfig;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.LinkedHashMap;
 
 import static disIND.valueBased.utility.Debug.formLog;
 import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
@@ -32,15 +32,10 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     public sealed interface Command extends AkkaSerializable permits StoreBatch, GetBucket, FinalizeMembership {}
     public static final EntityTypeKey<Command> TYPE_KEY =EntityTypeKey.create(Command.class,"ValueOwnerActor");
 
-    public record ValueCount(int valueId, int colId, int count) implements AkkaSerializable {
-        public ValueCount {
-            if (count <= 0)
-                throw new IllegalArgumentException("count must be positive");
-        }
-    }
+    public record RawValue(String value, int colId, long rowId) implements AkkaSerializable {}
 
     public record StoreBatch(long epoch, int tableId, int batchId, int round, int bucketId,
-        List<ValueCount> values, ActorRef<BDCommand> ackTo) implements Command {
+        List<RawValue> values, ActorRef<DirectBatchAggregatorActor.Command> ackTo) implements Command {
         public StoreBatch {
             values = List.copyOf(values);
         }
@@ -56,25 +51,35 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final ClusterSharding sharding;
     private final DatasetMetadata metadata;
     private final ValueOwnerMembershipStore membershipStore;
-    private final Set<String> appliedBatches = new HashSet<>();
+    private final WorkerValueIdStore valueIdStore;
+    private final int recentBatchLimit;
+    private final Map<String, Boolean> resolvedBatches;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
     }
 
     public static Behavior<Command> create(String entityId,ClusterSharding sharding,DatasetMetadata metadata,
-        ValueOwnerMembershipStore membershipStore) {
-        return Behaviors.setup(ctx ->new ValueOwnerActor(ctx, entityId, sharding, metadata, membershipStore));
+        ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore) {
+        return Behaviors.setup(ctx ->new ValueOwnerActor(ctx, entityId, sharding, metadata, membershipStore, valueIdStore));
     }
 
     private ValueOwnerActor(ActorContext<Command> ctx,String entityId,ClusterSharding sharding,
-            DatasetMetadata metadata,ValueOwnerMembershipStore membershipStore) {
+            DatasetMetadata metadata,ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore) {
         super(ctx);
         this.entityId = entityId;
         this.bucketId = Integer.parseInt(entityId.substring("value-bucket-".length()));
         this.sharding = sharding;
         this.metadata = metadata;
         this.membershipStore = membershipStore;
+        this.valueIdStore = valueIdStore;
+        this.recentBatchLimit = Math.max(2, UserConfig.DL_BD_CREDIT_WINDOW * 2);
+        this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                return size() > ValueOwnerActor.this.recentBatchLimit;
+            }
+        };
         if(Debug.INTERNAL)
             getContext().getLog().info("[PLACEMENT] type=VO bucket={} entity={} node={}",bucketId, entityId,
                 Cluster.get(ctx.getSystem()).selfMember().address());
@@ -108,14 +113,16 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             throw new IllegalArgumentException("Message for bucket " + msg.bucketId()+ " sent to value owner " + entityId);
 
         String batchKey = msg.tableId() + ":" + msg.batchId();
-        boolean applied = appliedBatches.add(batchKey);
+        boolean applied = !resolvedBatches.containsKey(batchKey);
         int changedValues = 0;
         if (applied) {
+            Map<String, Integer> idsByValue = valueIdStore.resolveBatch(bucketId,msg.values().stream().map(RawValue::value).toList());
             Map<Integer, Map<Integer, Long>> updatesByValue = new HashMap<>();
-            for (ValueCount item : msg.values()) {
-                updatesByValue.computeIfAbsent(item.valueId(), ignored -> new HashMap<>()).merge(item.colId(), (long) item.count(),
-                 Long::sum);
+            for (RawValue item : msg.values()) {
+                int valueId = idsByValue.get(item.value());
+                updatesByValue.computeIfAbsent(valueId, ignored -> new HashMap<>()).merge(item.colId(), 1L, Long::sum);
             }
+            resolvedBatches.put(batchKey, Boolean.TRUE);
 
             Map<Integer, Map<Integer, Long>> records =membershipStore.loadBatch(bucketId, updatesByValue.keySet());
 
@@ -145,7 +152,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                     "Disk membership updated bucketId={} epoch={} applied={} changedValues={}",
                     bucketId, msg.epoch(), applied, changedValues);
         if (msg.ackTo() != null)
-            msg.ackTo().tell(new BDCommand.ValueBucketFlushed(msg.epoch(), bucketId));
+            msg.ackTo().tell(new DirectBatchAggregatorActor.ValueOwnerPersisted(bucketId));
         return this;
     }
 

@@ -25,10 +25,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Worker-local, disk-backed membership state shared by all ValueOwne
+ * Worker-local, disk-backed membership state shared by all ValueOwner
  */
 public final class ValueOwnerMembershipStore implements AutoCloseable {
     private record CacheKey(int bucketId, int valueId) {}
+    public record MembershipWrite(int bucketId, Map<Integer, Map<Integer, Long>> changedRecords) {}
 
     static {
         RocksDB.loadLibrary();
@@ -53,6 +54,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                     "Unable to open ValueOwner membership store at " + directory, exception);
         }
     }
+
 
     public Map<Integer, Map<Integer, Long>> loadBatch(int bucketId, Set<Integer> valueIds) {
         Map<Integer, Map<Integer, Long>> result = new HashMap<>(valueIds.size());
@@ -88,20 +90,27 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return result;
     }
 
-  
+
     public void writeBatch(int bucketId, Map<Integer, Map<Integer, Long>> changedRecords) {
+        writeBatches(List.of(new MembershipWrite(bucketId, changedRecords)));
+    }
+
+    public void writeBatches(List<MembershipWrite> writes) {
         try (WriteBatch batch = new WriteBatch()) {
-            for (Map.Entry<Integer, Map<Integer, Long>> entry : changedRecords.entrySet()) {
-                batch.put(key(bucketId, entry.getKey()), encode(entry.getValue()));
+            for (MembershipWrite write : writes) {
+                for (Map.Entry<Integer, Map<Integer, Long>> entry : write.changedRecords().entrySet()) {
+                    batch.put(key(write.bucketId(), entry.getKey()), encode(entry.getValue()));
+                }
             }
             db.write(writeOptions, batch);
         } catch (RocksDBException exception) {
-            throw new IllegalStateException(
-                    "Unable to persist VO bucket " + bucketId + " batch", exception);
+            throw new IllegalStateException("Unable to persist value-owner write batch", exception);
         }
 
-        changedRecords.forEach((valueId, record) ->
-                hotCache.put(new CacheKey(bucketId, valueId), Map.copyOf(record)));
+        for (MembershipWrite write : writes) {
+            write.changedRecords().forEach((valueId, record) ->
+                    hotCache.put(new CacheKey(write.bucketId(), valueId), Map.copyOf(record)));
+        }
     }
 
     public Map<Integer, Map<Integer, Long>> snapshotBucket(int bucketId) {
@@ -195,4 +204,3 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         options.close();
     }
 }
-

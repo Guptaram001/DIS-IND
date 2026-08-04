@@ -171,6 +171,14 @@ public final class SharedModel {
     ) {}
 
     public record InputBatchDetails(int tableId, long startRowId, int  batchId, long epoch, int round, int colId){}
+    public record RawColumnBatch(int colId, long[] rowIds, String[] values) implements AkkaSerializable {
+        public RawColumnBatch {
+            Objects.requireNonNull(rowIds, "rowIds");
+            Objects.requireNonNull(values, "values");
+            if (rowIds.length != values.length)
+                throw new IllegalArgumentException("rowIds and values must have the same length");
+        }
+    }
     public record ColumnBatch(int colId, long[] rowIds, int[] valueIds) implements AkkaSerializable {
         public ColumnBatch {
             Objects.requireNonNull(rowIds, "rowIds");
@@ -180,17 +188,14 @@ public final class SharedModel {
             }
         }
     }
-    public record CachedTableBatch(InputBatchDetails inputBatchDetails,
-            List<ColumnBatch> columns,int numRows) {}
     public record IngestionResult(long totalRows, int finalRound, Map<Integer, Integer> finalBatchByTable) {}
+    public record IngestionReady() implements AkkaSerializable {}
 
     public record ColumnSlice(
             int colId,
             Map<Integer, RoaringBitmap> valToRows,
             long epoch
     ) implements AkkaSerializable {}
-
-    public record PendingEpoch(int remaining, ActorRef<BDReply> replyTo) {}
 
     public record CandidateViolationDelta(int rhsCol,int countDelta) implements AkkaSerializable {
         public CandidateViolationDelta {
@@ -207,33 +212,22 @@ public final class SharedModel {
     }
 
     public sealed interface BDCommand extends AkkaSerializable
-            permits BDCommand.IngestBatch, BDCommand.BatchDispatched, BDCommand.BatchFlushed,
-            BDCommand.FinishDiscovery, BDCommand.Shutdown,
-            BDCommand.GetResultCollector, BDCommand.GetBatchDispatcher, BDCommand.SendTableBatch,
-    BDCommand.CheckPoint, BDCommand.MissingBatchRequest, BDCommand.AaCheckpointStatus,
-    BDCommand.ValueBucketFlushed {
+            permits BDCommand.IngestBatch, BDCommand.FinishDiscovery, BDCommand.Shutdown,
+            BDCommand.GetResultCollector, BDCommand.GetIngestionReady,
+            BDCommand.CheckPoint, BDCommand.MissingBatchRequest, BDCommand.AaCheckpointStatus {
 
         record IngestBatch(String[] cells, int numRows, int numCols, ActorRef<BDReply> replyTo) implements BDCommand {}
-
-        record SendTableBatch(List<ColumnBatch> columns,int numRows,InputBatchDetails inputBatchDetails,ActorRef<BDReply> replyTo) 
-        implements BDCommand {}
-
-        record BatchDispatched(long epoch) implements BDCommand {}
-
-        record BatchFlushed(InputBatchDetails inputBatchDetails, int colId) implements BDCommand {}
 
         record FinishDiscovery(int finalRound, Map<Integer, Integer> finalBatchByTable, ActorRef<BDReply> replyTo) implements BDCommand {}
 
         record Shutdown() implements BDCommand {}
 
         record GetResultCollector(ActorRef<ActorRef<RCCommand>> replyTo) implements BDCommand {}
+        record GetIngestionReady(ActorRef<IngestionReady> replyTo) implements BDCommand {}
 
-        record GetBatchDispatcher(ActorRef<ActorRef<BDCommand>> replyTo) implements BDCommand {}
         record CheckPoint(int round, Map<Integer, Integer> maxBatchIdByTable) implements BDCommand {}
         record MissingBatchRequest(int tableId, int batchId, int colId) implements BDCommand {}
         record AaCheckpointStatus(int round, int colId, boolean clean, List<InputBatchDetails> missing) implements BDCommand {}
-        record ValueBucketFlushed(long epoch, int bucketId) implements BDCommand {}
-
     }
 
 
@@ -244,11 +238,14 @@ public final class SharedModel {
             AACommand.UpdateWatermarks, AACommand.EmitSketch, AACommand.CheckPoint, AACommand.GetSnapshot,
             AACommand.SendColumnData, AACommand.CompareBitmap, AACommand.CheckMembership, AACommand.DeactiveUnaryPair,
             AACommand.RequestSketch, AACommand.CheckpointPersisted,
-            AACommand.CheckpointPersistenceFailed, AACommand.RetryCheckpointPersistence {
+            AACommand.CheckpointPersistenceFailed, AACommand.RetryCheckpointPersistence,
+            AACommand.BatchRowsPersisted, AACommand.BatchRowsPersistenceFailed,
+            AACommand.RetryBatchRowsPersistence {
 
         static String entityId(int colId) { return "col-" + colId; }
 
-        record InsertBatch(InputBatchDetails inputBatchDetails,long[] rows, int[] valueIds, ActorRef<BDCommand> ackTo) implements AACommand {}
+        record InsertBatch(InputBatchDetails inputBatchDetails,long[] rows, int[] valueIds,
+                           ActorRef<disIND.valueBased.actors.DirectBatchAggregatorActor.Command> ackTo) implements AACommand {}
 
         record SetPresetType(ColType preset) implements AACommand {}
 
@@ -280,6 +277,9 @@ public final class SharedModel {
         record CheckpointPersisted(int round) implements AACommand {}
         record CheckpointPersistenceFailed(int round, String reason) implements AACommand {}
         record RetryCheckpointPersistence(int round) implements AACommand {}
+        record BatchRowsPersisted(InputBatchDetails inputBatchDetails) implements AACommand {}
+        record BatchRowsPersistenceFailed(InputBatchDetails inputBatchDetails, String reason) implements AACommand {}
+        record RetryBatchRowsPersistence(int tableId, int batchId) implements AACommand {}
     }
 
 
