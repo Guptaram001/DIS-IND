@@ -23,6 +23,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
+import java.util.Set;
+import java.util.HashSet;
 
 import static disIND.valueBased.utility.Debug.formLog;
 import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
@@ -54,6 +56,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final WorkerValueIdStore valueIdStore;
     private final int recentBatchLimit;
     private final Map<String, Boolean> resolvedBatches;
+    private final long[] exactComparisonsByLhs;
+    private final long[] candidateEvaluationsByLhs;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
@@ -73,6 +77,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.metadata = metadata;
         this.membershipStore = membershipStore;
         this.valueIdStore = valueIdStore;
+        this.exactComparisonsByLhs = new long[metadata.totalCols()];
+        this.candidateEvaluationsByLhs = new long[metadata.totalCols()];
         this.recentBatchLimit = Math.max(2, UserConfig.DL_BD_CREDIT_WINDOW * 2);
         this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
             @Override
@@ -97,7 +103,9 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private Behavior<Command> onFinalizeMembership(FinalizeMembership msg) {
         for (int lhsCol = 0; lhsCol < msg.totalColumns(); lhsCol++) {
             sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsCol))
-                    .tell(new CMCommand.ValueOwnerDrained(msg.finalRound(), bucketId, msg.expectedBuckets()));
+                    .tell(new CMCommand.ValueOwnerDrained(msg.finalRound(), bucketId,
+                            msg.expectedBuckets(), candidateEvaluationsByLhs[lhsCol],
+                            exactComparisonsByLhs[lhsCol]));
         }
         if(Debug.INTERNAL)
             getContext().getLog().info("[VO] bucket={} finalRound={} notifiedCms={}",
@@ -169,6 +177,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private Map<Integer, Map<Integer, Integer>> calculateMembershipUpdates(Map<Integer, RoaringBitmap> addedColumnsByValue,
             Map<Integer, Map<Integer, Long>> records) {
             Map<Integer, Map<Integer, Integer>> countDeltasByLhs = new HashMap<>();
+            Set<Long> evaluatedCandidates = new HashSet<>();
             addedColumnsByValue.forEach((valueId, addedColumns) -> {
             RoaringBitmap after = new RoaringBitmap();
             records.get(valueId).keySet().forEach(after::add);
@@ -177,20 +186,35 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
             addedColumns.forEach((int lhsCol) -> {
                 for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
-                    if (rhsCol != lhsCol&& testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))
-                            && !after.contains(rhsCol)) {
-                        mergeCountDelta(countDeltasByLhs, lhsCol, rhsCol, 1);
+                    if (rhsCol != lhsCol
+                            && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))) {
+                        exactComparisonsByLhs[lhsCol] =
+                                Math.addExact(exactComparisonsByLhs[lhsCol], 1);
+                        countCandidateEvaluation(evaluatedCandidates, lhsCol, rhsCol);
+                        if (!after.contains(rhsCol))
+                            mergeCountDelta(countDeltasByLhs, lhsCol, rhsCol, 1);
                     }
                 }
             });
 
             addedColumns.forEach((int rhsCol) ->before.forEach((int lhsCol) -> {
                         if (lhsCol != rhsCol && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))) {
+                            exactComparisonsByLhs[lhsCol] =
+                                    Math.addExact(exactComparisonsByLhs[lhsCol], 1);
+                            countCandidateEvaluation(evaluatedCandidates, lhsCol, rhsCol);
                             mergeCountDelta(countDeltasByLhs, lhsCol, rhsCol, -1);
                         }
                     }));
         });
         return countDeltasByLhs;
+    }
+
+    private void countCandidateEvaluation(Set<Long> evaluatedCandidates, int lhsCol, int rhsCol) {
+        long key = ((long) lhsCol << 32) | (rhsCol & 0xffffffffL);
+        if (evaluatedCandidates.add(key)) {
+            candidateEvaluationsByLhs[lhsCol] =
+                    Math.addExact(candidateEvaluationsByLhs[lhsCol], 1);
+        }
     }
 
     private void emitMembershipUpdates(StoreBatch batch,Map<Integer, RoaringBitmap> addedColumnsByValue,Map<Integer, 

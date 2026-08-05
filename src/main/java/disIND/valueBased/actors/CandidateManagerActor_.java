@@ -37,6 +37,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private int expectedValueOwnerDrains = -1;
     private int finalRound = -1;
     private boolean finishedReported;
+    private long exactComparisonsWithoutPruning;
+    private long candidateEvaluationsWithoutPruning;
 
     public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef,DatasetMetadata metadata) {
         return Behaviors.setup(ctx -> new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
@@ -113,6 +115,13 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         }
         finalRound = msg.finalRound();
         expectedValueOwnerDrains = msg.expectedBuckets();
+        if (!drainedValueOwners.get(msg.bucketId())) {
+            candidateEvaluationsWithoutPruning = Math.addExact(
+                    candidateEvaluationsWithoutPruning,
+                    msg.candidateEvaluationsWithoutPruning());
+            exactComparisonsWithoutPruning = Math.addExact(
+                    exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
+        }
         drainedValueOwners.set(msg.bucketId());
         if (drainedValueOwners.cardinality() == expectedValueOwnerDrains)
             reportFinished();
@@ -129,7 +138,9 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             if (violationCountsByRhs[rhsCol] == 0)
                 clean.add(new UnaryPair(lhsOwnerCol, rhsCol));
         }
-        rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound, List.copyOf(clean), List.<NaryPair>of()));
+        rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound,
+                List.copyOf(clean), List.<NaryPair>of(),
+                candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning));
 
         if (Debug.INTERNAL) {
             getContext().getLog().info("[CM-DRAINED] lhs={} finalRound={} valueOwners={}/{} cleanCandidates={}",

@@ -10,6 +10,10 @@ import disIND.valueBased.model.SharedModel.*;
 import disIND.valueBased.monitor.StatsCommand;
 import disIND.valueBased.utility.Debug;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 
 import static disIND.valueBased.utility.Debug.formLog;
@@ -24,6 +28,9 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     private final Map<Integer,List<UnaryPair>> unaryResults = new HashMap<>();
     private final Map<Integer,List<NaryPair>> naryResults = new HashMap<>();
     private final List<ActorRef<IndReport>> pendingReportReplies = new ArrayList<>();
+    private final Path comparisonMetricsFile;
+    private long exactComparisonsWithoutPruning;
+    private long candidateEvaluationsWithoutPruning;
     public static Behavior<RCCommand> create( DatasetMetadata metadata, ActorRef<StatsCommand> statsRef) {
         return Behaviors.setup(ctx -> new ResultCollectorActor(ctx,metadata,statsRef));
     }
@@ -33,6 +40,9 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
         this.metadata = metadata;
         this.statsRef = statsRef;
         this.finishedCms = new BitSet(metadata.totalCols());
+        this.comparisonMetricsFile = Path.of(
+                System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR", "diagnostics"),
+                "comparisons-without-pruning.tsv");
     }
 
     @Override
@@ -48,6 +58,11 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
         unaryResults.put(msg.lhsOwnerCol(), msg.unaryPairs());
         naryResults.put(msg.lhsOwnerCol(), msg.naryPairs());
         finishedCms.set(msg.lhsOwnerCol());
+        exactComparisonsWithoutPruning = Math.addExact(
+                exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
+        candidateEvaluationsWithoutPruning = Math.addExact(
+                candidateEvaluationsWithoutPruning,
+                msg.candidateEvaluationsWithoutPruning());
 
         if (Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.rc(),
@@ -99,6 +114,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
             return;
 
         discoveryFinished = true;
+        writeComparisonMetrics();
         finishReplyTo.tell(new BDReply.DiscoveryFinished(finalRound));
         IndReport report = buildReport();
         for (ActorRef<IndReport> replyTo : pendingReportReplies)
@@ -110,6 +126,27 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
                     -1, "", String.valueOf(Debug.State.NONE),
                     "Discovery finished for finalRound={} confirmedCms={}/{} ",
                     finalRound, finishedCms.cardinality(),metadata.totalCols());
+    }
+
+    private void writeComparisonMetrics() {
+        String contents = "metric\tcount\n"
+                + "candidate_evaluations_without_pruning\t"
+                + candidateEvaluationsWithoutPruning + "\n"
+                + "exact_value_probes_without_pruning\t"
+                + exactComparisonsWithoutPruning + "\n"
+                + "final_round\t" + finalRound + "\n";
+        try {
+            Files.createDirectories(comparisonMetricsFile.getParent());
+            Files.writeString(comparisonMetricsFile, contents, StandardCharsets.UTF_8);
+            getContext().getLog().info(
+                    "[NO-PRUNING-METRICS] candidateEvaluations={} exactValueProbes={} writtenTo={}",
+                    candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning,
+                    comparisonMetricsFile.toAbsolutePath());
+        } catch (IOException exception) {
+            getContext().getLog().error(
+                    "Unable to write no-pruning comparison metrics to {}",
+                    comparisonMetricsFile, exception);
+        }
     }
 
 }

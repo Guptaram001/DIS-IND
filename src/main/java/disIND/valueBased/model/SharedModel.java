@@ -342,7 +342,9 @@ public final class SharedModel {
                 deltas = List.copyOf(deltas);
             }
         }
-        record ValueOwnerDrained(int finalRound,int bucketId,int expectedBuckets) implements CMCommand {}
+        record ValueOwnerDrained(int finalRound, int bucketId, int expectedBuckets,
+                long candidateEvaluationsWithoutPruning,
+                long exactValueProbesWithoutPruning) implements CMCommand {}
         record LhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
                               RoaringBitmap newValues) implements CMCommand {}
         record RhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
@@ -408,7 +410,9 @@ public final class SharedModel {
          */
         record PipelineDone() implements RCCommand {}
         record AwaitDiscoveryFinished(int finalRound, ActorRef<BDReply> replyTo) implements RCCommand {}
-        record CmDiscoveryComplete(int lhsOwnerCol, int round, List<UnaryPair> unaryPairs,List<NaryPair> naryPairs) implements RCCommand {}
+        record CmDiscoveryComplete(int lhsOwnerCol, int round, List<UnaryPair> unaryPairs,
+                List<NaryPair> naryPairs, long candidateEvaluationsWithoutPruning,
+                long exactValueProbesWithoutPruning) implements RCCommand {}
     }
 
     // ── Report ────────────────────────────────────────────────────────────
