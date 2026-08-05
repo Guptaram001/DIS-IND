@@ -2,6 +2,8 @@ package disIND.valueBased.structures;
 
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import org.rocksdb.BlockBasedTableConfig;
+import org.rocksdb.BloomFilter;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -28,8 +30,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class WorkerValueIdStore implements AutoCloseable {
     private static final byte VALUE_PREFIX = 0;
     private static final byte NEXT_ID_PREFIX = 1;
-    private static final long WRITE_BUFFER_BYTES = 16L * 1024 * 1024;
-    private static final long MAX_TOTAL_WAL_BYTES = 64L * 1024 * 1024;
+    private static final long WRITE_BUFFER_BYTES = 32L * 1024 * 1024;
+    private static final long MAX_TOTAL_WAL_BYTES = 128L * 1024 * 1024;
+    private static final double BLOOM_FILTER_BITS_PER_KEY = 10.0;
 
     private record CacheKey(int ownerId, String value) {}
 
@@ -42,6 +45,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private final Cache<CacheKey, Integer> hotValues;
     private final Map<Integer, Integer> nextIds = new ConcurrentHashMap<>();
     private final Object[] ownerLocks;
+    private final BloomFilter bloomFilter;
     private final Options options;
     private final WriteOptions writeOptions;
     private final RocksDB database;
@@ -60,8 +64,13 @@ public final class WorkerValueIdStore implements AutoCloseable {
             ownerLocks[ownerId] = new Object();
         try {
             Files.createDirectories(databasePath);
+            this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
+            BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
+                    .setFilterPolicy(bloomFilter)
+                    .setWholeKeyFiltering(true);
             this.options = new Options()
                     .setCreateIfMissing(true)
+                    .setTableFormatConfig(tableConfig)
                     .setWriteBufferSize(WRITE_BUFFER_BYTES)
                     .setMaxWriteBufferNumber(2)
                     .setMinWriteBufferNumberToMerge(1)
@@ -217,5 +226,6 @@ public final class WorkerValueIdStore implements AutoCloseable {
         database.close();
         writeOptions.close();
         options.close();
+        bloomFilter.close();
     }
 }

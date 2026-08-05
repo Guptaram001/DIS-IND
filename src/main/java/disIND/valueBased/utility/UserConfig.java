@@ -12,6 +12,7 @@ public final class UserConfig {
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
+    public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 200;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 8;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
@@ -19,7 +20,7 @@ public final class UserConfig {
     public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
     public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
-    public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
+    public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 200_000;
     public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 200_000;
     public static final String DEFAULT_VALUE_ID_DISK_DIR =System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
     public static final String DEFAULT_VALUE_TO_ROWS_DISK_DIR =

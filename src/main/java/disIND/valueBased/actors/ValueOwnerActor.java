@@ -89,7 +89,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.valueIdStore = valueIdStore;
         this.exactComparisonsByLhs = new long[metadata.totalCols()];
         this.candidateEvaluationsByLhs = new long[metadata.totalCols()];
-        this.recentBatchLimit = Math.max(2, UserConfig.DL_BD_CREDIT_WINDOW * 2);
+        this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
         this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
