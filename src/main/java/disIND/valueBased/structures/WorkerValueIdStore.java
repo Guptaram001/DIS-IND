@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import disIND.valueBased.utility.UserConfig;
 
 /**
  * One RocksDB db and one bounded LRU cache shared by all valueowners hosted on a worker.
@@ -32,7 +33,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private static final byte NEXT_ID_PREFIX = 1;
     private static final long WRITE_BUFFER_BYTES = 32L * 1024 * 1024;
     private static final long MAX_TOTAL_WAL_BYTES = 128L * 1024 * 1024;
-    private static final double BLOOM_FILTER_BITS_PER_KEY = 10.0;
+    private static final float BLOOM_FILTER_BITS_PER_KEY = UserConfig.BLOOM_FILTER_BITS_PER_KEY;
 
     private record CacheKey(int ownerId, String value) {}
 

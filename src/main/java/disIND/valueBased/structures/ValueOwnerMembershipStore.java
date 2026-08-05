@@ -2,6 +2,8 @@ package disIND.valueBased.structures;
 
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import org.rocksdb.BlockBasedTableConfig;
+import org.rocksdb.BloomFilter;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -24,10 +26,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import disIND.valueBased.utility.UserConfig;
+
 /**
  * Worker-local, disk-backed membership state shared by all ValueOwner
  */
 public final class ValueOwnerMembershipStore implements AutoCloseable {
+    private static final float BLOOM_FILTER_BITS_PER_KEY = UserConfig.BLOOM_FILTER_BITS_PER_KEY;
+
     private record CacheKey(int bucketId, int valueId) {}
     public record MembershipWrite(int bucketId, Map<Integer, Map<Integer, Long>> changedRecords) {}
 
@@ -35,6 +41,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         RocksDB.loadLibrary();
     }
 
+    private final BloomFilter bloomFilter;
     private final Options options;
     private final WriteOptions writeOptions;
     private final RocksDB db;
@@ -43,7 +50,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     public ValueOwnerMembershipStore(Path directory, long hotEntries) {
         try {
             Files.createDirectories(directory);
-            this.options = new Options().setCreateIfMissing(true);
+            this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
+            BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
+                    .setFilterPolicy(bloomFilter)
+                    .setWholeKeyFiltering(true);
+            this.options = new Options()
+                    .setCreateIfMissing(true)
+                    .setTableFormatConfig(tableConfig);
             this.writeOptions = new WriteOptions();
             this.db = RocksDB.open(options, directory.toString());
             this.hotCache = CacheBuilder.newBuilder()
@@ -202,5 +215,6 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         db.close();
         writeOptions.close();
         options.close();
+        bloomFilter.close();
     }
 }
