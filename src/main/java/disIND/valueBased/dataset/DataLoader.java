@@ -27,6 +27,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 
 public final class DataLoader {
     private static final Pattern PAT_CSV_EXT = Pattern.compile("\\.(csv|tbl)$");
@@ -242,7 +243,7 @@ public final class DataLoader {
             List<Integer> offsets,List<Integer> nCols,int tableId,long startRowId,List<String[]> rows,int round,int individualBatchId) {
 
         List<RawColumnBatch> columns = columnize(rows, startRowId, offsets.get(tableId), nCols.get(tableId));
-        Map<Integer, List<ValueOwnerActor.RawValue>> ownerBatches = bucketByValue(columns);
+        Map<Integer, List<ValueOwnerActor.ColumnValues>> ownerBatches = bucketByValue(columns);
         InputBatchDetails details = new InputBatchDetails(
                 tableId, startRowId, individualBatchId, epoch, round, -1);
         ClusterSharding sharding = ClusterSharding.get(system);
@@ -269,17 +270,29 @@ public final class DataLoader {
                 });
     }
 
-    private static Map<Integer, List<ValueOwnerActor.RawValue>> bucketByValue(List<RawColumnBatch> columns) {
-        Map<Integer, List<ValueOwnerActor.RawValue>> result = new HashMap<>();
+    private static Map<Integer, List<ValueOwnerActor.ColumnValues>> bucketByValue(List<RawColumnBatch> columns) {
+        Map<Integer, Map<Integer, Map<String, LongArrayList>>> grouped = new HashMap<>();
         for (RawColumnBatch column : columns) {
             for (int index = 0; index < column.values().length; index++) {
                 String value = column.values()[index];
                 int ownerId = Math.floorMod(value.hashCode(), UserConfig.VALUE_OWNER_BUCKETS);
-                result.computeIfAbsent(ownerId, ignored -> new ArrayList<>())
-                        .add(new ValueOwnerActor.RawValue(
-                                value, column.colId(), column.rowIds()[index]));
+                grouped.computeIfAbsent(ownerId, ignored -> new LinkedHashMap<>())
+                        .computeIfAbsent(column.colId(), ignored -> new LinkedHashMap<>())
+                        .computeIfAbsent(value, ignored -> new LongArrayList())
+                        .add(column.rowIds()[index]);
             }
         }
+        Map<Integer, List<ValueOwnerActor.ColumnValues>> result = new HashMap<>();
+        grouped.forEach((ownerId, columnsById) -> {
+            List<ValueOwnerActor.ColumnValues> encodedColumns = new ArrayList<>(columnsById.size());
+            columnsById.forEach((colId, rowsByValue) -> {
+                List<ValueOwnerActor.ValueRows> encodedValues = new ArrayList<>(rowsByValue.size());
+                rowsByValue.forEach((value, rowIds) ->
+                        encodedValues.add(new ValueOwnerActor.ValueRows(value, rowIds.toLongArray())));
+                encodedColumns.add(new ValueOwnerActor.ColumnValues(colId, encodedValues));
+            });
+            result.put(ownerId, encodedColumns);
+        });
         return result;
     }
 

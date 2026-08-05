@@ -34,12 +34,22 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     public sealed interface Command extends AkkaSerializable permits StoreBatch, GetBucket, FinalizeMembership {}
     public static final EntityTypeKey<Command> TYPE_KEY =EntityTypeKey.create(Command.class,"ValueOwnerActor");
 
-    public record RawValue(String value, int colId, long rowId) implements AkkaSerializable {}
+    public record ValueRows(String value, long[] rowIds) implements AkkaSerializable {
+        public ValueRows {
+            rowIds = rowIds.clone();
+        }
+    }
+
+    public record ColumnValues(int colId, List<ValueRows> values) implements AkkaSerializable {
+        public ColumnValues {
+            values = List.copyOf(values);
+        }
+    }
 
     public record StoreBatch(long epoch, int tableId, int batchId, int round, int bucketId,
-        List<RawValue> values, ActorRef<DirectBatchAggregatorActor.Command> ackTo) implements Command {
+        List<ColumnValues> columns, ActorRef<DirectBatchAggregatorActor.Command> ackTo) implements Command {
         public StoreBatch {
-            values = List.copyOf(values);
+            columns = List.copyOf(columns);
         }
     }
 
@@ -116,7 +126,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private Behavior<Command> onStoreBatch(StoreBatch msg) {
         if(Debug.INTERNAL)
             getContext().getLog().info("[VO] round={} bucket={} epoch={} tableId={} batchId={} aggregatedUpdates={}",
-                msg.round(),msg.bucketId(), msg.epoch(), msg.tableId(), msg.batchId(), msg.values().size());
+                msg.round(),msg.bucketId(), msg.epoch(), msg.tableId(), msg.batchId(),
+                msg.columns().stream().mapToInt(column -> column.values().size()).sum());
         if (msg.bucketId() != bucketId)
             throw new IllegalArgumentException("Message for bucket " + msg.bucketId()+ " sent to value owner " + entityId);
 
@@ -124,11 +135,19 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         boolean applied = !resolvedBatches.containsKey(batchKey);
         int changedValues = 0;
         if (applied) {
-            Map<String, Integer> idsByValue = valueIdStore.resolveBatch(bucketId,msg.values().stream().map(RawValue::value).toList());
+            List<String> distinctValues = msg.columns().stream()
+                    .flatMap(column -> column.values().stream())
+                    .map(ValueRows::value)
+                    .distinct()
+                    .toList();
+            Map<String, Integer> idsByValue = valueIdStore.resolveBatch(bucketId, distinctValues);
             Map<Integer, Map<Integer, Long>> updatesByValue = new HashMap<>();
-            for (RawValue item : msg.values()) {
-                int valueId = idsByValue.get(item.value());
-                updatesByValue.computeIfAbsent(valueId, ignored -> new HashMap<>()).merge(item.colId(), 1L, Long::sum);
+            for (ColumnValues column : msg.columns()) {
+                for (ValueRows item : column.values()) {
+                    int valueId = idsByValue.get(item.value());
+                    updatesByValue.computeIfAbsent(valueId, ignored -> new HashMap<>())
+                            .merge(column.colId(), (long) item.rowIds().length, Long::sum);
+                }
             }
             resolvedBatches.put(batchKey, Boolean.TRUE);
 
