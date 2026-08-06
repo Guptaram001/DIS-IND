@@ -19,17 +19,21 @@ import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
 import org.roaringbitmap.RoaringBitmap;
 
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.function.IntConsumer;
 
 import static disIND.valueBased.utility.Debug.formLog;
 import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
 
 public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
+    private static final int LONG_COLUMN_SET_LIMIT = Long.SIZE;
+    private static final int BIT_SET_COLUMN_LIMIT = 5_000;
 
     public sealed interface Command extends AkkaSerializable permits StoreBatch, GetBucket, FinalizeMembership {}
     public static final EntityTypeKey<Command> TYPE_KEY =EntityTypeKey.create(Command.class,"ValueOwnerActor");
@@ -153,10 +157,10 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
             Map<Integer, Map<Integer, Long>> records =membershipStore.loadBatch(bucketId, updatesByValue.keySet());
 
-            Map<Integer, RoaringBitmap> addedColumnsByValue = new HashMap<>();
+            Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
             updatesByValue.forEach((valueId, columnUpdates) -> {
                 Map<Integer, Long> record = records.get(valueId);
-                RoaringBitmap addedColumns = new RoaringBitmap();
+                ColumnSet addedColumns = newColumnSet();
                 columnUpdates.forEach((colId, count) -> {
                     Long previous = record.put(colId,Math.addExact(record.getOrDefault(colId, 0L), count));
                     if (previous == null)
@@ -193,17 +197,17 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         return this;
     }
 
-    private Map<Integer, Map<Integer, Integer>> calculateMembershipUpdates(Map<Integer, RoaringBitmap> addedColumnsByValue,
+    private Map<Integer, Map<Integer, Integer>> calculateMembershipUpdates(Map<Integer, ColumnSet> addedColumnsByValue,
             Map<Integer, Map<Integer, Long>> records) {
             Map<Integer, Map<Integer, Integer>> countDeltasByLhs = new HashMap<>();
             Set<Long> evaluatedCandidates = new HashSet<>();
             addedColumnsByValue.forEach((valueId, addedColumns) -> {
-            RoaringBitmap after = new RoaringBitmap();
+            ColumnSet after = newColumnSet();
             records.get(valueId).keySet().forEach(after::add);
-            RoaringBitmap before = after.clone();
+            ColumnSet before = after.copy();
             before.andNot(addedColumns);
 
-            addedColumns.forEach((int lhsCol) -> {
+            addedColumns.forEach(lhsCol -> {
                 for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
                     if (rhsCol != lhsCol
                             && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))) {
@@ -216,7 +220,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                 }
             });
 
-            addedColumns.forEach((int rhsCol) ->before.forEach((int lhsCol) -> {
+            addedColumns.forEach(rhsCol -> before.forEach(lhsCol -> {
                         if (lhsCol != rhsCol && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))) {
                             exactComparisonsByLhs[lhsCol] =
                                     Math.addExact(exactComparisonsByLhs[lhsCol], 1);
@@ -236,7 +240,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
 
-    private void emitMembershipUpdates(StoreBatch batch,Map<Integer, RoaringBitmap> addedColumnsByValue,Map<Integer, 
+    private void emitMembershipUpdates(StoreBatch batch,Map<Integer, ColumnSet> addedColumnsByValue,Map<Integer,
         Map<Integer, Integer>> countDeltasByLhs) {
         if (addedColumnsByValue.isEmpty())
             return;
@@ -253,8 +257,171 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         });
         if(Debug.INTERNAL)
             getContext().getLog().info("[VO] round={} bucket={} epoch={} newMemberships={} affectedCms={}",
-                batch.round(),bucketId, batch.epoch(),addedColumnsByValue.values().stream().mapToInt(RoaringBitmap::getCardinality).sum(),
+                batch.round(),bucketId, batch.epoch(),addedColumnsByValue.values().stream().mapToInt(ColumnSet::cardinality).sum(),
                 countDeltasByLhs.size());
+    }
+
+    private ColumnSet newColumnSet() {
+        int totalColumns = metadata.totalCols();
+        if (totalColumns <= LONG_COLUMN_SET_LIMIT)
+            return new LongColumnSet();
+        if (totalColumns <= BIT_SET_COLUMN_LIMIT)
+            return new BitSetColumnSet(totalColumns);
+        return new RoaringColumnSet();
+    }
+
+    private interface ColumnSet {
+        void add(int column);
+        boolean contains(int column);
+        boolean isEmpty();
+        int cardinality();
+        void forEach(IntConsumer action);
+        ColumnSet copy();
+        void andNot(ColumnSet other);
+    }
+
+    private static final class LongColumnSet implements ColumnSet {
+        private long bits;
+
+        private LongColumnSet() {}
+
+        private LongColumnSet(long bits) {
+            this.bits = bits;
+        }
+
+        @Override
+        public void add(int column) {
+            bits |= 1L << column;
+        }
+
+        @Override
+        public boolean contains(int column) {
+            return (bits & (1L << column)) != 0;
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return bits == 0;
+        }
+
+        @Override
+        public int cardinality() {
+            return Long.bitCount(bits);
+        }
+
+        @Override
+        public void forEach(IntConsumer action) {
+            long remaining = bits;
+            while (remaining != 0) {
+                int column = Long.numberOfTrailingZeros(remaining);
+                action.accept(column);
+                remaining &= remaining - 1;
+            }
+        }
+
+        @Override
+        public ColumnSet copy() {
+            return new LongColumnSet(bits);
+        }
+
+        @Override
+        public void andNot(ColumnSet other) {
+            bits &= ~((LongColumnSet) other).bits;
+        }
+    }
+
+    private static final class BitSetColumnSet implements ColumnSet {
+        private final BitSet bits;
+
+        private BitSetColumnSet(int totalColumns) {
+            this.bits = new BitSet(totalColumns);
+        }
+
+        private BitSetColumnSet(BitSet bits) {
+            this.bits = bits;
+        }
+
+        @Override
+        public void add(int column) {
+            bits.set(column);
+        }
+
+        @Override
+        public boolean contains(int column) {
+            return bits.get(column);
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return bits.isEmpty();
+        }
+
+        @Override
+        public int cardinality() {
+            return bits.cardinality();
+        }
+
+        @Override
+        public void forEach(IntConsumer action) {
+            bits.stream().forEach(action);
+        }
+
+        @Override
+        public ColumnSet copy() {
+            return new BitSetColumnSet((BitSet) bits.clone());
+        }
+
+        @Override
+        public void andNot(ColumnSet other) {
+            bits.andNot(((BitSetColumnSet) other).bits);
+        }
+    }
+
+    private static final class RoaringColumnSet implements ColumnSet {
+        private final RoaringBitmap bits;
+
+        private RoaringColumnSet() {
+            this.bits = new RoaringBitmap();
+        }
+
+        private RoaringColumnSet(RoaringBitmap bits) {
+            this.bits = bits;
+        }
+
+        @Override
+        public void add(int column) {
+            bits.add(column);
+        }
+
+        @Override
+        public boolean contains(int column) {
+            return bits.contains(column);
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return bits.isEmpty();
+        }
+
+        @Override
+        public int cardinality() {
+            return bits.getCardinality();
+        }
+
+        @Override
+        public void forEach(IntConsumer action) {
+            bits.forEach((int column) -> action.accept(column));
+        }
+
+        @Override
+        public ColumnSet copy() {
+            return new RoaringColumnSet(bits.clone());
+        }
+
+        @Override
+        public void andNot(ColumnSet other) {
+            bits.andNot(((RoaringColumnSet) other).bits);
+        }
     }
 
     private static void mergeCountDelta(Map<Integer, Map<Integer, Integer>> byLhs,int lhsCol,int rhsCol,int delta) {

@@ -194,7 +194,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         try (DataInputStream input =
                      new DataInputStream(new ByteArrayInputStream(encoded))) {
             int size = input.readInt();
-            Map<Integer, Long> columns = new HashMap<>(size);
+            Map<Integer, Long> columns = new LinkedHashMap<>(size);
             for (int index = 0; index < size; index++)
                 columns.put(input.readInt(), input.readLong());
             return columns;

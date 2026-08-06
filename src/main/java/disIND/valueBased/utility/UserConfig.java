@@ -16,7 +16,7 @@ public final class UserConfig {
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 8;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
-    public static final float BLOOM_FILTER_BITS_PER_KEY=10.0;
+    public static final float BLOOM_FILTER_BITS_PER_KEY=10.0f;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
     public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
     public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
