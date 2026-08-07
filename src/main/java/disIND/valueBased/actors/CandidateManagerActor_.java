@@ -9,7 +9,7 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.typed.Cluster;
 import disIND.valueBased.model.SharedModel.CMCommand;
-import disIND.valueBased.model.SharedModel.CandidateViolationDelta;
+import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.model.SharedModel.NaryPair;
 import disIND.valueBased.model.SharedModel.RCCommand;
@@ -18,8 +18,9 @@ import disIND.valueBased.utility.Debug;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.BitSet;
+import java.util.Arrays;
 import java.util.List;
+import org.roaringbitmap.RoaringBitmap;
 
 import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
 
@@ -32,8 +33,9 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final ActorRef<RCCommand> rcRef;
     private final Path liveResultFile;
 
-    private final int[] violationCountsByRhs;
-    private final BitSet drainedValueOwners = new BitSet();
+    private final RoaringBitmap[] validBucketsByRhs;
+    private final long[][] latestEpochByRhsAndBucket;
+    private final RoaringBitmap drainedValueOwners = new RoaringBitmap();
     private int expectedValueOwnerDrains = -1;
     private int finalRound = -1;
     private boolean finishedReported;
@@ -52,11 +54,17 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         this.metadata = metadata;
         this.liveResultFile = Path.of(System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR", "diagnostics"),
                 "cm-live-results-lhs-" + lhsOwnerCol + ".tsv");
-        this.violationCountsByRhs = new int[metadata.totalCols()];
+        this.validBucketsByRhs = new RoaringBitmap[metadata.totalCols()];
+        this.latestEpochByRhsAndBucket =new long[metadata.totalCols()][disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS];
+        for (long[] bucketEpochs : latestEpochByRhsAndBucket)
+            Arrays.fill(bucketEpochs, -1L);
 
         for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
-            violationCountsByRhs[rhsCol] =rhsCol != lhsOwnerCol
-                            && testCompatibility(metadata.typeOf(lhsOwnerCol), metadata.typeOf(rhsCol))? 0 : -1;
+            if (rhsCol != lhsOwnerCol && testCompatibility(metadata.typeOf(lhsOwnerCol), metadata.typeOf(rhsCol))) {
+                RoaringBitmap validBuckets = new RoaringBitmap();
+                validBuckets.add(0L, disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS);
+                validBucketsByRhs[rhsCol] = validBuckets;
+            }
         }
 
         var column = metadata.column(lhsOwnerCol);
@@ -74,30 +82,28 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     @Override
     public Receive<CMCommand> createReceive() {
         return newReceiveBuilder()
-                .onMessage(CMCommand.ValueOwnerMembershipUpdate.class, this::onMembershipUpdate)
+                .onMessage(CMCommand.ValueOwnerCandidateStatusUpdate.class, this::onCandidateStatusUpdate)
                 .onMessage(CMCommand.ValueOwnerDrained.class, this::onValueOwnerDrained)
                 .onMessage(CMCommand.NoMoreCandidates.class, this::onNoMoreCandidates)
                 .build();
     }
 
-    private Behavior<CMCommand> onMembershipUpdate(CMCommand.ValueOwnerMembershipUpdate msg) {
-        for (CandidateViolationDelta delta : msg.deltas()) {
-            int rhsCol = delta.rhsCol();
-            if (rhsCol < 0 || rhsCol >= violationCountsByRhs.length
-                    || violationCountsByRhs[rhsCol] < 0) {
+    private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
+        for (CandidateLocalStatus status : msg.statuses()) {
+            int rhsCol = status.rhsCol();
+            if (rhsCol < 0 || rhsCol >= validBucketsByRhs.length || validBucketsByRhs[rhsCol] == null
+                    || msg.bucketId() < 0 || msg.bucketId() >= latestEpochByRhsAndBucket[rhsCol].length) {
                 continue;
             }
+            long previousEpoch = latestEpochByRhsAndBucket[rhsCol][msg.bucketId()];
+            if (msg.epoch() <= previousEpoch)
+                continue;
+            latestEpochByRhsAndBucket[rhsCol][msg.bucketId()] = msg.epoch();
 
-            int before = violationCountsByRhs[rhsCol];
-            long after = (long) before + delta.countDelta();
-            if (after < 0) {
-                throw new IllegalStateException("Negative violation count lhs="+lhsOwnerCol +"rhs="+rhsCol);
-            }
-            if (after > Integer.MAX_VALUE) {
-                throw new IllegalStateException("Violation count overflow lhs=" + lhsOwnerCol + " rhs=" + rhsCol);
-            }
-
-            violationCountsByRhs[rhsCol] = (int) after;
+            if (status.valid())
+                validBucketsByRhs[rhsCol].add(msg.bucketId());
+            else
+                validBucketsByRhs[rhsCol].remove(msg.bucketId());
         }
         return this;
     }
@@ -115,17 +121,29 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         }
         finalRound = msg.finalRound();
         expectedValueOwnerDrains = msg.expectedBuckets();
-        if (!drainedValueOwners.get(msg.bucketId())) {
-            candidateEvaluationsWithoutPruning = Math.addExact(
-                    candidateEvaluationsWithoutPruning,
-                    msg.candidateEvaluationsWithoutPruning());
-            exactComparisonsWithoutPruning = Math.addExact(
-                    exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
+        if (!drainedValueOwners.contains(msg.bucketId())) {
+            reconcileBucket(msg.bucketId(), msg.locallyRejectedRhs());
+            candidateEvaluationsWithoutPruning = Math.addExact(candidateEvaluationsWithoutPruning, msg.candidateEvaluationsWithoutPruning());
+            exactComparisonsWithoutPruning = Math.addExact( exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
         }
-        drainedValueOwners.set(msg.bucketId());
-        if (drainedValueOwners.cardinality() == expectedValueOwnerDrains)
+        drainedValueOwners.add(msg.bucketId());
+        if (drainedValueOwners.getCardinality() == expectedValueOwnerDrains)
             reportFinished();
         return this;
+    }
+
+    private void reconcileBucket(int bucketId, RoaringBitmap locallyRejectedRhs) {
+        if (bucketId < 0 || bucketId >= disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS)
+            throw new IllegalArgumentException("Invalid value-owner bucket " + bucketId);
+        for (int rhsCol = 0; rhsCol < validBucketsByRhs.length; rhsCol++) {
+            RoaringBitmap validBuckets = validBucketsByRhs[rhsCol];
+            if (validBuckets == null)
+                continue;
+            if (locallyRejectedRhs.contains(rhsCol))
+                validBuckets.remove(bucketId);
+            else
+                validBuckets.add(bucketId);
+        }
     }
 
     private void reportFinished() {
@@ -134,8 +152,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         finishedReported = true;
 
         List<UnaryPair> clean = new ArrayList<>();
-        for (int rhsCol = 0; rhsCol < violationCountsByRhs.length; rhsCol++) {
-            if (violationCountsByRhs[rhsCol] == 0)
+        for (int rhsCol = 0; rhsCol < validBucketsByRhs.length; rhsCol++) {
+            if (validBucketsByRhs[rhsCol] != null && validBucketsByRhs[rhsCol].getCardinality() == expectedValueOwnerDrains)
                 clean.add(new UnaryPair(lhsOwnerCol, rhsCol));
         }
         rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound,
@@ -144,7 +162,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         if (Debug.INTERNAL) {
             getContext().getLog().info("[CM-DRAINED] lhs={} finalRound={} valueOwners={}/{} cleanCandidates={}",
-                    lhsOwnerCol, finalRound, drainedValueOwners.cardinality(),
+                    lhsOwnerCol, finalRound, drainedValueOwners.getCardinality(),
                     expectedValueOwnerDrains, clean.size());
         }
     }

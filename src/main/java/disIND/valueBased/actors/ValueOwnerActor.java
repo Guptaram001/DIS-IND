@@ -11,7 +11,7 @@ import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.typed.Cluster;
 import disIND.valueBased.model.AkkaSerializable;
 import disIND.valueBased.model.SharedModel.CMCommand;
-import disIND.valueBased.model.SharedModel.CandidateViolationDelta;
+import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.WorkerValueIdStore;
@@ -70,6 +70,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final WorkerValueIdStore valueIdStore;
     private final int recentBatchLimit;
     private final Map<String, Boolean> resolvedBatches;
+    private final Set<Long> locallyRejectedCandidates = new HashSet<>();
+    private final Map<Long, Long> localViolationCounts = new HashMap<>();
     private final long[] exactComparisonsByLhs;
     private final long[] candidateEvaluationsByLhs;
 
@@ -115,10 +117,21 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     }
 
     private Behavior<Command> onFinalizeMembership(FinalizeMembership msg) {
+        Map<Integer, RoaringBitmap> rejectedRhsByLhs = new HashMap<>();
+        for (long candidateKey : locallyRejectedCandidates) {
+            int lhsCol = (int) (candidateKey >>> Integer.SIZE);
+            int rhsCol = (int) candidateKey;
+            rejectedRhsByLhs
+                    .computeIfAbsent(lhsCol, ignored -> new RoaringBitmap())
+                    .add(rhsCol);
+        }
         for (int lhsCol = 0; lhsCol < msg.totalColumns(); lhsCol++) {
+            RoaringBitmap rejectedRhs =
+                    rejectedRhsByLhs.getOrDefault(lhsCol, new RoaringBitmap());
             sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsCol))
                     .tell(new CMCommand.ValueOwnerDrained(msg.finalRound(), bucketId,
-                            msg.expectedBuckets(), candidateEvaluationsByLhs[lhsCol],
+                            msg.expectedBuckets(), rejectedRhs,
+                            candidateEvaluationsByLhs[lhsCol],
                             exactComparisonsByLhs[lhsCol]));
         }
         if(Debug.INTERNAL)
@@ -175,7 +188,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             membershipStore.writeBatch(bucketId, records);
             changedValues = records.size();
 
-            emitMembershipUpdates(msg, addedColumnsByValue, countDeltasByLhs);
+            emitCandidateStatusTransitions(msg, countDeltasByLhs);
         }
         if (Debug.INTERNAL)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.vo(),-1,"-",
@@ -240,25 +253,48 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
 
-    private void emitMembershipUpdates(StoreBatch batch,Map<Integer, ColumnSet> addedColumnsByValue,Map<Integer,
-        Map<Integer, Integer>> countDeltasByLhs) {
-        if (addedColumnsByValue.isEmpty())
-            return;
+    private void emitCandidateStatusTransitions(StoreBatch batch, Map<Integer, Map<Integer, Integer>> countDeltasByLhs) {
+        countDeltasByLhs.forEach((lhsCol, rhsDeltas) -> {
+            List<CandidateLocalStatus> transitions = new java.util.ArrayList<>();
+            rhsDeltas.forEach((rhsCol, countDelta) -> {
+                if (countDelta == 0)
+                    return;
+                long candidateKey = candidateKey(lhsCol, rhsCol);
+                long beforeCount = localViolationCounts.getOrDefault(candidateKey, 0L);
+                long afterCount = Math.addExact(beforeCount, countDelta.longValue());
+                if (afterCount < 0) {
+                    throw new IllegalStateException( "Negative local violation count bucket=" + bucketId
+                                    + " lhs=" + lhsCol + " rhs=" + rhsCol);
+                }
 
-        countDeltasByLhs.forEach((lhsCol, rhsDeltas) -> {List<CandidateViolationDelta> deltas = rhsDeltas.entrySet().stream()
-                    .filter(entry -> entry.getValue() != 0)
-                    .map(entry -> new CandidateViolationDelta(entry.getKey(), entry.getValue()))
-                    .toList();
-            if (!deltas.isEmpty()) {
+                boolean wasRejected = locallyRejectedCandidates.contains(candidateKey);
+                boolean isRejected = afterCount > 0;
+                if (isRejected) {
+                    localViolationCounts.put(candidateKey, afterCount);
+                    locallyRejectedCandidates.add(candidateKey);
+                } else {
+                    localViolationCounts.remove(candidateKey);
+                    locallyRejectedCandidates.remove(candidateKey);
+                }
+
+                if (wasRejected != isRejected)
+                    transitions.add(new CandidateLocalStatus(rhsCol, !isRejected));
+            });
+            if (!transitions.isEmpty()) {
                 sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsCol))
-                .tell(new CMCommand.ValueOwnerMembershipUpdate(
-                                batch.epoch(), batch.round(), bucketId, deltas));
+                        .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(
+                                batch.epoch(), batch.round(), bucketId, transitions));
             }
         });
         if(Debug.INTERNAL)
-            getContext().getLog().info("[VO] round={} bucket={} epoch={} newMemberships={} affectedCms={}",
-                batch.round(),bucketId, batch.epoch(),addedColumnsByValue.values().stream().mapToInt(ColumnSet::cardinality).sum(),
-                countDeltasByLhs.size());
+            getContext().getLog().info(
+                    "[VO] round={} bucket={} epoch={} locallyRejected={} affectedCms={}",
+                    batch.round(), bucketId, batch.epoch(),
+                    locallyRejectedCandidates.size(), countDeltasByLhs.size());
+    }
+
+    private static long candidateKey(int lhsCol, int rhsCol) {
+        return ((long) lhsCol << Integer.SIZE) | (rhsCol & 0xffffffffL);
     }
 
     private ColumnSet newColumnSet() {
