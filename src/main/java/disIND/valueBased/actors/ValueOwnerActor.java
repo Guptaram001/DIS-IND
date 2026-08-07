@@ -85,7 +85,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     }
 
     private ValueOwnerActor(ActorContext<Command> ctx,String entityId,ClusterSharding sharding,
-            DatasetMetadata metadata,ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore) {
+            DatasetMetadata metadata,ValueOwnerMembershipStore membershipStore,
+            WorkerValueIdStore valueIdStore) {
         super(ctx);
         this.entityId = entityId;
         this.bucketId = Integer.parseInt(entityId.substring("value-bucket-".length()));
@@ -117,6 +118,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     }
 
     private Behavior<Command> onFinalizeMembership(FinalizeMembership msg) {
+        rebuildLocallyRejectedCandidates();
         Map<Integer, RoaringBitmap> rejectedRhsByLhs = new HashMap<>();
         for (long candidateKey : locallyRejectedCandidates) {
             int lhsCol = (int) (candidateKey >>> Integer.SIZE);
@@ -253,19 +255,15 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
 
-    private void emitCandidateStatusTransitions(StoreBatch batch, Map<Integer, Map<Integer, Integer>> countDeltasByLhs) {
+    private void emitCandidateStatusTransitions(StoreBatch batch,Map<Integer, Map<Integer, Integer>> countDeltasByLhs) {
+        Map<Integer, List<CandidateLocalStatus>> transitionsByLhs = new HashMap<>();
         countDeltasByLhs.forEach((lhsCol, rhsDeltas) -> {
-            List<CandidateLocalStatus> transitions = new java.util.ArrayList<>();
             rhsDeltas.forEach((rhsCol, countDelta) -> {
                 if (countDelta == 0)
                     return;
                 long candidateKey = candidateKey(lhsCol, rhsCol);
                 long beforeCount = localViolationCounts.getOrDefault(candidateKey, 0L);
-                long afterCount = Math.addExact(beforeCount, countDelta.longValue());
-                if (afterCount < 0) {
-                    throw new IllegalStateException( "Negative local violation count bucket=" + bucketId
-                                    + " lhs=" + lhsCol + " rhs=" + rhsCol);
-                }
+                long afterCount = nextViolationCount(beforeCount, countDelta);
 
                 boolean wasRejected = locallyRejectedCandidates.contains(candidateKey);
                 boolean isRejected = afterCount > 0;
@@ -278,13 +276,17 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                 }
 
                 if (wasRejected != isRejected)
-                    transitions.add(new CandidateLocalStatus(rhsCol, !isRejected));
+                    transitionsByLhs
+                            .computeIfAbsent(lhsCol, ignored -> new java.util.ArrayList<>())
+                            .add(new CandidateLocalStatus(rhsCol, !isRejected));
             });
-            if (!transitions.isEmpty()) {
+        });
+
+        transitionsByLhs.forEach((lhsCol, transitions) -> {
+            if (!transitions.isEmpty())
                 sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsCol))
                         .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(
                                 batch.epoch(), batch.round(), bucketId, transitions));
-            }
         });
         if(Debug.INTERNAL)
             getContext().getLog().info(
@@ -293,8 +295,35 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                     locallyRejectedCandidates.size(), countDeltasByLhs.size());
     }
 
+    private void rebuildLocallyRejectedCandidates() {
+        locallyRejectedCandidates.clear();
+        localViolationCounts.clear();
+        Map<Integer, Map<Integer, Long>> snapshot =membershipStore.snapshotBucket(bucketId);
+        for (Map<Integer, Long> membership : snapshot.values()) {
+            for (int lhsCol : membership.keySet()) {
+                for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
+                    if (lhsCol != rhsCol
+                            && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))
+                            && !membership.containsKey(rhsCol)) {
+                        long candidate = candidateKey(lhsCol, rhsCol);
+                        locallyRejectedCandidates.add(candidate);
+                        localViolationCounts.merge(candidate, 1L, Math::addExact);
+                    }
+                }
+            }
+        }
+    }
+
     private static long candidateKey(int lhsCol, int rhsCol) {
         return ((long) lhsCol << Integer.SIZE) | (rhsCol & 0xffffffffL);
+    }
+
+    static long nextViolationCount(long currentCount, int delta) {
+        long nextCount = Math.addExact(currentCount, delta);
+        if (nextCount < 0)
+            throw new IllegalStateException("Missing-value count cannot become negative: current="+ currentCount +
+         " delta=" + delta);
+        return nextCount;
     }
 
     private ColumnSet newColumnSet() {

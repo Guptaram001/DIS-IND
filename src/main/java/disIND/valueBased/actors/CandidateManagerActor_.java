@@ -42,8 +42,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private long exactComparisonsWithoutPruning;
     private long candidateEvaluationsWithoutPruning;
 
-    public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef,DatasetMetadata metadata) {
-        return Behaviors.setup(ctx -> new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
+    public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef, DatasetMetadata metadata) {
+        return Behaviors.setup(ctx ->new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
     }
 
     private CandidateManagerActor_(ActorContext<CMCommand> context, int lhsOwnerCol,ActorRef<RCCommand> rcRef,
