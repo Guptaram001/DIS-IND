@@ -167,6 +167,10 @@ streams the rows.
 | `JAVA_XMS` | Initial heap per container | `512m` |
 | `JAVA_XMX` | Maximum heap per worker | `2g` |
 | `COORDINATOR_JAVA_XMX` | Maximum coordinator heap | `2g` |
+| `WORKER_CPUS` | Docker CPU quota per worker | `1.0` |
+| `COORDINATOR_CPUS` | Docker CPU quota for the coordinator | `1.0` |
+| `DIS_IND_VALUE_OWNER_HOT_ENTRIES` | Decoded VO membership records cached per worker | `100000` |
+| `DIS_IND_VALUE_OWNER_DISK_DIR` | RocksDB directory for VO membership records | run diagnostics directory |
 | `AKKA_MAXIMUM_FRAME_SIZE` | Maximum serialized remote message frame | `64 MiB` |
 | `AKKA_BUFFER_POOL_SIZE` | Reusable Artery direct buffers per node | `4` |
 | `DIS_IND_NODE_ROLE` | Whether a JVM ingests (`coordinator`) or only computes (`worker`) | Set by Compose |
