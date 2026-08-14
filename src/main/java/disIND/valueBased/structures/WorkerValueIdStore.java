@@ -17,13 +17,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 import disIND.valueBased.utility.UserConfig;
+import it.unimi.dsi.fastutil.Hash;
 
 /**
  * One RocksDB db and one bounded LRU cache shared by all valueowners hosted on a worker.
@@ -44,8 +47,9 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private final int ownerCount;
     private final Path databasePath;
     private final Cache<CacheKey, Integer> hotValues;
-    private final Map<Integer, Integer> nextIds = new ConcurrentHashMap<>();
-    private final Object[] ownerLocks;
+    //private final Map<Integer, Integer> nextIds = new HashMap<>();
+    private final int[] nextIds;
+    private final byte[][] nextIdKeys;
     private final BloomFilter bloomFilter;
     private final Options options;
     private final WriteOptions writeOptions;
@@ -59,10 +63,17 @@ public final class WorkerValueIdStore implements AutoCloseable {
             throw new IllegalArgumentException("ownerCount must be positive");
         this.databasePath = databasePath;
         this.ownerCount = ownerCount;
+        this.nextIds=new int[ownerCount];
+        Arrays.fill(nextIds, -1);
+        this.nextIdKeys = new byte[ownerCount][];
         this.hotValues = CacheBuilder.newBuilder().maximumSize(maxHotEntries).build();
-        this.ownerLocks = new Object[ownerCount];
-        for (int ownerId = 0; ownerId < ownerCount; ownerId++)
-            ownerLocks[ownerId] = new Object();
+        for (int ownerId = 0; ownerId < ownerCount; ownerId++) {
+        nextIdKeys[ownerId] = ByteBuffer
+            .allocate(1 + Integer.BYTES)
+            .put(NEXT_ID_PREFIX)
+            .putInt(ownerId)
+            .array();
+}
         try {
             Files.createDirectories(databasePath);
             this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
@@ -87,9 +98,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
         validateOwner(ownerId);
         Objects.requireNonNull(values, "values");
         ensureOpen();
-        synchronized (ownerLocks[ownerId]) {
             return resolveOwnerBatch(ownerId, values);
-        }
     }
 
     private Map<String, Integer> resolveOwnerBatch(int ownerId, Collection<String> values) {
@@ -137,10 +146,12 @@ public final class WorkerValueIdStore implements AutoCloseable {
                         batch.put(coldKeys.get(index), encodeId(id));
                         allocated.put(value, id);
                     }
-                    batch.put(nextIdKey(ownerId), encodeId(committedNextId));
+                    //batch.put(nextIdKeys(ownerId), encodeId(committedNextId));
+                    batch.put(nextIdKeys[ownerId], encodeId(committedNextId));
                     database.write(writeOptions, batch);
+                    nextIds[ownerId] = committedNextId;
                 }
-                nextIds.put(ownerId, committedNextId);
+                //nextIds.put(ownerId, committedNextId);
                 allocated.forEach((value, id) -> {
                     resolved.put(value, id);
                     hotValues.put(new CacheKey(ownerId, value), id);
@@ -155,22 +166,21 @@ public final class WorkerValueIdStore implements AutoCloseable {
     public int size(int ownerId) {
         validateOwner(ownerId);
         ensureOpen();
-        synchronized (ownerLocks[ownerId]) {
             try {
                 return nextId(ownerId);
             } catch (RocksDBException exception) {
                 throw storageFailure("read owner " + ownerId + " size", exception);
             }
-        }
     }
 
     private int nextId(int ownerId) throws RocksDBException {
-        Integer cached = nextIds.get(ownerId);
-        if (cached != null)
+        Integer cached = nextIds[ownerId];
+        if (cached >= 0)
             return cached;
-        byte[] stored = database.get(nextIdKey(ownerId));
+        byte[] stored = database.get(nextIdKeys[ownerId]);
         int next = stored == null ? 0 : decodeId(stored);
-        nextIds.put(ownerId, next);
+        //nextIds.put(ownerId, next);
+        nextIds[ownerId]=next;
         return next;
     }
 
@@ -193,9 +203,9 @@ public final class WorkerValueIdStore implements AutoCloseable {
                 .put(VALUE_PREFIX).putInt(ownerId).put(text).array();
     }
 
-    private static byte[] nextIdKey(int ownerId) {
-        return ByteBuffer.allocate(1 + Integer.BYTES).put(NEXT_ID_PREFIX).putInt(ownerId).array();
-    }
+    // private static byte[] nextIdKey(int ownerId) {
+    //     return ByteBuffer.allocate(1 + Integer.BYTES).put(NEXT_ID_PREFIX).putInt(ownerId).array();
+    // }
 
     private static byte[] encodeId(int id) {
         return ByteBuffer.allocate(Integer.BYTES).putInt(id).array();
@@ -218,12 +228,12 @@ public final class WorkerValueIdStore implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
         if (closed)
             return;
         closed = true;
         hotValues.invalidateAll();
-        nextIds.clear();
+        //nextIds.clear();
         database.close();
         writeOptions.close();
         options.close();
