@@ -25,10 +25,10 @@ import static disIND.valueBased.utility.Debug.formLog;
 
 public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
-    public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold,DatasetMetadata metadata) {
+    public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold,DatasetMetadata metadata,DataOrientation orientation) {
 
-        public static Config withAll(DatasetMetadata metadata) {
-            return new Config(metadata.totalCols(), 3, 32, 1, metadata);
+        public static Config withAll(DatasetMetadata metadata, DataOrientation orientation) {
+            return new Config(metadata.totalCols(), 3, 32, 1, metadata,orientation);
         }
     }
 
@@ -63,7 +63,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         this.sharding = sharding;
         
         sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY,entityCtx -> {return ValueOwnerActor.create(entityCtx.getEntityId(), 
-            sharding, metadata,valueOwnerMembershipStore, workerValueIdStore);
+            sharding, metadata,valueOwnerMembershipStore, workerValueIdStore,cfg.orientation);
                 }).withRole("worker")
                 .withEntityProps(Props.empty().withDispatcherFromConfig("checkpoint-io-dispatcher")));
         

@@ -39,7 +39,7 @@ public class ValueBasedMain {
         int timeoutSec = 5;
         String outputFile = UserConfig.outputDir;
 
-        INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir);
+        INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir,UserConfig.DATA_ORIENTATION);
         System.out.println("[Main] Discovered config: " + cfg);
         ActorSystem<SharedModel.BDCommand> system = ActorSystem.create(INDGuardian.create(cfg), "disIND", ConfigFactory.load());
         System.out.println("[Main] Value Based INDGuardian started as " + nodeRole + ".");
@@ -58,7 +58,7 @@ public class ValueBasedMain {
         }
 
         try {
-            DataLoader.run(system, cfg.metadata(), inputDir, batchSize, timeoutSec, outputFile);
+            DataLoader.run(system, cfg.metadata(), inputDir, batchSize, timeoutSec, outputFile,cfg.orientation());
         } finally {
             System.out.println("[Main] Terminating actor system.");
             system.terminate();

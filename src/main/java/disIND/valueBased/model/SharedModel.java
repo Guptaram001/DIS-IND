@@ -19,6 +19,7 @@ public final class SharedModel {
 
     public enum ColType implements AkkaSerializable {INTEGER, DECIMAL, DATE, BOOLEAN, STRING, KEY,UNKNOWN}
     public enum PairState {ACTIVE, INACTIVE}
+    public enum DataOrientation implements AkkaSerializable {VALUE_MAJOR,COLUMN_MAJOR}
 
     public record UnaryPair(int lhsCol, int rhsCol) implements AkkaSerializable {}
     public record NaryPair(List<Integer> lhsCols, List<Integer> rhsCols) implements AkkaSerializable {

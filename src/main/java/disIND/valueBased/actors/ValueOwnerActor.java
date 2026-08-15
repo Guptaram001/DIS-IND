@@ -1,41 +1,64 @@
 package disIND.valueBased.actors;
 
+import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
+
+import java.util.BitSet;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.IntConsumer;
+
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import org.roaringbitmap.RoaringBitmap;
+
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
-import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.typed.Cluster;
 import disIND.valueBased.model.AkkaSerializable;
 import disIND.valueBased.model.SharedModel.CMCommand;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
+import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
+import disIND.valueBased.structures.ColumnMajorProcessor;
+import disIND.valueBased.structures.ValueMajorProcessor;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.WorkerValueIdStore;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
-import org.roaringbitmap.RoaringBitmap;
-
-import java.util.BitSet;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.LinkedHashMap;
-import java.util.Set;
-import java.util.HashSet;
-import java.util.function.IntConsumer;
-
-import static disIND.valueBased.utility.Debug.formLog;
-import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
 
 public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private static final int LONG_COLUMN_SET_LIMIT = Long.SIZE;
     private static final int BIT_SET_COLUMN_LIMIT = 5_000;
 
     public sealed interface Command extends AkkaSerializable permits StoreBatch, GetBucket, FinalizeMembership {}
+    public record ColumnRows(int columnId,long[] rowIds) {}
+    public record ValueData(String value,List<ColumnRows> columns) {}
+    public record ValueMajorBatch(List<ValueData> values) implements BatchBody {}
+    @JsonTypeInfo(
+            use = JsonTypeInfo.Id.NAME,
+            include = JsonTypeInfo.As.PROPERTY,
+            property = "batchType")
+    @JsonSubTypes({
+            @JsonSubTypes.Type(value = ValueMajorBatch.class, name = "value-major"),
+            @JsonSubTypes.Type(value = ColumnMajorBatch.class, name = "column-major")
+    })
+    public sealed interface BatchBody extends AkkaSerializable permits ValueMajorBatch, ColumnMajorBatch {}
+    public record ColumnMajorBatch(List<ColumnValues> columns) implements BatchBody {
+         public ColumnMajorBatch {
+        columns = List.copyOf(columns);
+    }
+    }
     public static final EntityTypeKey<Command> TYPE_KEY =EntityTypeKey.create(Command.class,"ValueOwnerActor");
 
     public record ValueRows(String value, long[] rowIds) implements AkkaSerializable {
@@ -51,10 +74,23 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     }
 
     public record StoreBatch(long epoch, int tableId, int batchId, int round, int bucketId,
-        List<ColumnValues> columns, ActorRef<DirectBatchAggregatorActor.Command> ackTo) implements Command {
+        DataOrientation orientation,BatchBody body, ActorRef<DirectBatchAggregatorActor.Command> ackTo) implements Command {
         public StoreBatch {
-            columns = List.copyOf(columns);
+            Objects.requireNonNull(orientation, "orientation");
+            Objects.requireNonNull(body, "body");
+            boolean matchingBody = switch (orientation) {
+                case VALUE_MAJOR -> body instanceof ValueMajorBatch;
+                case COLUMN_MAJOR -> body instanceof ColumnMajorBatch;
+            };
+            if (!matchingBody) {
+                throw new IllegalArgumentException(
+                        "Batch orientation " + orientation + " does not match body "
+                                + body.getClass().getSimpleName());
+            }
         }
+    }
+    public interface BatchProcessor {
+        Map<Integer, Map<Integer, Long>> process(int bucketId,BatchBody batch,WorkerValueIdStore valueIds);
     }
 
     public record GetBucket(ActorRef<BucketSnapshot> replyTo) implements Command {}
@@ -74,19 +110,21 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final Map<Long, Long> localViolationCounts = new HashMap<>();
     private final long[] exactComparisonsByLhs;
     private final long[] candidateEvaluationsByLhs;
+    private final DataOrientation orientation;
+    private final BatchProcessor batchProcessor;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
     }
 
     public static Behavior<Command> create(String entityId,ClusterSharding sharding,DatasetMetadata metadata,
-        ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore) {
-        return Behaviors.setup(ctx ->new ValueOwnerActor(ctx, entityId, sharding, metadata, membershipStore, valueIdStore));
+        ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore,DataOrientation orientation) {
+        return Behaviors.setup(ctx ->new ValueOwnerActor(ctx, entityId, sharding, metadata, membershipStore, valueIdStore,orientation));
     }
 
     private ValueOwnerActor(ActorContext<Command> ctx,String entityId,ClusterSharding sharding,
             DatasetMetadata metadata,ValueOwnerMembershipStore membershipStore,
-            WorkerValueIdStore valueIdStore) {
+            WorkerValueIdStore valueIdStore,DataOrientation orientation) {
         super(ctx);
         this.entityId = entityId;
         this.bucketId = Integer.parseInt(entityId.substring("value-bucket-".length()));
@@ -97,6 +135,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.exactComparisonsByLhs = new long[metadata.totalCols()];
         this.candidateEvaluationsByLhs = new long[metadata.totalCols()];
         this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
+        this.orientation=orientation;
+        this.batchProcessor=newProcessor(orientation);
         this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
@@ -144,62 +184,62 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     private Behavior<Command> onStoreBatch(StoreBatch msg) {
         if(Debug.INTERNAL)
-            getContext().getLog().info("[VO] round={} bucket={} epoch={} tableId={} batchId={} aggregatedUpdates={}",
-                msg.round(),msg.bucketId(), msg.epoch(), msg.tableId(), msg.batchId(),
-                msg.columns().stream().mapToInt(column -> column.values().size()).sum());
+            getContext().getLog().info("[VO] round={} bucket={} epoch={} tableId={} batchId={}",
+                msg.round(),msg.bucketId(), msg.epoch(), msg.tableId(), msg.batchId());
         if (msg.bucketId() != bucketId)
             throw new IllegalArgumentException("Message for bucket " + msg.bucketId()+ " sent to value owner " + entityId);
 
+        if (msg.orientation() != orientation)
+            throw new IllegalStateException(
+                    "VO configured for " + orientation + " but received " + msg.orientation());
+    
         String batchKey = msg.tableId() + ":" + msg.batchId();
-        boolean applied = !resolvedBatches.containsKey(batchKey);
-        int changedValues = 0;
-        if (applied) {
-            List<String> distinctValues = msg.columns().stream()
-                    .flatMap(column -> column.values().stream())
-                    .map(ValueRows::value)
-                    .distinct()
-                    .toList();
-            Map<String, Integer> idsByValue = valueIdStore.resolveBatch(bucketId, distinctValues);
-            Map<Integer, Map<Integer, Long>> updatesByValue = new HashMap<>();
-            for (ColumnValues column : msg.columns()) {
-                for (ValueRows item : column.values()) {
-                    int valueId = idsByValue.get(item.value());
-                    updatesByValue.computeIfAbsent(valueId, ignored -> new HashMap<>())
-                            .merge(column.colId(), (long) item.rowIds().length, Long::sum);
-                }
-            }
-            resolvedBatches.put(batchKey, Boolean.TRUE);
-
-            Map<Integer, Map<Integer, Long>> records =membershipStore.loadBatch(bucketId, updatesByValue.keySet());
-
-            Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
-            updatesByValue.forEach((valueId, columnUpdates) -> {
-                Map<Integer, Long> record = records.get(valueId);
-                ColumnSet addedColumns = newColumnSet();
-                columnUpdates.forEach((colId, count) -> {
-                    Long previous = record.put(colId,Math.addExact(record.getOrDefault(colId, 0L), count));
-                    if (previous == null)
-                        addedColumns.add(colId);
-                });
-                if (!addedColumns.isEmpty()) {
-                    addedColumnsByValue.put(valueId, addedColumns);
-                }
-            });
-
-            Map<Integer, Map<Integer, Integer>> countDeltasByLhs =calculateMembershipUpdates(addedColumnsByValue, records);
-            membershipStore.writeBatch(bucketId, records);
-            changedValues = records.size();
-
-            emitCandidateStatusTransitions(msg, countDeltasByLhs);
+        if (resolvedBatches.containsKey(batchKey)) {
+            acknowledge(msg);
+            return this;
         }
-        if (Debug.INTERNAL)
-            formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.vo(),-1,"-",
-                    String.valueOf(Debug.State.NONE),
-                    "Disk membership updated bucketId={} epoch={} applied={} changedValues={}",
-                    bucketId, msg.epoch(), applied, changedValues);
-        if (msg.ackTo() != null)
-            msg.ackTo().tell(new DirectBatchAggregatorActor.ValueOwnerPersisted(bucketId));
+
+        Map<Integer, Map<Integer, Long>> updatesByValue =batchProcessor.process(bucketId,msg.body(),
+                    valueIdStore);
+        applyUpdates(msg, updatesByValue);
+        resolvedBatches.put(batchKey, Boolean.TRUE);
+        acknowledge(msg);
         return this;
+    }
+
+    private void applyUpdates(StoreBatch message,Map<Integer, Map<Integer, Long>> updatesByValue) {
+        Map<Integer, Map<Integer, Long>> records = membershipStore.loadBatch(bucketId,updatesByValue.keySet());
+        Map<Integer, ColumnSet> addedColumnsByValue =new HashMap<>();
+
+        updatesByValue.forEach((valueId, columnUpdates) -> { 
+            Map<Integer, Long> record =records.get(valueId);
+            ColumnSet addedColumns =newColumnSet();
+            columnUpdates.forEach((columnId, count) -> {
+                long previousCount =record.getOrDefault(columnId, 0L);
+                Long previous = record.put(columnId,Math.addExact(previousCount, count));
+                if (previous == null) 
+                    addedColumns.add(columnId);
+            });
+            if (!addedColumns.isEmpty()) 
+                addedColumnsByValue.put(valueId,addedColumns);
+        });
+
+        Map<Integer, Map<Integer, Integer>>countDeltasByLhs =calculateMembershipUpdates(addedColumnsByValue,records);
+        membershipStore.writeBatch(bucketId,records);
+        emitCandidateStatusTransitions(message,countDeltasByLhs);
+    }
+
+    private void acknowledge(StoreBatch message) {
+        if (message.ackTo() != null) 
+            message.ackTo().tell(new DirectBatchAggregatorActor.ValueOwnerPersisted(bucketId));
+    }
+
+    private BatchProcessor newProcessor(DataOrientation orientation)
+    {
+        return switch(orientation){
+            case COLUMN_MAJOR -> new ColumnMajorProcessor();
+            case VALUE_MAJOR -> new ValueMajorProcessor();
+        };
     }
 
     private Behavior<Command> onGetBucket(GetBucket msg) {

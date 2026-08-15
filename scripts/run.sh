@@ -67,6 +67,7 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$DIAGNOSTICS_BASE/run-$RUN_ID"
 JAR_FILE="$PROJECT_DIR/target/dis-ind-1.0.0.jar"
 DOCKER_DISTRIBUTED="${DOCKER_DISTRIBUTED:-0}"
+DATA_ORIENTATION="${DATA_ORIENTATION:-0}"
 WORKERS="${WORKERS:-3}"
 WORKER_CPUS="${WORKER_CPUS:-1}"
 COORDINATOR_CPUS="${COORDINATOR_CPUS:-1}"
@@ -146,6 +147,7 @@ export_docker_application_arguments() {
             shift 2
         fi
         case "$option" in
+            --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
             --input-dir) export DIS_IND_INPUT_DIR="$value" ;;
             --output-file) export DIS_IND_OUTPUT_FILE="$value" ;;
             --batch-size) export DIS_IND_BATCH_SIZE="$value" ;;
