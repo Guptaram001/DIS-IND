@@ -32,6 +32,7 @@ x-dis-ind-common: &dis-ind-common
     JAVA_XMS: "${JAVA_XMS:-512m}"
     JAVA_XMX: "${JAVA_XMX:-2g}"
     DIS_IND_DATA_ORIENTATION: "${DIS_IND_DATA_ORIENTATION:-value}"
+    DIS_IND_CANDIDATE_TRACKING: "${DIS_IND_CANDIDATE_TRACKING:-count}"
   volumes:
     - "${DIS_IND_DATA_DIR:-./data/tpch-1}:/data/input:ro"
     - "${DIS_IND_DIAGNOSTICS_DIR:-./diagnostics/docker-current}:/data/diagnostics"

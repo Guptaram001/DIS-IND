@@ -148,6 +148,7 @@ export_docker_application_arguments() {
         fi
         case "$option" in
             --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
+            --candidate-tracking) export DIS_IND_CANDIDATE_TRACKING="$value" ;;
             --input-dir) export DIS_IND_INPUT_DIR="$value" ;;
             --output-file) export DIS_IND_OUTPUT_FILE="$value" ;;
             --batch-size) export DIS_IND_BATCH_SIZE="$value" ;;

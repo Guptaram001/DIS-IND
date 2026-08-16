@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import disIND.valueBased.model.SharedModel.DataOrientation;
+import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 
 public final class UserConfig {
     private UserConfig() {}
@@ -12,6 +13,7 @@ public final class UserConfig {
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
     public static final int DEFAULT_BATCH_SIZE = 25000;
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
+    public static final int MAX_VALUE_OWNER_WITNESSES = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
     public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 200;
@@ -26,6 +28,7 @@ public final class UserConfig {
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 200_000;
     public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 200_000;
     public static final DataOrientation DEFAULT_DATA_ORIENTATION =DataOrientation.VALUE_MAJOR;
+    public static final CandidateTrackingMode DEFAULT_CANDIDATE_TRACKING =CandidateTrackingMode.COUNT;
     public static final String DEFAULT_VALUE_ID_DISK_DIR =System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
     public static final String DEFAULT_VALUE_TO_ROWS_DISK_DIR =
             System.getProperty("java.io.tmpdir") + "/dis-ind-value-to-rows";
@@ -51,6 +54,7 @@ public final class UserConfig {
     public static String VALUE_TO_ROWS_DISK_DIR = DEFAULT_VALUE_TO_ROWS_DISK_DIR;
     public static String VALUE_OWNER_DISK_DIR = DEFAULT_VALUE_OWNER_DISK_DIR;
     public static DataOrientation DATA_ORIENTATION =DEFAULT_DATA_ORIENTATION;
+    public static CandidateTrackingMode CANDIDATE_TRACKING = DEFAULT_CANDIDATE_TRACKING;
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
     static {
@@ -73,6 +77,7 @@ public final class UserConfig {
         CLI_PROPERTIES.put("value-owner-hot-entries", "dis.ind.value-owner-hot-entries");
         CLI_PROPERTIES.put("value-owner-disk-dir", "dis.ind.value-owner-disk-dir");
         CLI_PROPERTIES.put("data-orientation","dis.ind.data-orientation");
+        CLI_PROPERTIES.put("candidate-tracking","dis.ind.candidate-tracking");
     }
 
     /**
@@ -118,6 +123,17 @@ public final class UserConfig {
                 "dis.ind.value-owner-disk-dir", DEFAULT_VALUE_OWNER_DISK_DIR);
         DATA_ORIENTATION = orientationSetting("DIS_IND_DATA_ORIENTATION",
                             "dis.ind.data-orientation",DEFAULT_DATA_ORIENTATION);
+        CANDIDATE_TRACKING = candidateTrackingSetting("DIS_IND_CANDIDATE_TRACKING",
+                                            "dis.ind.candidate-tracking",DEFAULT_CANDIDATE_TRACKING);
+        if (CANDIDATE_TRACKING == CandidateTrackingMode.WITNESS
+                && MAX_TRACKED_VIOLATIONS > MAX_VALUE_OWNER_WITNESSES) {
+            throw new IllegalArgumentException(
+                    "dis.ind.max-tracked-violations / "
+                            + "DIS_IND_MAX_TRACKED_VIOLATIONS must be at most "
+                            + MAX_VALUE_OWNER_WITNESSES
+                            + " when witness candidate tracking is selected: "
+                            + MAX_TRACKED_VIOLATIONS);
+        }
     }
 
     private static void applyCommandLine(String[] args) {
@@ -212,16 +228,30 @@ public final class UserConfig {
     private static DataOrientation orientationSetting(String environmentName,String propertyName,
         DataOrientation fallback) {
 
-    String value = stringSetting(environmentName,propertyName,null);
+        String value = stringSetting(environmentName,propertyName,null);
 
-    if (value == null)
-        return fallback;
+        if (value == null)
+            return fallback;
 
-    return switch (value.trim().toLowerCase()) {
-        case "value", "value-major" ->DataOrientation.VALUE_MAJOR;
-        case "column", "column-major" ->DataOrientation.COLUMN_MAJOR;
-        default -> throw new IllegalArgumentException(settingName(environmentName, propertyName)+ 
-            " must be value or column: " + value);
-    };
-}
+        return switch (value.trim().toLowerCase()) {
+            case "value", "value-major" ->DataOrientation.VALUE_MAJOR;
+            case "column", "column-major" ->DataOrientation.COLUMN_MAJOR;
+            default -> throw new IllegalArgumentException(settingName(environmentName, propertyName)+
+                " must be value or column: " + value);
+        };
+    }
+    private static CandidateTrackingMode candidateTrackingSetting(String environmentName,String propertyName,
+            CandidateTrackingMode fallback) {
+
+        String value = stringSetting(environmentName,propertyName,null);
+        if (value == null)
+            return fallback;
+
+        return switch (value.trim().toLowerCase()) {
+            case "count", "counter" ->CandidateTrackingMode.COUNT;
+            case "witness", "witnesses" ->CandidateTrackingMode.WITNESS;
+            default -> throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName)+ " must be count or witness: "+ value);
+        };
+    }
 }

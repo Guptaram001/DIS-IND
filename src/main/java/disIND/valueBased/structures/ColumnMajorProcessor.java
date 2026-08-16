@@ -11,15 +11,20 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-public final class ColumnMajorProcessor
-        implements BatchProcessor {
+public final class ColumnMajorProcessor implements BatchProcessor {
+    /* 
+    column → value → row IDs to
+    valueId → columnId → occurrence count
+    Ignores the rowIds here, might be used changed lateer to nary.
+    */
 
     @Override
-    public Map<Integer, Map<Integer, Long>> process(int bucketId,BatchBody body,WorkerValueIdStore valueIds) {
-        if (!(body instanceof ColumnMajorBatch batch)) {
-            throw new IllegalArgumentException("ColumnMajorProcessor expected ColumnMajorBatch, received ");
+    public Map<Integer, Map<Integer, Integer>> process(int bucketId,BatchBody body,WorkerValueIdStore valueIds) {
+        if (!(body instanceof ColumnMajorBatch)) {
+            throw new IllegalArgumentException("ColumnMajorProcessor expected ColumnMajorBatch ");
         }
 
+        ColumnMajorBatch batch = (ColumnMajorBatch) body;
         Set<String> distinctValues = new LinkedHashSet<>();
 
         for (ColumnValues column : batch.columns()) 
@@ -27,7 +32,7 @@ public final class ColumnMajorProcessor
                 distinctValues.add(valueRows.value());
 
         Map<String, Integer> idsByValue =valueIds.resolveBatch(bucketId,distinctValues);
-        Map<Integer, Map<Integer, Long>> updatesByValue = new LinkedHashMap<>();
+        Map<Integer, Map<Integer, Integer>> updatesByValue = new LinkedHashMap<>();
 
         for (ColumnValues column : batch.columns()) {
             for (ValueRows valueRows : column.values()) {
@@ -37,7 +42,7 @@ public final class ColumnMajorProcessor
                 
 
                 updatesByValue.computeIfAbsent(valueId,ignored -> new LinkedHashMap<>())
-                        .merge(column.colId(),(long) valueRows.rowIds().length,Math::addExact);
+                        .merge(column.colId(),valueRows.rowIds().length,Math::addExact);
             }
         }
 

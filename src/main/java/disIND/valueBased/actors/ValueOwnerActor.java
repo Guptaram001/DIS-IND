@@ -28,11 +28,16 @@ import akka.cluster.typed.Cluster;
 import disIND.valueBased.model.AkkaSerializable;
 import disIND.valueBased.model.SharedModel.CMCommand;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
+import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.structures.ColumnMajorProcessor;
+import disIND.valueBased.structures.CountCandidateTracker;
 import disIND.valueBased.structures.ValueMajorProcessor;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.WitnessCandidateTracker;
+import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
+import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.WorkerValueIdStore;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
@@ -56,9 +61,10 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     public sealed interface BatchBody extends AkkaSerializable permits ValueMajorBatch, ColumnMajorBatch {}
     public record ColumnMajorBatch(List<ColumnValues> columns) implements BatchBody {
          public ColumnMajorBatch {
-        columns = List.copyOf(columns);
+            columns = List.copyOf(columns);
+        }
     }
-    }
+
     public static final EntityTypeKey<Command> TYPE_KEY =EntityTypeKey.create(Command.class,"ValueOwnerActor");
 
     public record ValueRows(String value, long[] rowIds) implements AkkaSerializable {
@@ -90,7 +96,21 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
     public interface BatchProcessor {
-        Map<Integer, Map<Integer, Long>> process(int bucketId,BatchBody batch,WorkerValueIdStore valueIds);
+        Map<Integer, Map<Integer, Integer>> process(int bucketId,BatchBody batch,WorkerValueIdStore valueIds);
+    }
+
+    public record TrackingResult(Map<CandidateKey, CandidateState> changedStates,Map<Integer, List<CandidateLocalStatus>>
+                transitionsByLhs) {}
+
+    public interface CandidateChanges {
+        void violationCreated(int lhsCol,int rhsCol,int valueId);
+        void violationRepaired(int lhsCol,int rhsCol,int valueId);
+    }
+
+    public interface CandidateTracker {
+        CandidateChanges newChanges(int bucketId);
+        TrackingResult apply(CandidateChanges changes,Map<Integer, Map<Integer, Integer>> updatedMembership,
+                ValueOwnerMembershipStore store);
     }
 
     public record GetBucket(ActorRef<BucketSnapshot> replyTo) implements Command {}
@@ -107,24 +127,27 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final int recentBatchLimit;
     private final Map<String, Boolean> resolvedBatches;
     private final Set<Long> locallyRejectedCandidates = new HashSet<>();
-    private final Map<Long, Long> localViolationCounts = new HashMap<>();
+    private final int[] localDistinctCounts;
     private final long[] exactComparisonsByLhs;
     private final long[] candidateEvaluationsByLhs;
     private final DataOrientation orientation;
     private final BatchProcessor batchProcessor;
+    private final CandidateTracker candidateTracker;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
     }
 
     public static Behavior<Command> create(String entityId,ClusterSharding sharding,DatasetMetadata metadata,
-        ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore,DataOrientation orientation) {
-        return Behaviors.setup(ctx ->new ValueOwnerActor(ctx, entityId, sharding, metadata, membershipStore, valueIdStore,orientation));
+        ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore,DataOrientation orientation,
+    CandidateTrackingMode candidateTracking) {
+        return Behaviors.setup(ctx ->new ValueOwnerActor(ctx, entityId, sharding, metadata, membershipStore,
+            valueIdStore,orientation,candidateTracking));
     }
 
     private ValueOwnerActor(ActorContext<Command> ctx,String entityId,ClusterSharding sharding,
             DatasetMetadata metadata,ValueOwnerMembershipStore membershipStore,
-            WorkerValueIdStore valueIdStore,DataOrientation orientation) {
+            WorkerValueIdStore valueIdStore,DataOrientation orientation,CandidateTrackingMode candidateTracking) {
         super(ctx);
         this.entityId = entityId;
         this.bucketId = Integer.parseInt(entityId.substring("value-bucket-".length()));
@@ -132,11 +155,16 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.metadata = metadata;
         this.membershipStore = membershipStore;
         this.valueIdStore = valueIdStore;
+        this.localDistinctCounts =new int[metadata.totalCols()];
         this.exactComparisonsByLhs = new long[metadata.totalCols()];
         this.candidateEvaluationsByLhs = new long[metadata.totalCols()];
         this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
         this.orientation=orientation;
         this.batchProcessor=newProcessor(orientation);
+        this.candidateTracker = switch (candidateTracking) {
+            case COUNT -> new CountCandidateTracker();
+            case WITNESS -> new WitnessCandidateTracker(UserConfig.MAX_TRACKED_VIOLATIONS);
+        };
         this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
@@ -199,7 +227,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             return this;
         }
 
-        Map<Integer, Map<Integer, Long>> updatesByValue =batchProcessor.process(bucketId,msg.body(),
+        Map<Integer, Map<Integer, Integer>> updatesByValue =batchProcessor.process(bucketId,msg.body(),
                     valueIdStore);
         applyUpdates(msg, updatesByValue);
         resolvedBatches.put(batchKey, Boolean.TRUE);
@@ -207,26 +235,53 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         return this;
     }
 
-    private void applyUpdates(StoreBatch message,Map<Integer, Map<Integer, Long>> updatesByValue) {
-        Map<Integer, Map<Integer, Long>> records = membershipStore.loadBatch(bucketId,updatesByValue.keySet());
-        Map<Integer, ColumnSet> addedColumnsByValue =new HashMap<>();
+    private void applyUpdates(StoreBatch message, Map<Integer, Map<Integer, Integer>> updatesByValue) {
+        Map<Integer, Map<Integer, Integer>> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
+        Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
 
-        updatesByValue.forEach((valueId, columnUpdates) -> { 
-            Map<Integer, Long> record =records.get(valueId);
-            ColumnSet addedColumns =newColumnSet();
+        updatesByValue.forEach((valueId, columnUpdates) -> {
+            Map<Integer, Integer> record = records.get(valueId);
+            ColumnSet addedColumns = newColumnSet();
             columnUpdates.forEach((columnId, count) -> {
-                long previousCount =record.getOrDefault(columnId, 0L);
-                Long previous = record.put(columnId,Math.addExact(previousCount, count));
-                if (previous == null) 
+                int previousCount = record.getOrDefault(columnId, 0);
+                Integer previous = record.put(columnId, Math.addExact(previousCount, count));
+                if (previous == null) {
+                    localDistinctCounts[columnId] =Math.addExact(localDistinctCounts[columnId], 1);
                     addedColumns.add(columnId);
+                }
             });
-            if (!addedColumns.isEmpty()) 
-                addedColumnsByValue.put(valueId,addedColumns);
+            if (!addedColumns.isEmpty())
+                addedColumnsByValue.put(valueId, addedColumns);
         });
 
-        Map<Integer, Map<Integer, Integer>>countDeltasByLhs =calculateMembershipUpdates(addedColumnsByValue,records);
-        membershipStore.writeBatch(bucketId,records);
-        emitCandidateStatusTransitions(message,countDeltasByLhs);
+        CandidateChanges candidateChanges = candidateTracker.newChanges(bucketId);
+        calculateMembershipUpdates(addedColumnsByValue, records, candidateChanges);
+        TrackingResult trackingResult = candidateTracker.apply(candidateChanges, records, membershipStore);
+
+        // Membership and candidate state become visible atomically.
+        membershipStore.writeBatch(
+                bucketId, records, trackingResult.changedStates());
+        sendCandidateStatusTransitions(
+                message,
+                trackingResult.transitionsByLhs(),
+                trackingResult.changedStates().size());
+    }
+
+    private void sendCandidateStatusTransitions(StoreBatch batch,Map<Integer, List<CandidateLocalStatus>> transitionsByLhs,
+            int affectedCandidateCount) {
+
+        transitionsByLhs.forEach((lhsCol, transitions) -> {
+            if (transitions.isEmpty())
+                return;
+            sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY,CMCommand.entityId(lhsCol))
+                    .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(batch.epoch(),batch.round(),bucketId,transitions));
+        });
+
+        if (Debug.INTERNAL) {
+            int transitionCount = transitionsByLhs.values().stream().mapToInt(List::size).sum();
+            getContext().getLog().info( "[VO] round={} bucket={} epoch={} affectedCandidates={} transitions={} affectedCms={}",
+                    batch.round(),bucketId,batch.epoch(),affectedCandidateCount,transitionCount,transitionsByLhs.size());
+        }
     }
 
     private void acknowledge(StoreBatch message) {
@@ -252,39 +307,44 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         return this;
     }
 
-    private Map<Integer, Map<Integer, Integer>> calculateMembershipUpdates(Map<Integer, ColumnSet> addedColumnsByValue,
-            Map<Integer, Map<Integer, Long>> records) {
-            Map<Integer, Map<Integer, Integer>> countDeltasByLhs = new HashMap<>();
-            Set<Long> evaluatedCandidates = new HashSet<>();
-            addedColumnsByValue.forEach((valueId, addedColumns) -> {
+    private void calculateMembershipUpdates(Map<Integer, ColumnSet> addedColumnsByValue,Map<Integer, Map<Integer, Integer>> records,
+        CandidateChanges changes) {
+
+        Set<Long> evaluatedCandidates = new HashSet<>();
+        addedColumnsByValue.forEach((valueId, addedColumns) -> {
             ColumnSet after = newColumnSet();
             records.get(valueId).keySet().forEach(after::add);
             ColumnSet before = after.copy();
             before.andNot(addedColumns);
 
             addedColumns.forEach(lhsCol -> {
-                for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
-                    if (rhsCol != lhsCol
-                            && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))) {
-                        exactComparisonsByLhs[lhsCol] =
-                                Math.addExact(exactComparisonsByLhs[lhsCol], 1);
-                        countCandidateEvaluation(evaluatedCandidates, lhsCol, rhsCol);
-                        if (!after.contains(rhsCol))
-                            mergeCountDelta(countDeltasByLhs, lhsCol, rhsCol, 1);
+                for (int rhsCol = 0;rhsCol < metadata.totalCols();rhsCol++) {
+                    if (!compatible(lhsCol, rhsCol))
+                        continue;
+                    countComparison(evaluatedCandidates, lhsCol, rhsCol);
+                    if (!after.contains(rhsCol)) {
+                        changes.violationCreated(lhsCol,rhsCol,valueId);
                     }
                 }
             });
 
-            addedColumns.forEach(rhsCol -> before.forEach(lhsCol -> {
-                        if (lhsCol != rhsCol && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))) {
-                            exactComparisonsByLhs[lhsCol] =
-                                    Math.addExact(exactComparisonsByLhs[lhsCol], 1);
-                            countCandidateEvaluation(evaluatedCandidates, lhsCol, rhsCol);
-                            mergeCountDelta(countDeltasByLhs, lhsCol, rhsCol, -1);
+            addedColumns.forEach(rhsCol ->
+                    before.forEach(lhsCol -> {
+                        if (compatible(lhsCol, rhsCol)) {
+                            countComparison(evaluatedCandidates, lhsCol, rhsCol);
+                            changes.violationRepaired(lhsCol,rhsCol,valueId);
                         }
                     }));
         });
-        return countDeltasByLhs;
+    }
+
+    private boolean compatible(int lhsCol, int rhsCol) {
+        return lhsCol != rhsCol && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol));
+    }
+
+    private void countComparison(Set<Long> evaluatedCandidates, int lhsCol, int rhsCol) {
+        exactComparisonsByLhs[lhsCol] =Math.addExact(exactComparisonsByLhs[lhsCol], 1L);
+        countCandidateEvaluation(evaluatedCandidates, lhsCol, rhsCol);
     }
 
     private void countCandidateEvaluation(Set<Long> evaluatedCandidates, int lhsCol, int rhsCol) {
@@ -295,51 +355,10 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
 
-    private void emitCandidateStatusTransitions(StoreBatch batch,Map<Integer, Map<Integer, Integer>> countDeltasByLhs) {
-        Map<Integer, List<CandidateLocalStatus>> transitionsByLhs = new HashMap<>();
-        countDeltasByLhs.forEach((lhsCol, rhsDeltas) -> {
-            rhsDeltas.forEach((rhsCol, countDelta) -> {
-                if (countDelta == 0)
-                    return;
-                long candidateKey = candidateKey(lhsCol, rhsCol);
-                long beforeCount = localViolationCounts.getOrDefault(candidateKey, 0L);
-                long afterCount = nextViolationCount(beforeCount, countDelta);
-
-                boolean wasRejected = locallyRejectedCandidates.contains(candidateKey);
-                boolean isRejected = afterCount > 0;
-                if (isRejected) {
-                    localViolationCounts.put(candidateKey, afterCount);
-                    locallyRejectedCandidates.add(candidateKey);
-                } else {
-                    localViolationCounts.remove(candidateKey);
-                    locallyRejectedCandidates.remove(candidateKey);
-                }
-
-                if (wasRejected != isRejected)
-                    transitionsByLhs
-                            .computeIfAbsent(lhsCol, ignored -> new java.util.ArrayList<>())
-                            .add(new CandidateLocalStatus(rhsCol, !isRejected));
-            });
-        });
-
-        transitionsByLhs.forEach((lhsCol, transitions) -> {
-            if (!transitions.isEmpty())
-                sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsCol))
-                        .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(
-                                batch.epoch(), batch.round(), bucketId, transitions));
-        });
-        if(Debug.INTERNAL)
-            getContext().getLog().info(
-                    "[VO] round={} bucket={} epoch={} locallyRejected={} affectedCms={}",
-                    batch.round(), bucketId, batch.epoch(),
-                    locallyRejectedCandidates.size(), countDeltasByLhs.size());
-    }
-
     private void rebuildLocallyRejectedCandidates() {
         locallyRejectedCandidates.clear();
-        localViolationCounts.clear();
-        Map<Integer, Map<Integer, Long>> snapshot =membershipStore.snapshotBucket(bucketId);
-        for (Map<Integer, Long> membership : snapshot.values()) {
+        Map<Integer, Map<Integer, Integer>> snapshot =membershipStore.snapshotBucket(bucketId);
+        for (Map<Integer, Integer> membership : snapshot.values()) {
             for (int lhsCol : membership.keySet()) {
                 for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
                     if (lhsCol != rhsCol
@@ -347,7 +366,6 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                             && !membership.containsKey(rhsCol)) {
                         long candidate = candidateKey(lhsCol, rhsCol);
                         locallyRejectedCandidates.add(candidate);
-                        localViolationCounts.merge(candidate, 1L, Math::addExact);
                     }
                 }
             }
@@ -356,14 +374,6 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     private static long candidateKey(int lhsCol, int rhsCol) {
         return ((long) lhsCol << Integer.SIZE) | (rhsCol & 0xffffffffL);
-    }
-
-    static long nextViolationCount(long currentCount, int delta) {
-        long nextCount = Math.addExact(currentCount, delta);
-        if (nextCount < 0)
-            throw new IllegalStateException("Missing-value count cannot become negative: current="+ currentCount +
-         " delta=" + delta);
-        return nextCount;
     }
 
     private ColumnSet newColumnSet() {
@@ -529,8 +539,4 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
 
-    private static void mergeCountDelta(Map<Integer, Map<Integer, Integer>> byLhs,int lhsCol,int rhsCol,int delta) {
-        byLhs.computeIfAbsent(lhsCol, ignored -> new HashMap<>())
-                .merge(rhsCol, delta, Integer::sum);
-    }
 }
