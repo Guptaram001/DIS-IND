@@ -5,6 +5,8 @@ import disIND.valueBased.actors.ValueOwnerActor.BatchProcessor;
 import disIND.valueBased.actors.ValueOwnerActor.ColumnMajorBatch;
 import disIND.valueBased.actors.ValueOwnerActor.ColumnValues;
 import disIND.valueBased.actors.ValueOwnerActor.ValueRows;
+import disIND.valueBased.model.SharedModel.MembershipUpdates;
+import disIND.valueBased.model.SharedModel.ValueUpdates;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -16,10 +18,11 @@ public final class ColumnMajorProcessor implements BatchProcessor {
     column → value → row IDs to
     valueId → columnId → occurrence count
     Ignores the rowIds here, might be used changed lateer to nary.
+    Does not show significant improvement when used column based storage.
     */
 
     @Override
-    public Map<Integer, Map<Integer, Integer>> process(int bucketId,BatchBody body,WorkerValueIdStore valueIds) {
+    public MembershipUpdates process(int bucketId,BatchBody body,WorkerValueIdStore valueIds) {
         if (!(body instanceof ColumnMajorBatch)) {
             throw new IllegalArgumentException("ColumnMajorProcessor expected ColumnMajorBatch ");
         }
@@ -46,6 +49,6 @@ public final class ColumnMajorProcessor implements BatchProcessor {
             }
         }
 
-        return updatesByValue;
+        return new ValueUpdates (updatesByValue);
     }
 }

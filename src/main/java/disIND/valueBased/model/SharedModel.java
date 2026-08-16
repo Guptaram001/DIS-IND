@@ -3,6 +3,7 @@ package disIND.valueBased.model;
 import akka.actor.typed.ActorRef;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.valueBased.model.AkkaSerializable;
+import disIND.valueBased.model.SharedModel.MembershipUpdates;
 import disIND.valueBased.structures.BitmapStore;
 import org.roaringbitmap.RoaringBitmap;
 
@@ -21,6 +22,13 @@ public final class SharedModel {
     public enum PairState {ACTIVE, INACTIVE}
     public enum DataOrientation implements AkkaSerializable {VALUE_MAJOR,COLUMN_MAJOR}
     public enum CandidateTrackingMode implements AkkaSerializable {COUNT,WITNESS}
+    public sealed interface MembershipUpdates permits ValueUpdates, ColumnUpdates {}  
+    
+    // valueId -> columnId ->count
+    public record ValueUpdates(Map<Integer, Map<Integer, Integer>> byValue)implements MembershipUpdates {}
+
+    // columnId -> valueId -> count
+    public record ColumnUpdates(Map<Integer, Map<Integer, Integer>> byValue)implements MembershipUpdates {}
 
     public record UnaryPair(int lhsCol, int rhsCol) implements AkkaSerializable {}
     public record NaryPair(List<Integer> lhsCols, List<Integer> rhsCols) implements AkkaSerializable {

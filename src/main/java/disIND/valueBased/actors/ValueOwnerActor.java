@@ -29,8 +29,11 @@ import disIND.valueBased.model.AkkaSerializable;
 import disIND.valueBased.model.SharedModel.CMCommand;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
+import disIND.valueBased.model.SharedModel.ColumnUpdates;
 import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
+import disIND.valueBased.model.SharedModel.MembershipUpdates;
+import disIND.valueBased.model.SharedModel.ValueUpdates;
 import disIND.valueBased.structures.ColumnMajorProcessor;
 import disIND.valueBased.structures.CountCandidateTracker;
 import disIND.valueBased.structures.ValueMajorProcessor;
@@ -96,7 +99,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
     }
     public interface BatchProcessor {
-        Map<Integer, Map<Integer, Integer>> process(int bucketId,BatchBody batch,WorkerValueIdStore valueIds);
+        MembershipUpdates process(int bucketId,BatchBody batch,WorkerValueIdStore valueIds);
     }
 
     public record TrackingResult(Map<CandidateKey, CandidateState> changedStates,Map<Integer, List<CandidateLocalStatus>>
@@ -227,15 +230,30 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             return this;
         }
 
-        Map<Integer, Map<Integer, Integer>> updatesByValue =batchProcessor.process(bucketId,msg.body(),
-                    valueIdStore);
+        MembershipUpdates updatesByValue =batchProcessor.process(bucketId,msg.body(),valueIdStore);
         applyUpdates(msg, updatesByValue);
         resolvedBatches.put(batchKey, Boolean.TRUE);
         acknowledge(msg);
         return this;
     }
 
-    private void applyUpdates(StoreBatch message, Map<Integer, Map<Integer, Integer>> updatesByValue) {
+    private void applyUpdates(StoreBatch message,  MembershipUpdates updates) {
+
+        if (updates instanceof ValueUpdates valueUpdates) {
+            applyValueUpdates(message, valueUpdates.byValue());
+            return;
+        }
+
+        if (updates instanceof ColumnUpdates columnUpdates) {
+            //Internally uses the same Value based storage
+            applyValueUpdates(message, columnUpdates.byValue());
+            return;
+        }
+
+        throw new IllegalArgumentException("Unsupported membership update type: "+ updates.getClass().getName());
+    }
+
+    private void applyValueUpdates(StoreBatch message, Map<Integer, Map<Integer, Integer>> updatesByValue) {
         Map<Integer, Map<Integer, Integer>> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
         Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
 
@@ -259,12 +277,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         TrackingResult trackingResult = candidateTracker.apply(candidateChanges, records, membershipStore);
 
         // Membership and candidate state become visible atomically.
-        membershipStore.writeBatch(
-                bucketId, records, trackingResult.changedStates());
-        sendCandidateStatusTransitions(
-                message,
-                trackingResult.transitionsByLhs(),
-                trackingResult.changedStates().size());
+        membershipStore.writeBatch(bucketId, records, trackingResult.changedStates());
+        sendCandidateStatusTransitions(message,trackingResult.transitionsByLhs(),trackingResult.changedStates().size());
     }
 
     private void sendCandidateStatusTransitions(StoreBatch batch,Map<Integer, List<CandidateLocalStatus>> transitionsByLhs,

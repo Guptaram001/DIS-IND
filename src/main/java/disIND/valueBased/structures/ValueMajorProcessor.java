@@ -5,6 +5,8 @@ import disIND.valueBased.actors.ValueOwnerActor.BatchProcessor;
 import disIND.valueBased.actors.ValueOwnerActor.ColumnRows;
 import disIND.valueBased.actors.ValueOwnerActor.ValueData;
 import disIND.valueBased.actors.ValueOwnerActor.ValueMajorBatch;
+import disIND.valueBased.model.SharedModel.MembershipUpdates;
+import disIND.valueBased.model.SharedModel.ValueUpdates;
 
 import java.util.Map;
 import java.util.List;
@@ -18,7 +20,7 @@ public class ValueMajorProcessor implements BatchProcessor{
     */
 
     @Override
-    public Map<Integer, Map<Integer, Integer>> process(int bucketId, BatchBody body, WorkerValueIdStore valueIds) {
+    public MembershipUpdates process(int bucketId, BatchBody body, WorkerValueIdStore valueIds) {
          if (!(body instanceof ValueMajorBatch))
             throw new IllegalArgumentException("ValueMajorProcessor expected ValueMajorBatch, received ");
 
@@ -45,7 +47,7 @@ public class ValueMajorProcessor implements BatchProcessor{
             }
         }
 
-        return updatesByValue;
+        return new ValueUpdates (updatesByValue);
     }
     
 }
