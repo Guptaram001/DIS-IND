@@ -9,9 +9,9 @@ import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 public final class UserConfig {
     private UserConfig() {}
 
-    public static final String DEFAULT_INPUT_DIR = "data/tpch-1";
+    public static final String DEFAULT_INPUT_DIR = "data/synthetic";
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
-    public static final int DEFAULT_BATCH_SIZE = 25000;
+    public static final int DEFAULT_BATCH_SIZE = 2;
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
     public static final int MAX_VALUE_OWNER_WITNESSES = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
@@ -125,15 +125,13 @@ public final class UserConfig {
                             "dis.ind.data-orientation",DEFAULT_DATA_ORIENTATION);
         CANDIDATE_TRACKING = candidateTrackingSetting("DIS_IND_CANDIDATE_TRACKING",
                                             "dis.ind.candidate-tracking",DEFAULT_CANDIDATE_TRACKING);
-        if (CANDIDATE_TRACKING == CandidateTrackingMode.WITNESS
-                && MAX_TRACKED_VIOLATIONS > MAX_VALUE_OWNER_WITNESSES) {
-            throw new IllegalArgumentException(
-                    "dis.ind.max-tracked-violations / "
-                            + "DIS_IND_MAX_TRACKED_VIOLATIONS must be at most "
-                            + MAX_VALUE_OWNER_WITNESSES
-                            + " when witness candidate tracking is selected: "
-                            + MAX_TRACKED_VIOLATIONS);
-        }
+        // if (CANDIDATE_TRACKING == CandidateTrackingMode.WITNESS && MAX_TRACKED_VIOLATIONS > MAX_VALUE_OWNER_WITNESSES) {
+        //     throw new IllegalArgumentException("dis.ind.max-tracked-violations / "
+        //                     + "DIS_IND_MAX_TRACKED_VIOLATIONS must be at most "
+        //                     + MAX_VALUE_OWNER_WITNESSES
+        //                     + " when witness candidate tracking is selected: "
+        //                     + MAX_TRACKED_VIOLATIONS);
+        //}
     }
 
     private static void applyCommandLine(String[] args) {
@@ -250,6 +248,7 @@ public final class UserConfig {
         return switch (value.trim().toLowerCase()) {
             case "count", "counter" ->CandidateTrackingMode.COUNT;
             case "witness", "witnesses" ->CandidateTrackingMode.WITNESS;
+            case "prune", "pruner" ->CandidateTrackingMode.PRUNE;
             default -> throw new IllegalArgumentException(
                     settingName(environmentName, propertyName)+ " must be count or witness: "+ value);
         };

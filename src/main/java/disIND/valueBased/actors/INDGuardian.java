@@ -55,7 +55,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         String nodeId = Cluster.get(ctx.getSystem()).selfMember().address().toString().replaceAll("[^A-Za-z0-9._-]", "_");
         
         this.valueOwnerMembershipStore = new ValueOwnerMembershipStore(Path.of(UserConfig.VALUE_OWNER_DISK_DIR, nodeId),
-                UserConfig.VALUE_OWNER_HOT_ENTRIES);
+                UserConfig.VALUE_OWNER_HOT_ENTRIES,cfg.candidateTracking);
         
         WorkerValueIdStore workerValueIdStore = new WorkerValueIdStore(Path.of(UserConfig.VALUE_ID_DISK_DIR, nodeId),
                 UserConfig.VALUE_ID_HOT_ENTRIES, UserConfig.VALUE_OWNER_BUCKETS);

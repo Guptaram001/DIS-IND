@@ -21,7 +21,7 @@ public final class SharedModel {
     public enum ColType implements AkkaSerializable {INTEGER, DECIMAL, DATE, BOOLEAN, STRING, KEY,UNKNOWN}
     public enum PairState {ACTIVE, INACTIVE}
     public enum DataOrientation implements AkkaSerializable {VALUE_MAJOR,COLUMN_MAJOR}
-    public enum CandidateTrackingMode implements AkkaSerializable {COUNT,WITNESS}
+    public enum CandidateTrackingMode implements AkkaSerializable {COUNT,WITNESS,PRUNE}
     public sealed interface MembershipUpdates permits ValueUpdates, ColumnUpdates {}  
     
     // valueId -> columnId ->count

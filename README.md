@@ -162,8 +162,10 @@ streams the rows.
 | --- | --- | --- |
 | `DIS_IND_DATA_DIR` | Host input directory mounted into every node | `./data/tpch-10-corrected` |
 | `DIS_IND_BATCH_SIZE` | Rows sent in one ingestion batch | `15000` |
+| `DIS_IND_DIAGNOSTIC_EVENTS` | Log the complete DL → VO → CM event flow (very verbose) | `false` |
 | `DIS_IND_OUTPUT_DIR` | Host directory receiving the report | `./output` |
 | `WORKERS` | Number of worker replicas created by `run.sh` | `2` |
+| `AKKA_MIN_WORKERS` | Minimum worker-role members before the cluster becomes operational; set automatically by `run.sh` | `WORKERS` |
 | `JAVA_XMS` | Initial heap per container | `512m` |
 | `JAVA_XMX` | Maximum heap per worker | `2g` |
 | `COORDINATOR_JAVA_XMX` | Maximum coordinator heap | `2g` |

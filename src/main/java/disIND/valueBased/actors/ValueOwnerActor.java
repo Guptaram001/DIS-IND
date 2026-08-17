@@ -36,8 +36,10 @@ import disIND.valueBased.model.SharedModel.MembershipUpdates;
 import disIND.valueBased.model.SharedModel.ValueUpdates;
 import disIND.valueBased.structures.ColumnMajorProcessor;
 import disIND.valueBased.structures.CountCandidateTracker;
+import disIND.valueBased.structures.PruneCandidateTracker;
 import disIND.valueBased.structures.ValueMajorProcessor;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.ValueOwnerCqf;
 import disIND.valueBased.structures.WitnessCandidateTracker;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
@@ -136,6 +138,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final DataOrientation orientation;
     private final BatchProcessor batchProcessor;
     private final CandidateTracker candidateTracker;
+    private final CandidateTrackingMode candidateTracking;
+    private final ValueOwnerCqf pruneCqf;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
@@ -164,9 +168,15 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
         this.orientation=orientation;
         this.batchProcessor=newProcessor(orientation);
+        this.candidateTracking=Objects.requireNonNull(candidateTracking,"candidateTracking");
+        if (candidateTracking == CandidateTrackingMode.PRUNE) 
+            this.pruneCqf = new ValueOwnerCqf(bucketId,metadata.totalCols());
+        else 
+            this.pruneCqf = null;
         this.candidateTracker = switch (candidateTracking) {
             case COUNT -> new CountCandidateTracker();
             case WITNESS -> new WitnessCandidateTracker(UserConfig.MAX_TRACKED_VIOLATIONS);
+            case PRUNE -> new PruneCandidateTracker(pruneCqf,localDistinctCounts);
         };
         this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
             @Override
@@ -259,6 +269,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
         updatesByValue.forEach((valueId, columnUpdates) -> {
             Map<Integer, Integer> record = records.get(valueId);
+            if (record == null)
+                throw new IllegalStateException("No membership record loaded for value " + valueId);
             ColumnSet addedColumns = newColumnSet();
             columnUpdates.forEach((columnId, count) -> {
                 int previousCount = record.getOrDefault(columnId, 0);
@@ -266,6 +278,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                 if (previous == null) {
                     localDistinctCounts[columnId] =Math.addExact(localDistinctCounts[columnId], 1);
                     addedColumns.add(columnId);
+                    if (pruneCqf != null)
+                        pruneCqf.addMembership(columnId, valueId);
                 }
             });
             if (!addedColumns.isEmpty())
@@ -278,6 +292,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
         // Membership and candidate state become visible atomically.
         membershipStore.writeBatch(bucketId, records, trackingResult.changedStates());
+        updateLocallyRejectedCandidates(trackingResult.changedStates());
         sendCandidateStatusTransitions(message,trackingResult.transitionsByLhs(),trackingResult.changedStates().size());
     }
 
@@ -325,6 +340,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         CandidateChanges changes) {
 
         Set<Long> evaluatedCandidates = new HashSet<>();
+        Set<Long> newlyRejectedThisBatch =new HashSet<>();
+        boolean pruneMode =candidateTracking == CandidateTrackingMode.PRUNE;
         addedColumnsByValue.forEach((valueId, addedColumns) -> {
             ColumnSet after = newColumnSet();
             records.get(valueId).keySet().forEach(after::add);
@@ -335,9 +352,21 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                 for (int rhsCol = 0;rhsCol < metadata.totalCols();rhsCol++) {
                     if (!compatible(lhsCol, rhsCol))
                         continue;
+                    long compactKey =candidateKey(lhsCol, rhsCol);
+                    if (pruneMode) {
+                        // Invali, lhs: Skip
+                        if (locallyRejectedCandidates.contains(compactKey)) 
+                            continue;
+                
+                        if (newlyRejectedThisBatch.contains(compactKey)) 
+                            continue;
+                    }
                     countComparison(evaluatedCandidates, lhsCol, rhsCol);
                     if (!after.contains(rhsCol)) {
                         changes.violationCreated(lhsCol,rhsCol,valueId);
+                        if (pruneMode) {
+                            newlyRejectedThisBatch.add(compactKey);
+                        }
                     }
                 }
             });
@@ -345,6 +374,14 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             addedColumns.forEach(rhsCol ->
                     before.forEach(lhsCol -> {
                         if (compatible(lhsCol, rhsCol)) {
+                            long compactKey =candidateKey(lhsCol, rhsCol);
+                            if (pruneMode) {
+                                if (newlyRejectedThisBatch.contains(compactKey)) 
+                                    return;
+                                //Valid + RHS: Skip
+                                if (!locallyRejectedCandidates.contains(compactKey)) 
+                                    return;
+                            }
                             countComparison(evaluatedCandidates, lhsCol, rhsCol);
                             changes.violationRepaired(lhsCol,rhsCol,valueId);
                         }
@@ -367,6 +404,16 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             candidateEvaluationsByLhs[lhsCol] =
                     Math.addExact(candidateEvaluationsByLhs[lhsCol], 1);
         }
+    }
+
+    private void updateLocallyRejectedCandidates(Map<CandidateKey, CandidateState> changedStates) {
+        changedStates.forEach((key, state) -> {
+            long compactKey =candidateKey(key.lhsCol(),key.rhsCol());
+            if (state.rejected())
+                locallyRejectedCandidates.add(compactKey);
+            else
+                locallyRejectedCandidates.remove(compactKey);
+        });
     }
 
     private void rebuildLocallyRejectedCandidates() {

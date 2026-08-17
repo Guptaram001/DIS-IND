@@ -255,6 +255,7 @@ run_distributed_docker() {
     export DIS_IND_VALUE_TO_ROWS_DISK_DIR="${DIS_IND_VALUE_TO_ROWS_DISK_DIR:-/data/diagnostics/value-to-rows}"
     export DIS_IND_VALUE_OWNER_DISK_DIR="${DIS_IND_VALUE_OWNER_DISK_DIR:-/data/diagnostics/value-owners}"
     export DIS_IND_EXPECTED_CLUSTER_SIZE=$((WORKERS + 1))
+    export AKKA_MIN_WORKERS="$WORKERS"
     export WORKER_CPUS
     export COORDINATOR_CPUS
     if [[ -n "$DIS_IND_BATCH_SIZE" ]]; then
@@ -308,6 +309,7 @@ run_distributed_docker() {
         echo "worker_cpu_limit=$WORKER_CPUS"
         echo "coordinator_cpu_limit=$COORDINATOR_CPUS"
         echo "expected_cluster_size=$DIS_IND_EXPECTED_CLUSTER_SIZE"
+        echo "akka_min_workers=$AKKA_MIN_WORKERS"
         echo "sample_interval_seconds=$SAMPLE_INTERVAL"
         echo "java_xms_per_container=$JAVA_XMS"
         echo "coordinator_java_xmx=$COORDINATOR_JAVA_XMX"
