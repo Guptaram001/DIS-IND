@@ -2,7 +2,6 @@ package disIND.valueBased.structures;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -21,20 +20,21 @@ import disIND.valueBased.structures.ValueOwnerMembershipStore.PruneState;
 
 public final class PruneCandidateTracker implements CandidateTracker {
     private final ValueOwnerCqf cqf;
+    private final ValueOwnerClusterIndex clusters;
     private final int[] localDistinctCounts;
 
-    public PruneCandidateTracker(ValueOwnerCqf cqf,int[] localDistinctCounts) {
-        this.cqf = Objects.requireNonNull(cqf, "cqf");
-        this.localDistinctCounts = Objects.requireNonNull(localDistinctCounts,"localDistinctCounts");
+    public PruneCandidateTracker(ValueOwnerCqf cqf, ValueOwnerClusterIndex clusters,
+            int[] localDistinctCounts) {
+        this.cqf = cqf;
+        this.clusters = Objects.requireNonNull(clusters, "clusters");
+        this.localDistinctCounts = Objects.requireNonNull(localDistinctCounts, "localDistinctCounts");
     }
 
     private static final class PruneDelta {
+        private boolean violationCreated;
 
-        private int createdWitness =PruneState.NO_WITNESS;
-        private final Set<Integer> repairedValues =new HashSet<>();
-
-        private boolean hasCreatedWitness() {
-            return createdWitness != PruneState.NO_WITNESS;
+        private boolean hasCreatedViolation() {
+            return violationCreated;
         }
     }
 
@@ -48,16 +48,12 @@ public final class PruneCandidateTracker implements CandidateTracker {
 
         @Override
         public void violationCreated(int lhsCol,int rhsCol,int valueId) {
-            PruneDelta delta =delta(lhsCol, rhsCol);
-
-            if (!delta.hasCreatedWitness()) {
-                delta.createdWitness = valueId;
-            }
+            delta(lhsCol, rhsCol).violationCreated = true;
         }
 
         @Override
         public void violationRepaired(int lhsCol,int rhsCol,int valueId) {
-            delta(lhsCol, rhsCol).repairedValues.add(valueId);
+            delta(lhsCol, rhsCol);
         }
 
         private PruneDelta delta(int lhsCol,int rhsCol) {
@@ -74,6 +70,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
     @Override
     public TrackingResult apply(CandidateChanges changes,Map<Integer, Map<Integer, Integer>>
                     updatedMembership,ValueOwnerMembershipStore store) {
+        Objects.requireNonNull(updatedMembership, "updatedMembership");
+        Objects.requireNonNull(store, "store");
 
         if (!(changes instanceof PruneChanges pruneChanges)) 
             throw new IllegalArgumentException("Prune tracker received incompatible changes");
@@ -82,55 +80,44 @@ public final class PruneCandidateTracker implements CandidateTracker {
         if (keys.isEmpty()) 
             return new TrackingResult(Map.of(),Map.of());
         
-
         Map<CandidateKey, CandidateState> previousStates =store.loadCandidates(keys,CandidateTrackingMode.PRUNE);
         Map<CandidateKey, PruneState> nextStates =new HashMap<>();
 
         Set<CandidateKey> unresolved =new LinkedHashSet<>();
-        Set<CandidateKey> cardinalityPruned =new LinkedHashSet<>();
-
-        pruneChanges.deltas.forEach((key, delta) -> {
+        for (Map.Entry<CandidateKey, PruneDelta> entry : pruneChanges.deltas.entrySet()) {
+            CandidateKey key = entry.getKey();
+            PruneDelta delta = entry.getValue();
             PruneState before = (PruneState) previousStates.get(key);
 
-            if (delta.hasCreatedWitness()) {
-                nextStates.put(key,PruneState.rejected(delta.createdWitness));
-                return;
+            if (delta.hasCreatedViolation()) {
+                nextStates.put(key, PruneState.rejectedByCluster());
+                continue;
             }
 
             if (!before.rejected()) {
                 nextStates.put(key, before);
-                return;
-            }
-
-            if (before.hasWitness()&& !delta.repairedValues.contains(before.witnessValueId())) {
-                nextStates.put(key, before);
-                return;
+                continue;
             }
 
             int lhsDistinct = distinctCount(key.lhsCol());
             int rhsDistinct = distinctCount(key.rhsCol());
             if (lhsDistinct > rhsDistinct) {
                 nextStates.put(key,PruneState.rejectedByCardinality());
-                cardinalityPruned.add(key);
-                return;
+                continue;
             }
 
             unresolved.add(key);
-        });
+        }
 
-        Map<CandidateKey, Integer> cqfProposals = cqf.proposeWitnesses(unresolved);
-        Map<CandidateKey, Integer> cqfWitnesses = store.verifyCandidateWitnesses(pruneChanges.bucketId, cqfProposals, updatedMembership);
-
-        Set<CandidateKey> exactScanCandidates = new LinkedHashSet<>(unresolved);
-        exactScanCandidates.removeAll(cqfWitnesses.keySet());
-
-        Map<CandidateKey, Integer> scannedWitnesses = new HashMap<>(cqfWitnesses);
-        scannedWitnesses.putAll(store.findOneWitnessPerCandidate(pruneChanges.bucketId,exactScanCandidates,
-                updatedMembership));
-
+        Set<CandidateKey> cqfViolations = cqf == null? Set.of() : cqf.proposeWitnesses(unresolved).keySet();
+        Set<CandidateKey> clusterCandidates = new LinkedHashSet<>(unresolved);
+        clusterCandidates.removeAll(cqfViolations);
+        Set<CandidateKey> clusterViolations = clusters.findViolations(clusterCandidates);
+    
         for (CandidateKey key : unresolved) {
-            Integer witness =scannedWitnesses.get(key);
-            PruneState after =witness == null? PruneState.valid(): PruneState.rejected(witness);
+            PruneState after = cqfViolations.contains(key) || clusterViolations.contains(key)
+                    ? PruneState.rejectedByCluster()
+                    : PruneState.valid();
             nextStates.put(key, after);
         }
 
@@ -154,6 +141,10 @@ public final class PruneCandidateTracker implements CandidateTracker {
         }
 
         return new TrackingResult(changedStates,transitionsByLhs);
+    }
+
+    public boolean cqfEnabled() {
+        return cqf != null;
     }
 
     private int distinctCount(int columnId) {

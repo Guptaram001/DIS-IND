@@ -3,6 +3,8 @@ package disIND.valueBased.actors;
 import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
 
 import java.util.BitSet;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -38,8 +40,9 @@ import disIND.valueBased.structures.ColumnMajorProcessor;
 import disIND.valueBased.structures.CountCandidateTracker;
 import disIND.valueBased.structures.PruneCandidateTracker;
 import disIND.valueBased.structures.ValueMajorProcessor;
-import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.ValueOwnerClusterIndex;
 import disIND.valueBased.structures.ValueOwnerCqf;
+import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.WitnessCandidateTracker;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
@@ -139,6 +142,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final BatchProcessor batchProcessor;
     private final CandidateTracker candidateTracker;
     private final CandidateTrackingMode candidateTracking;
+    private final ValueOwnerClusterIndex pruneClusters;
     private final ValueOwnerCqf pruneCqf;
 
     public static String entityId(int bucketId) {
@@ -169,14 +173,17 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.orientation=orientation;
         this.batchProcessor=newProcessor(orientation);
         this.candidateTracking=Objects.requireNonNull(candidateTracking,"candidateTracking");
-        if (candidateTracking == CandidateTrackingMode.PRUNE) 
-            this.pruneCqf = new ValueOwnerCqf(bucketId,metadata.totalCols());
-        else 
+        if (candidateTracking == CandidateTrackingMode.PRUNE) {
+            this.pruneClusters = new ValueOwnerClusterIndex(bucketId, metadata.totalCols());
+            this.pruneCqf = UserConfig.PRUNE_CQF_ENABLED? new ValueOwnerCqf(bucketId, metadata.totalCols()): null;
+        } else {
+            this.pruneClusters = null;
             this.pruneCqf = null;
+        }
         this.candidateTracker = switch (candidateTracking) {
             case COUNT -> new CountCandidateTracker();
             case WITNESS -> new WitnessCandidateTracker(UserConfig.MAX_TRACKED_VIOLATIONS);
-            case PRUNE -> new PruneCandidateTracker(pruneCqf,localDistinctCounts);
+            case PRUNE -> new PruneCandidateTracker(pruneCqf, pruneClusters, localDistinctCounts);
         };
         this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
             @Override
@@ -282,8 +289,10 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                         pruneCqf.addMembership(columnId, valueId);
                 }
             });
-            if (!addedColumns.isEmpty())
+            if (!addedColumns.isEmpty()) {
+                updateClusterMembership(record, addedColumns);
                 addedColumnsByValue.put(valueId, addedColumns);
+            }
         });
 
         CandidateChanges candidateChanges = candidateTracker.newChanges(bucketId);
@@ -294,6 +303,17 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         membershipStore.writeBatch(bucketId, records, trackingResult.changedStates());
         updateLocallyRejectedCandidates(trackingResult.changedStates());
         sendCandidateStatusTransitions(message,trackingResult.transitionsByLhs(),trackingResult.changedStates().size());
+    }
+
+    private void updateClusterMembership(Map<Integer, Integer> membershipAfter, ColumnSet addedColumns) {
+        if (pruneClusters == null)
+            return;
+
+        BitSet afterSignature = new BitSet(metadata.totalCols());
+        membershipAfter.keySet().forEach(afterSignature::set);
+        BitSet beforeSignature = (BitSet) afterSignature.clone();
+        addedColumns.forEach(beforeSignature::clear);
+        pruneClusters.moveMembership(beforeSignature, afterSignature);
     }
 
     private void sendCandidateStatusTransitions(StoreBatch batch,Map<Integer, List<CandidateLocalStatus>> transitionsByLhs,
@@ -418,6 +438,19 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     private void rebuildLocallyRejectedCandidates() {
         locallyRejectedCandidates.clear();
+        if (pruneClusters != null) {
+            Set<CandidateKey> candidates = new HashSet<>();
+            for (int lhsCol = 0; lhsCol < metadata.totalCols(); lhsCol++) {
+                for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
+                    if (compatible(lhsCol, rhsCol))
+                        candidates.add(new CandidateKey(bucketId, lhsCol, rhsCol));
+                }
+            }
+            pruneClusters.findViolations(candidates).forEach(key ->
+                    locallyRejectedCandidates.add(candidateKey(key.lhsCol(), key.rhsCol())));
+            return;
+        }
+
         Map<Integer, Map<Integer, Integer>> snapshot =membershipStore.snapshotBucket(bucketId);
         for (Map<Integer, Integer> membership : snapshot.values()) {
             for (int lhsCol : membership.keySet()) {

@@ -85,11 +85,12 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     public record PruneState(int witnessValueId) implements CandidateState {
+        public static final int CLUSTER_PROOF = -3;
         public static final int CARDINALITY_PROOF = -2;
         public static final int NO_WITNESS = -1;
 
         public PruneState {
-            if (witnessValueId < CARDINALITY_PROOF) 
+            if (witnessValueId < CLUSTER_PROOF)
                 throw new IllegalArgumentException("Invalid prune proof value: "+ witnessValueId);
         }
 
@@ -108,12 +109,20 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             return new PruneState(CARDINALITY_PROOF);
         }
 
+        public static PruneState rejectedByCluster() {
+            return new PruneState(CLUSTER_PROOF);
+        }
+
         public boolean hasWitness() {
             return witnessValueId >= 0;
         }
 
         public boolean hasCardinalityProof() {
             return witnessValueId == CARDINALITY_PROOF;
+        }
+
+        public boolean hasClusterProof() {
+            return witnessValueId == CLUSTER_PROOF;
         }
 
         @Override
@@ -149,6 +158,10 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         public CandidateTrackingMode trackingMode() {
             return CandidateTrackingMode.WITNESS;
         }
+    }
+
+    public ValueOwnerMembershipStore(Path directory, long hotEntries) {
+        this(directory, hotEntries, CandidateTrackingMode.COUNT);
     }
 
     public ValueOwnerMembershipStore(Path directory, long hotEntries,CandidateTrackingMode trackingMode) {
@@ -233,6 +246,9 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
             if (witnessValueId == PruneState.CARDINALITY_PROOF) 
                 return PruneState.rejectedByCardinality();
+
+            if (witnessValueId == PruneState.CLUSTER_PROOF)
+                return PruneState.rejectedByCluster();
 
             if (witnessValueId < 0) 
                 throw invalidCandidateState("invalid prune witness "+ witnessValueId);
