@@ -31,6 +31,11 @@ import java.util.Set;
 
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.utility.UserConfig;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2IntMaps;
+import it.unimi.dsi.fastutil.ints.IntIterator;
+import it.unimi.dsi.fastutil.objects.ObjectIterator;
 
 /**
  * Worker-local, disk-backed membership state shared by all ValueOwner
@@ -39,7 +44,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private static final float BLOOM_FILTER_BITS_PER_KEY = UserConfig.BLOOM_FILTER_BITS_PER_KEY;
 
     private record CacheKey(int bucketId, int valueId) {}
-    public record MembershipWrite(int bucketId, Map<Integer, Map<Integer, Integer>> changedRecords) {}
+    public record MembershipWrite(int bucketId, Map<Integer, Int2IntMap> changedRecords) {}
 
     static {
         RocksDB.loadLibrary();
@@ -49,7 +54,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private final Options options;
     private final WriteOptions writeOptions;
     private final RocksDB db;
-    private final Cache<CacheKey, Map<Integer, Integer>> hotCache;
+    private final Cache<CacheKey, Int2IntMap> hotCache;
 
     private static final byte CANDIDATE_PREFIX = 0x43;
     private static final byte COUNT_STATE_TYPE = 1;
@@ -164,6 +169,10 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         this(directory, hotEntries, CandidateTrackingMode.COUNT);
     }
 
+    private static Int2IntMap immutableCacheCopy(Int2IntMap source) {
+        return Int2IntMaps.unmodifiable(new Int2IntOpenHashMap(source));
+    }
+
     public ValueOwnerMembershipStore(Path directory, long hotEntries,CandidateTrackingMode trackingMode) {
         try {
             Files.createDirectories(directory);
@@ -274,7 +283,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     public Map<CandidateKey, Integer>findOneWitnessPerCandidate(int bucketId,Set<CandidateKey> candidates,
-                Map<Integer, Map<Integer, Integer>>updatedRecords) {
+                Map<Integer,Int2IntMap> updatedRecords) {
 
         Objects.requireNonNull(candidates, "candidates");
         Objects.requireNonNull(updatedRecords,"updatedRecords");
@@ -304,7 +313,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                     continue;
                 }
                 int valueId =ByteBuffer.wrap(storedKey).getInt(Integer.BYTES);
-                Map<Integer, Integer> membership =updatedRecords.get(valueId);
+                Int2IntMap membership =updatedRecords.get(valueId);
                 if (membership != null) 
                     seenUpdatedValues.add(valueId);
                 else
@@ -320,7 +329,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         if (!unresolved.isEmpty()) {
-            for (Map.Entry<Integer, Map<Integer, Integer>> entry : updatedRecords.entrySet()) {
+            for (Map.Entry<Integer, Int2IntMap> entry : updatedRecords.entrySet()) {
                 if (seenUpdatedValues.contains(entry.getKey())) 
                     continue;
                 findWitnessesInMembership(entry.getKey(),entry.getValue(),candidatesByLhs,
@@ -333,7 +342,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     public Map<CandidateKey, Integer> verifyCandidateWitnesses(int bucketId,Map<CandidateKey, Integer> proposals,
-                Map<Integer, Map<Integer, Integer>> updatedRecords) {
+                Map<Integer, Int2IntMap> updatedRecords) {
             Objects.requireNonNull(proposals, "proposals");
             Objects.requireNonNull(updatedRecords, "updatedRecords");
             if (proposals.isEmpty())
@@ -345,7 +354,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                     diskValueIds.add(valueId);
             }
 
-            Map<Integer, Map<Integer, Integer>> storedRecords =loadBatch(bucketId, diskValueIds);
+            Map<Integer, Int2IntMap> storedRecords =loadBatch(bucketId, diskValueIds);
             Map<CandidateKey, Integer> verified = new HashMap<>();
 
             proposals.forEach((candidate, valueId) -> {
@@ -364,11 +373,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             return Map.copyOf(verified);
         }
 
-    private static void findWitnessesInMembership(int valueId,Map<Integer, Integer> membership,
+    private static void findWitnessesInMembership(int valueId,Int2IntMap membership,
             Map<Integer, List<CandidateKey>> candidatesByLhs,Set<CandidateKey> unresolved,
             Map<CandidateKey, Integer> witnesses) {
 
-        for (Integer lhsCol : membership.keySet()) {
+        IntIterator iterator = membership.keySet().iterator();
+        while(iterator.hasNext()){
+            int lhsCol = iterator.nextInt();
             List<CandidateKey> candidates =candidatesByLhs.get(lhsCol);
 
             if (candidates == null) 
@@ -509,18 +520,19 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
 
-    public Map<Integer, Map<Integer, Integer>> loadBatch(int bucketId, Set<Integer> valueIds) {
-        Map<Integer, Map<Integer, Integer>> result = new HashMap<>(valueIds.size());
+    public Map<Integer, Int2IntMap> loadBatch(int bucketId, Set<Integer> valueIds) {
+        Map<Integer, Int2IntMap> result = new HashMap<>(valueIds.size());
         List<Integer> misses = new ArrayList<>();
         List<byte[]> missKeys = new ArrayList<>();
 
         for (int valueId : valueIds) {
-            Map<Integer, Integer> cached = hotCache.getIfPresent(new CacheKey(bucketId, valueId));
+            CacheKey cacheKey = new CacheKey(bucketId, valueId);
+            Int2IntMap cached = hotCache.getIfPresent(cacheKey);
             if (cached == null) {
                 misses.add(valueId);
                 missKeys.add(key(bucketId, valueId));
             } else {
-                result.put(valueId, new HashMap<>(cached));
+                result.put(valueId, new Int2IntOpenHashMap(cached));
             }
         }
 
@@ -529,10 +541,9 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 List<byte[]> encoded = db.multiGetAsList(missKeys);
                 for (int index = 0; index < misses.size(); index++) {
                     int valueId = misses.get(index);
-                    Map<Integer, Integer> record = encoded.get(index) == null
-                            ? new HashMap<>()
-                            : decode(encoded.get(index));
-                    hotCache.put(new CacheKey(bucketId, valueId), Map.copyOf(record));
+                    byte[] stored = encoded.get(index);
+                    Int2IntMap record = stored == null ? new Int2IntOpenHashMap(): decode(stored);
+                    hotCache.put(new CacheKey(bucketId, valueId), immutableCacheCopy(record));
                     result.put(valueId, record);
                 }
             } catch (RocksDBException exception) {
@@ -543,7 +554,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
 
-    public void writeBatch(int bucketId,Map<Integer, Map<Integer, Integer>> changedRecords,
+    public void writeBatch(int bucketId,Map<Integer, Int2IntMap> changedRecords,
         Map<CandidateKey, CandidateState> changedCandidates) {
 
         try (WriteBatch batch = new WriteBatch()) {
@@ -570,7 +581,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         // Update caches only after RocksDB succeeds.
-        changedRecords.forEach((valueId, record) ->hotCache.put(new CacheKey(bucketId, valueId),Map.copyOf(record)));
+        changedRecords.forEach((valueId, record) ->hotCache.put(new CacheKey(bucketId, valueId),immutableCacheCopy(record)));
         changedCandidates.forEach((key, state) -> {
             if (state.rejected())
                 hotRejectedCandidates.put(key, state);
@@ -582,7 +593,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
     
     public List<Integer> findWitnesses(int bucketId,int lhsCol,int rhsCol,int limit,
-            Map<Integer, Map<Integer, Integer>> updatedRecords) {
+            Map<Integer, Int2IntMap> updatedRecords) {
         if (limit <= 0 || limit > MAX_WITNESSES) {
             throw new IllegalArgumentException("Witness limit must be between 1 and " + MAX_WITNESSES);
         }
@@ -601,7 +612,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 }
 
                 int valueId = ByteBuffer.wrap(storedKey).getInt(Integer.BYTES);
-                Map<Integer, Integer> membership = updatedRecords.get(valueId);
+                Int2IntMap membership = updatedRecords.get(valueId);
                 if (membership != null) 
                     seenUpdatedValues.add(valueId);
                 else 
@@ -620,7 +631,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         // New values in this StoreBatch are not in RocksDB yet.
-        for (Map.Entry<Integer, Map<Integer, Integer>> entry : updatedRecords.entrySet()) {
+        for (Map.Entry<Integer, Int2IntMap> entry : updatedRecords.entrySet()) {
             if (seenUpdatedValues.contains(entry.getKey()))
                 continue;
             if (isViolation(entry.getValue(), lhsCol, rhsCol)) {
@@ -671,38 +682,62 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return true;
     }
 
-    private static boolean isViolation(Map<Integer, Integer> membership, int lhsCol, int rhsCol) {
+    private static boolean isViolation(Int2IntMap membership, int lhsCol, int rhsCol) {
         return membership.containsKey(lhsCol) && !membership.containsKey(rhsCol);
     }
 
-    private static byte[] encode(Map<Integer, Integer> columns) {
-        try {
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream(
-                    Integer.BYTES + columns.size() * (Integer.BYTES + Integer.BYTES));
-            try (DataOutputStream output = new DataOutputStream(bytes)) {
-                output.writeInt(columns.size());
-                columns.entrySet().stream()
-                        .sorted(Map.Entry.comparingByKey())
-                        .forEach(entry -> {
-                            try {
-                                output.writeInt(entry.getKey());
-                                output.writeInt(entry.getValue());
-                            } catch (IOException exception) {
-                                throw new EncodingException(exception);
-                            }
-                        });
-            }
-            return bytes.toByteArray();
-        } catch (IOException | EncodingException exception) {
-            Throwable cause = exception instanceof EncodingException ? exception.getCause() : exception;
-            throw new IllegalStateException("Unable to encode VO membership", cause);
+    // private static byte[] encode(Int2IntMap columns) {
+    //     try {
+    //         ByteArrayOutputStream bytes = new ByteArrayOutputStream(
+    //                 Integer.BYTES + columns.size() * (Integer.BYTES + Integer.BYTES));
+    //         try (DataOutputStream output = new DataOutputStream(bytes)) {
+    //             output.writeInt(columns.size());
+    //             columns.entrySet().stream()
+    //                     .sorted(Map.Entry.comparingByKey())
+    //                     .forEach(entry -> {
+    //                         try {
+    //                             output.writeInt(entry.getKey());
+    //                             output.writeInt(entry.getValue());
+    //                         } catch (IOException exception) {
+    //                             throw new EncodingException(exception);
+    //                         }
+    //                     });
+    //         }
+    //         return bytes.toByteArray();
+    //     } catch (IOException | EncodingException exception) {
+    //         Throwable cause = exception instanceof EncodingException ? exception.getCause() : exception;
+    //         throw new IllegalStateException("Unable to encode VO membership", cause);
+    //     }
+    // }
+
+    //Removed Sorted one
+    private static byte[] encode(Int2IntMap columns) {
+        ByteBuffer buffer = ByteBuffer.allocate(
+            Math.addExact(
+                Integer.BYTES,
+                Math.multiplyExact(
+                    columns.size(),
+                    2 * Integer.BYTES)));
+
+        buffer.putInt(columns.size());
+
+        ObjectIterator<Int2IntMap.Entry> iterator =
+            Int2IntMaps.fastIterator(columns);
+
+        while (iterator.hasNext()) {
+            Int2IntMap.Entry entry = iterator.next();
+
+            buffer.putInt(entry.getIntKey());
+            buffer.putInt(entry.getIntValue());
         }
+
+        return buffer.array();
     }
 
-    private static Map<Integer, Integer> decode(byte[] encoded) {
+    private static Int2IntMap decode(byte[] encoded) {
         try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(encoded))) {
             int size = input.readInt();
-            Map<Integer, Integer> columns = new LinkedHashMap<>(size);
+            Int2IntOpenHashMap columns = new Int2IntOpenHashMap(size);
             for (int index = 0; index < size; index++)
                 columns.put(input.readInt(), input.readInt());
             return columns;

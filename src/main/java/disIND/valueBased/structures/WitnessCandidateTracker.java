@@ -17,6 +17,7 @@ import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.WitnessState;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
 
 public final class WitnessCandidateTracker implements CandidateTracker {
     private final int witnessLimit;
@@ -64,7 +65,7 @@ public final class WitnessCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public TrackingResult apply(CandidateChanges changes,Map<Integer, Map<Integer, Integer>> updatedMembership,
+    public TrackingResult apply(CandidateChanges changes,Map<Integer, Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
         if (!(changes instanceof WitnessChanges witnessChanges))
             throw new IllegalArgumentException("Witness tracker received incompatible changes");
@@ -90,7 +91,7 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         return new TrackingResult(changedStates, transitionsByLhs);
     }
 
-    private WitnessState updateState(CandidateKey key,WitnessState before,WitnessDelta delta,Map<Integer, Map<Integer, Integer>> updatedMembership,
+    private WitnessState updateState(CandidateKey key,WitnessState before,WitnessDelta delta,Map<Integer, Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
         boolean removesStoredWitness = before.witnesses().stream().anyMatch(delta.repaired::contains);
         boolean hasRoomForCreatedWitness = before.witnesses().size() < witnessLimit && !delta.created.isEmpty();

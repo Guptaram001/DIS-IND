@@ -50,6 +50,7 @@ import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.WorkerValueIdStore;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
 
 public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private static final int LONG_COLUMN_SET_LIMIT = Long.SIZE;
@@ -118,7 +119,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     public interface CandidateTracker {
         CandidateChanges newChanges(int bucketId);
-        TrackingResult apply(CandidateChanges changes,Map<Integer, Map<Integer, Integer>> updatedMembership,
+        TrackingResult apply(CandidateChanges changes,Map<Integer, Int2IntMap> updatedMembership,
                 ValueOwnerMembershipStore store);
     }
 
@@ -273,27 +274,30 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     private void applyValueUpdates(StoreBatch message, Map<Integer, Map<Integer, Integer>> updatesByValue,
             long voSequence) {
-        Map<Integer, Map<Integer, Integer>> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
+        Map<Integer, Int2IntMap> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
         Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
 
         updatesByValue.forEach((valueId, columnUpdates) -> {
-            Map<Integer, Integer> record = records.get(valueId);
+            Int2IntMap record = records.get(valueId);
             if (record == null)
                 throw new IllegalStateException("No membership record loaded for value " + valueId);
             ColumnSet addedColumns = newColumnSet();
             columnUpdates.forEach((columnId, count) -> {
-                int previousCount = record.getOrDefault(columnId, 0);
-                Integer previous = record.put(columnId, Math.addExact(previousCount, count));
-                if (previous == null) {
-                    localDistinctCounts[columnId] =Math.addExact(localDistinctCounts[columnId], 1);
+                int primitiveColumnId = columnId.intValue();
+                int primitiveCount = count.intValue();
+                int previousCount = record.getOrDefault(primitiveColumnId, 0);
+                boolean wasPresent = record.containsKey(primitiveColumnId);
+                record.put(primitiveColumnId, Math.addExact(previousCount, primitiveCount));
+                if (!wasPresent) {
+                    localDistinctCounts[primitiveColumnId] =Math.addExact(localDistinctCounts[primitiveColumnId], 1);
                     if (localDistinctCountsByPartition != null) {
                         int partition = countPartition(valueId, localDistinctCountsByPartition[columnId].length);
-                        localDistinctCountsByPartition[columnId][partition] = Math.addExact(
-                                localDistinctCountsByPartition[columnId][partition], 1);
+                        localDistinctCountsByPartition[primitiveColumnId][partition] = Math.addExact(
+                                localDistinctCountsByPartition[primitiveColumnId][partition], 1);
                     }
-                    addedColumns.add(columnId);
+                    addedColumns.add(primitiveColumnId);
                     if (pruneCqf != null)
-                        pruneCqf.addMembership(columnId, valueId);
+                        pruneCqf.addMembership(primitiveColumnId, valueId);
                 }
             });
             if (!addedColumns.isEmpty()) {
@@ -313,7 +317,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                 trackingResult.changedStates().size());
     }
 
-    private void updateClusterMembership(Map<Integer, Integer> membershipAfter, ColumnSet addedColumns) {
+    private void updateClusterMembership(Int2IntMap membershipAfter, ColumnSet addedColumns) {
         if (pruneClusters == null)
             return;
 
@@ -367,7 +371,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         return this;
     }
 
-    private void calculateMembershipUpdates(Map<Integer, ColumnSet> addedColumnsByValue,Map<Integer, Map<Integer, Integer>> records,
+    private void calculateMembershipUpdates(Map<Integer, ColumnSet> addedColumnsByValue,Map<Integer, Int2IntMap> records,
         CandidateChanges changes) {
 
         Set<Long> evaluatedCandidates = new HashSet<>();

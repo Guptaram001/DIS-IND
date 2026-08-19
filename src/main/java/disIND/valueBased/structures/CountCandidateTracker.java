@@ -14,6 +14,7 @@ import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CountState;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
 
 public final class CountCandidateTracker implements CandidateTracker {
 
@@ -49,7 +50,7 @@ public final class CountCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public TrackingResult apply(CandidateChanges changes,Map<Integer, Map<Integer, Integer>> updatedMembership,
+    public TrackingResult apply(CandidateChanges changes,Map<Integer, Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
         if (!(changes instanceof CountChanges countChanges))
             throw new IllegalArgumentException("Count tracker received incompatible changes");

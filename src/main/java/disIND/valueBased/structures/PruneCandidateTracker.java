@@ -17,6 +17,7 @@ import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.PruneState;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
 
 public final class PruneCandidateTracker implements CandidateTracker {
     private final ValueOwnerCqf cqf;
@@ -86,7 +87,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public TrackingResult apply(CandidateChanges changes,Map<Integer, Map<Integer, Integer>>
+    public TrackingResult apply(CandidateChanges changes,Map<Integer, Int2IntMap>
                     updatedMembership,ValueOwnerMembershipStore store) {
         Objects.requireNonNull(updatedMembership, "updatedMembership");
         Objects.requireNonNull(store, "store");
