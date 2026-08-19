@@ -342,8 +342,11 @@ public final class SharedModel {
         record LhsLiveDelta( int colId, int round , RoaringBitmap newValues) implements CMCommand {}
         record RhsLiveDelta( int colId, int round , RoaringBitmap newValues) implements CMCommand {}
         record MembershipResult(UnaryPair pair, int round, RoaringBitmap missingValues) implements CMCommand {}
-        record ValueOwnerCandidateStatusUpdate(long epoch, int round, int bucketId, List<CandidateLocalStatus> statuses) implements CMCommand {
+        record ValueOwnerCandidateStatusUpdate(long epoch, long voSequence, int round, int bucketId,
+                List<CandidateLocalStatus> statuses) implements CMCommand {
             public ValueOwnerCandidateStatusUpdate {
+                if (voSequence <= 0)
+                    throw new IllegalArgumentException("voSequence must be positive");
                 statuses = List.copyOf(statuses);
             }
         }

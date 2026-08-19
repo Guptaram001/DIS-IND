@@ -144,6 +144,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final CandidateTrackingMode candidateTracking;
     private final ValueOwnerClusterIndex pruneClusters;
     private final ValueOwnerCqf pruneCqf;
+    private long statusSequence;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
@@ -206,27 +207,18 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     }
 
     private Behavior<Command> onFinalizeMembership(FinalizeMembership msg) {
-        rebuildLocallyRejectedCandidates();
-        Map<Integer, RoaringBitmap> rejectedRhsByLhs = new HashMap<>();
-        for (long candidateKey : locallyRejectedCandidates) {
-            int lhsCol = (int) (candidateKey >>> Integer.SIZE);
-            int rhsCol = (int) candidateKey;
-            rejectedRhsByLhs
-                    .computeIfAbsent(lhsCol, ignored -> new RoaringBitmap())
-                    .add(rhsCol);
-        }
+        RoaringBitmap emptyFinalStatus = new RoaringBitmap();
         for (int lhsCol = 0; lhsCol < msg.totalColumns(); lhsCol++) {
-            RoaringBitmap rejectedRhs =
-                    rejectedRhsByLhs.getOrDefault(lhsCol, new RoaringBitmap());
             sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsCol))
                     .tell(new CMCommand.ValueOwnerDrained(msg.finalRound(), bucketId,
-                            msg.expectedBuckets(), rejectedRhs,
+                            msg.expectedBuckets(), emptyFinalStatus,
                             candidateEvaluationsByLhs[lhsCol],
                             exactComparisonsByLhs[lhsCol]));
         }
         if(Debug.INTERNAL)
-            getContext().getLog().info("[VO] bucket={} finalRound={} notifiedCms={}",
-                bucketId, msg.finalRound(), msg.totalColumns());
+            getContext().getLog().info(
+                    "[VO] bucket={} finalRound={} notifiedCms={} localRejectedCandidates={} finalStatus=ack-only",
+                    bucketId, msg.finalRound(), msg.totalColumns(), locallyRejectedCandidates.size());
         return this;
     }
 
@@ -248,29 +240,31 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         }
 
         MembershipUpdates updatesByValue =batchProcessor.process(bucketId,msg.body(),valueIdStore);
-        applyUpdates(msg, updatesByValue);
+        statusSequence = Math.incrementExact(statusSequence);
+        applyUpdates(msg, updatesByValue, statusSequence);
         resolvedBatches.put(batchKey, Boolean.TRUE);
         acknowledge(msg);
         return this;
     }
 
-    private void applyUpdates(StoreBatch message,  MembershipUpdates updates) {
+    private void applyUpdates(StoreBatch message, MembershipUpdates updates, long voSequence) {
 
         if (updates instanceof ValueUpdates valueUpdates) {
-            applyValueUpdates(message, valueUpdates.byValue());
+            applyValueUpdates(message, valueUpdates.byValue(), voSequence);
             return;
         }
 
         if (updates instanceof ColumnUpdates columnUpdates) {
             //Internally uses the same Value based storage
-            applyValueUpdates(message, columnUpdates.byValue());
+            applyValueUpdates(message, columnUpdates.byValue(), voSequence);
             return;
         }
 
         throw new IllegalArgumentException("Unsupported membership update type: "+ updates.getClass().getName());
     }
 
-    private void applyValueUpdates(StoreBatch message, Map<Integer, Map<Integer, Integer>> updatesByValue) {
+    private void applyValueUpdates(StoreBatch message, Map<Integer, Map<Integer, Integer>> updatesByValue,
+            long voSequence) {
         Map<Integer, Map<Integer, Integer>> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
         Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
 
@@ -302,7 +296,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         // Membership and candidate state become visible atomically.
         membershipStore.writeBatch(bucketId, records, trackingResult.changedStates());
         updateLocallyRejectedCandidates(trackingResult.changedStates());
-        sendCandidateStatusTransitions(message,trackingResult.transitionsByLhs(),trackingResult.changedStates().size());
+        sendCandidateStatusTransitions(message, voSequence, trackingResult.transitionsByLhs(),
+                trackingResult.changedStates().size());
     }
 
     private void updateClusterMembership(Map<Integer, Integer> membershipAfter, ColumnSet addedColumns) {
@@ -316,20 +311,23 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         pruneClusters.moveMembership(beforeSignature, afterSignature);
     }
 
-    private void sendCandidateStatusTransitions(StoreBatch batch,Map<Integer, List<CandidateLocalStatus>> transitionsByLhs,
-            int affectedCandidateCount) {
+    private void sendCandidateStatusTransitions(StoreBatch batch, long voSequence,
+            Map<Integer, List<CandidateLocalStatus>> transitionsByLhs, int affectedCandidateCount) {
 
         transitionsByLhs.forEach((lhsCol, transitions) -> {
             if (transitions.isEmpty())
                 return;
             sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY,CMCommand.entityId(lhsCol))
-                    .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(batch.epoch(),batch.round(),bucketId,transitions));
+                    .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(
+                            batch.epoch(), voSequence, batch.round(), bucketId, transitions));
         });
 
         if (Debug.INTERNAL) {
             int transitionCount = transitionsByLhs.values().stream().mapToInt(List::size).sum();
-            getContext().getLog().info( "[VO] round={} bucket={} epoch={} affectedCandidates={} transitions={} affectedCms={}",
-                    batch.round(),bucketId,batch.epoch(),affectedCandidateCount,transitionCount,transitionsByLhs.size());
+            getContext().getLog().info(
+                    "[VO] round={} bucket={} epoch={} voSequence={} affectedCandidates={} transitions={} affectedCms={}",
+                    batch.round(), bucketId, batch.epoch(), voSequence, affectedCandidateCount,
+                    transitionCount, transitionsByLhs.size());
         }
     }
 
@@ -434,36 +432,6 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
             else
                 locallyRejectedCandidates.remove(compactKey);
         });
-    }
-
-    private void rebuildLocallyRejectedCandidates() {
-        locallyRejectedCandidates.clear();
-        if (pruneClusters != null) {
-            Set<CandidateKey> candidates = new HashSet<>();
-            for (int lhsCol = 0; lhsCol < metadata.totalCols(); lhsCol++) {
-                for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
-                    if (compatible(lhsCol, rhsCol))
-                        candidates.add(new CandidateKey(bucketId, lhsCol, rhsCol));
-                }
-            }
-            pruneClusters.findViolations(candidates).forEach(key ->
-                    locallyRejectedCandidates.add(candidateKey(key.lhsCol(), key.rhsCol())));
-            return;
-        }
-
-        Map<Integer, Map<Integer, Integer>> snapshot =membershipStore.snapshotBucket(bucketId);
-        for (Map<Integer, Integer> membership : snapshot.values()) {
-            for (int lhsCol : membership.keySet()) {
-                for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
-                    if (lhsCol != rhsCol
-                            && testCompatibility(metadata.typeOf(lhsCol), metadata.typeOf(rhsCol))
-                            && !membership.containsKey(rhsCol)) {
-                        long candidate = candidateKey(lhsCol, rhsCol);
-                        locallyRejectedCandidates.add(candidate);
-                    }
-                }
-            }
-        }
     }
 
     private static long candidateKey(int lhsCol, int rhsCol) {

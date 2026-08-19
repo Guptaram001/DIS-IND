@@ -34,7 +34,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final Path liveResultFile;
 
     private final RoaringBitmap[] validBucketsByRhs;
-    private final long[][] latestEpochByRhsAndBucket;
+    private final long[][] latestVoSequenceByRhsAndBucket;
     private final RoaringBitmap drainedValueOwners = new RoaringBitmap();
     private int expectedValueOwnerDrains = -1;
     private int finalRound = -1;
@@ -55,9 +55,9 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         this.liveResultFile = Path.of(System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR", "diagnostics"),
                 "cm-live-results-lhs-" + lhsOwnerCol + ".tsv");
         this.validBucketsByRhs = new RoaringBitmap[metadata.totalCols()];
-        this.latestEpochByRhsAndBucket =new long[metadata.totalCols()][disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS];
-        for (long[] bucketEpochs : latestEpochByRhsAndBucket)
-            Arrays.fill(bucketEpochs, -1L);
+        this.latestVoSequenceByRhsAndBucket =new long[metadata.totalCols()][disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS];
+        for (long[] bucketSequences : latestVoSequenceByRhsAndBucket)
+            Arrays.fill(bucketSequences, -1L);
 
         for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
             if (rhsCol != lhsOwnerCol && testCompatibility(metadata.typeOf(lhsOwnerCol), metadata.typeOf(rhsCol))) {
@@ -92,13 +92,13 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         for (CandidateLocalStatus status : msg.statuses()) {
             int rhsCol = status.rhsCol();
             if (rhsCol < 0 || rhsCol >= validBucketsByRhs.length || validBucketsByRhs[rhsCol] == null
-                    || msg.bucketId() < 0 || msg.bucketId() >= latestEpochByRhsAndBucket[rhsCol].length) {
+                    || msg.bucketId() < 0 || msg.bucketId() >= latestVoSequenceByRhsAndBucket[rhsCol].length) {
                 continue;
             }
-            long previousEpoch = latestEpochByRhsAndBucket[rhsCol][msg.bucketId()];
-            if (msg.epoch() <= previousEpoch)
+            long previousSequence = latestVoSequenceByRhsAndBucket[rhsCol][msg.bucketId()];
+            if (msg.voSequence() <= previousSequence)
                 continue;
-            latestEpochByRhsAndBucket[rhsCol][msg.bucketId()] = msg.epoch();
+            latestVoSequenceByRhsAndBucket[rhsCol][msg.bucketId()] = msg.voSequence();
 
             if (status.valid())
                 validBucketsByRhs[rhsCol].add(msg.bucketId());
@@ -122,7 +122,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         finalRound = msg.finalRound();
         expectedValueOwnerDrains = msg.expectedBuckets();
         if (!drainedValueOwners.contains(msg.bucketId())) {
-            reconcileBucket(msg.bucketId(), msg.locallyRejectedRhs());
             candidateEvaluationsWithoutPruning = Math.addExact(candidateEvaluationsWithoutPruning, msg.candidateEvaluationsWithoutPruning());
             exactComparisonsWithoutPruning = Math.addExact( exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
         }
@@ -130,20 +129,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (drainedValueOwners.getCardinality() == expectedValueOwnerDrains)
             reportFinished();
         return this;
-    }
-
-    private void reconcileBucket(int bucketId, RoaringBitmap locallyRejectedRhs) {
-        if (bucketId < 0 || bucketId >= disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS)
-            throw new IllegalArgumentException("Invalid value-owner bucket " + bucketId);
-        for (int rhsCol = 0; rhsCol < validBucketsByRhs.length; rhsCol++) {
-            RoaringBitmap validBuckets = validBucketsByRhs[rhsCol];
-            if (validBuckets == null)
-                continue;
-            if (locallyRejectedRhs.contains(rhsCol))
-                validBuckets.remove(bucketId);
-            else
-                validBuckets.add(bucketId);
-        }
     }
 
     private void reportFinished() {
