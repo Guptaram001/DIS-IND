@@ -22,12 +22,30 @@ public final class PruneCandidateTracker implements CandidateTracker {
     private final ValueOwnerCqf cqf;
     private final ValueOwnerClusterIndex clusters;
     private final int[] localDistinctCounts;
+    private final int[][] localDistinctCountsByPartition;
+    private final PruneMetricsCollector metrics;
 
     public PruneCandidateTracker(ValueOwnerCqf cqf, ValueOwnerClusterIndex clusters,
-            int[] localDistinctCounts) {
+            int[] localDistinctCounts, int[][] localDistinctCountsByPartition,
+            PruneMetricsCollector metrics) {
         this.cqf = cqf;
         this.clusters = Objects.requireNonNull(clusters, "clusters");
         this.localDistinctCounts = Objects.requireNonNull(localDistinctCounts, "localDistinctCounts");
+        this.localDistinctCountsByPartition = Objects.requireNonNull(
+                localDistinctCountsByPartition, "localDistinctCountsByPartition");
+        this.metrics = Objects.requireNonNull(metrics, "metrics");
+        if (localDistinctCountsByPartition.length != localDistinctCounts.length)
+            throw new IllegalArgumentException("Partition-count columns must match distinct-count columns");
+        int partitionCount = -1;
+        for (int[] counts : localDistinctCountsByPartition) {
+            Objects.requireNonNull(counts, "partition count row");
+            if (counts.length == 0 || (counts.length & (counts.length - 1)) != 0)
+                throw new IllegalArgumentException("Partition count must be a positive power of two");
+            if (partitionCount < 0)
+                partitionCount = counts.length;
+            else if (counts.length != partitionCount)
+                throw new IllegalArgumentException("Every column must use the same partition count");
+        }
     }
 
     private static final class PruneDelta {
@@ -91,6 +109,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
 
             if (delta.hasCreatedViolation()) {
                 nextStates.put(key, PruneState.rejectedByCluster());
+                metrics.directLhsRejected(key.lhsCol());
                 continue;
             }
 
@@ -103,6 +122,13 @@ public final class PruneCandidateTracker implements CandidateTracker {
             int rhsDistinct = distinctCount(key.rhsCol());
             if (lhsDistinct > rhsDistinct) {
                 nextStates.put(key,PruneState.rejectedByCardinality());
+                metrics.wholeCountPruned(key.lhsCol());
+                continue;
+            }
+
+            if (rejectedByPartitionCounts(key.lhsCol(), key.rhsCol())) {
+                nextStates.put(key, PruneState.rejectedByCardinality());
+                metrics.partitionCountPruned(key.lhsCol());
                 continue;
             }
 
@@ -113,6 +139,12 @@ public final class PruneCandidateTracker implements CandidateTracker {
         Set<CandidateKey> clusterCandidates = new LinkedHashSet<>(unresolved);
         clusterCandidates.removeAll(cqfViolations);
         Set<CandidateKey> clusterViolations = clusters.findViolations(clusterCandidates);
+
+        cqfViolations.forEach(key -> metrics.cqfPruned(key.lhsCol()));
+        clusterCandidates.forEach(key -> metrics.exactTested(key.lhsCol()));
+        clusterViolations.forEach(key -> metrics.exactRejected(key.lhsCol()));
+        clusterCandidates.stream().filter(key -> !clusterViolations.contains(key))
+                .forEach(key -> metrics.exactValidated(key.lhsCol()));
     
         for (CandidateKey key : unresolved) {
             PruneState after = cqfViolations.contains(key) || clusterViolations.contains(key)
@@ -152,5 +184,15 @@ public final class PruneCandidateTracker implements CandidateTracker {
             throw new IllegalArgumentException("Column ID outside local distinct-count array: "+ columnId);
         }
         return localDistinctCounts[columnId];
+    }
+
+    private boolean rejectedByPartitionCounts(int lhsCol, int rhsCol) {
+        int[] lhsCounts = localDistinctCountsByPartition[lhsCol];
+        int[] rhsCounts = localDistinctCountsByPartition[rhsCol];
+        for (int partition = 0; partition < lhsCounts.length; partition++) {
+            if (lhsCounts[partition] > rhsCounts[partition])
+                return true;
+        }
+        return false;
     }
 }

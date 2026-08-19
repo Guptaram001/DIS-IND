@@ -26,6 +26,7 @@ public final class UserConfig {
     public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
+    public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 200_000;
     public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 200_000;
     public static final DataOrientation DEFAULT_DATA_ORIENTATION =DataOrientation.VALUE_MAJOR;
@@ -50,6 +51,7 @@ public final class UserConfig {
     public static int CHECKPOINT_WRITERS_PER_NODE = DEFAULT_CHECKPOINT_WRITERS_PER_NODE;
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static boolean PRUNE_CQF_ENABLED = DEFAULT_PRUNE_CQF_ENABLED;
+    public static int PRUNE_COUNT_PARTITIONS = DEFAULT_PRUNE_COUNT_PARTITIONS;
     public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
     public static int VALUE_OWNER_HOT_ENTRIES = DEFAULT_VALUE_OWNER_HOT_ENTRIES;
     public static String VALUE_ID_DISK_DIR = DEFAULT_VALUE_ID_DISK_DIR;
@@ -74,6 +76,7 @@ public final class UserConfig {
         CLI_PROPERTIES.put("checkpoint-writers-per-node", "dis.ind.checkpoint-writers-per-node");
         CLI_PROPERTIES.put("store-value-strings", "dis.ind.store-value-strings");
         CLI_PROPERTIES.put("prune-cqf-enabled", "dis.ind.prune-cqf-enabled");
+        CLI_PROPERTIES.put("prune-count-partitions", "dis.ind.prune-count-partitions");
         CLI_PROPERTIES.put("value-id-hot-entries", "dis.ind.value-id-hot-entries");
         CLI_PROPERTIES.put("value-id-disk-dir", "dis.ind.value-id-disk-dir");
         CLI_PROPERTIES.put("value-to-rows-disk-dir", "dis.ind.value-to-rows-disk-dir");
@@ -116,6 +119,8 @@ public final class UserConfig {
                 "dis.ind.store-value-strings", DEFAULT_STORE_VALUE_STRINGS);
         PRUNE_CQF_ENABLED = booleanSetting("DIS_IND_PRUNE_CQF_ENABLED",
                 "dis.ind.prune-cqf-enabled", DEFAULT_PRUNE_CQF_ENABLED);
+        PRUNE_COUNT_PARTITIONS = powerOfTwoSetting("DIS_IND_PRUNE_COUNT_PARTITIONS",
+                "dis.ind.prune-count-partitions", DEFAULT_PRUNE_COUNT_PARTITIONS);
         VALUE_ID_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
                 "dis.ind.value-id-hot-entries", DEFAULT_VALUE_ID_HOT_ENTRIES);
         VALUE_ID_DISK_DIR = stringSetting("DIS_IND_VALUE_ID_DISK_DIR",
@@ -193,6 +198,15 @@ public final class UserConfig {
             throw new IllegalArgumentException(
                     settingName(environmentName, propertyName)+ " must be an integer: " + value,exception);
         }
+    }
+
+    private static int powerOfTwoSetting(String environmentName, String propertyName, int fallback) {
+        int value = positiveIntSetting(environmentName, propertyName, fallback);
+        if ((value & (value - 1)) != 0) {
+            throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be a power of two: " + value);
+        }
+        return value;
     }
 
     private static double doubleSetting(String environmentName,String propertyName,double fallback) {

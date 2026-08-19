@@ -150,6 +150,7 @@ export_docker_application_arguments() {
             --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
             --candidate-tracking) export DIS_IND_CANDIDATE_TRACKING="$value" ;;
             --prune-cqf-enabled) export DIS_IND_PRUNE_CQF_ENABLED="$value" ;;
+            --prune-count-partitions) export DIS_IND_PRUNE_COUNT_PARTITIONS="$value" ;;
             --input-dir) export DIS_IND_INPUT_DIR="$value" ;;
             --output-file) export DIS_IND_OUTPUT_FILE="$value" ;;
             --batch-size) export DIS_IND_BATCH_SIZE="$value" ;;
@@ -303,6 +304,7 @@ run_distributed_docker() {
         echo "output_dir=$output_dir_abs"
         echo "batch_size=${DIS_IND_BATCH_SIZE:-UserConfig default}"
         echo "prune_cqf_enabled=${DIS_IND_PRUNE_CQF_ENABLED:-true}"
+        echo "prune_count_partitions=${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
         echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
         echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
         echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
@@ -601,6 +603,7 @@ fi
     echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
     echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES:-UserConfig default}"
     echo "prune_cqf_enabled=${DIS_IND_PRUNE_CQF_ENABLED:-true}"
+    echo "prune_count_partitions=${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
     echo "started_at=$(timestamp)"
     echo "sample_interval_seconds=$SAMPLE_INTERVAL"
     echo "thread_dump_interval_seconds=$THREAD_DUMP_INTERVAL"

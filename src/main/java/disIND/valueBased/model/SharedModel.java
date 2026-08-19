@@ -209,6 +209,38 @@ public final class SharedModel {
 
     public record CandidateLocalStatus(int rhsCol, boolean valid) implements AkkaSerializable {}
 
+    public record PruneMetrics(
+            long invalidLhsSkips,
+            long validRhsSkips,
+            long sameBatchSkips,
+            long directLhsRejections,
+            long wholeCountPruned,
+            long partitionCountPruned,
+            long cqfPruned,
+            long exactTested,
+            long exactRejected,
+            long exactValidated) implements AkkaSerializable {
+
+        public static PruneMetrics empty() {
+            return new PruneMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        }
+
+        public PruneMetrics plus(PruneMetrics other) {
+            Objects.requireNonNull(other, "other");
+            return new PruneMetrics(
+                    Math.addExact(invalidLhsSkips, other.invalidLhsSkips),
+                    Math.addExact(validRhsSkips, other.validRhsSkips),
+                    Math.addExact(sameBatchSkips, other.sameBatchSkips),
+                    Math.addExact(directLhsRejections, other.directLhsRejections),
+                    Math.addExact(wholeCountPruned, other.wholeCountPruned),
+                    Math.addExact(partitionCountPruned, other.partitionCountPruned),
+                    Math.addExact(cqfPruned, other.cqfPruned),
+                    Math.addExact(exactTested, other.exactTested),
+                    Math.addExact(exactRejected, other.exactRejected),
+                    Math.addExact(exactValidated, other.exactValidated));
+        }
+    }
+
     public sealed interface BDReply extends AkkaSerializable permits BDReply.BatchAccepted,
     BDReply.DiscoveryFinished{
 
@@ -351,9 +383,11 @@ public final class SharedModel {
             }
         }
         record ValueOwnerDrained(int finalRound, int bucketId, int expectedBuckets,RoaringBitmap locallyRejectedRhs,
-                long candidateEvaluationsWithoutPruning,long exactValueProbesWithoutPruning) implements CMCommand {
+                long candidateEvaluationsWithoutPruning,long exactValueProbesWithoutPruning,
+                PruneMetrics pruneMetrics) implements CMCommand {
             public ValueOwnerDrained {
                 locallyRejectedRhs = locallyRejectedRhs.clone();
+                Objects.requireNonNull(pruneMetrics, "pruneMetrics");
             }
         }
         record LhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,
@@ -423,7 +457,7 @@ public final class SharedModel {
         record AwaitDiscoveryFinished(int finalRound, ActorRef<BDReply> replyTo) implements RCCommand {}
         record CmDiscoveryComplete(int lhsOwnerCol, int round, List<UnaryPair> unaryPairs,
                 List<NaryPair> naryPairs, long candidateEvaluationsWithoutPruning,
-                long exactValueProbesWithoutPruning) implements RCCommand {}
+                long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics) implements RCCommand {}
     }
 
     // ── Report ────────────────────────────────────────────────────────────

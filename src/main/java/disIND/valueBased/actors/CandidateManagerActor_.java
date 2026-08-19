@@ -12,6 +12,7 @@ import disIND.valueBased.model.SharedModel.CMCommand;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.model.SharedModel.NaryPair;
+import disIND.valueBased.model.SharedModel.PruneMetrics;
 import disIND.valueBased.model.SharedModel.RCCommand;
 import disIND.valueBased.model.SharedModel.UnaryPair;
 import disIND.valueBased.utility.Debug;
@@ -41,6 +42,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private boolean finishedReported;
     private long exactComparisonsWithoutPruning;
     private long candidateEvaluationsWithoutPruning;
+    private PruneMetrics pruneMetrics = PruneMetrics.empty();
 
     public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef, DatasetMetadata metadata) {
         return Behaviors.setup(ctx ->new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
@@ -124,6 +126,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (!drainedValueOwners.contains(msg.bucketId())) {
             candidateEvaluationsWithoutPruning = Math.addExact(candidateEvaluationsWithoutPruning, msg.candidateEvaluationsWithoutPruning());
             exactComparisonsWithoutPruning = Math.addExact( exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
+            pruneMetrics = pruneMetrics.plus(msg.pruneMetrics());
         }
         drainedValueOwners.add(msg.bucketId());
         if (drainedValueOwners.getCardinality() == expectedValueOwnerDrains)
@@ -143,7 +146,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         }
         rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound,
                 List.copyOf(clean), List.<NaryPair>of(),
-                candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning));
+                candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning, pruneMetrics));
 
         if (Debug.INTERNAL) {
             getContext().getLog().info("[CM-DRAINED] lhs={} finalRound={} valueOwners={}/{} cleanCandidates={}",

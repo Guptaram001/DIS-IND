@@ -39,6 +39,7 @@ import disIND.valueBased.model.SharedModel.ValueUpdates;
 import disIND.valueBased.structures.ColumnMajorProcessor;
 import disIND.valueBased.structures.CountCandidateTracker;
 import disIND.valueBased.structures.PruneCandidateTracker;
+import disIND.valueBased.structures.PruneMetricsCollector;
 import disIND.valueBased.structures.ValueMajorProcessor;
 import disIND.valueBased.structures.ValueOwnerClusterIndex;
 import disIND.valueBased.structures.ValueOwnerCqf;
@@ -136,6 +137,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final Map<String, Boolean> resolvedBatches;
     private final Set<Long> locallyRejectedCandidates = new HashSet<>();
     private final int[] localDistinctCounts;
+    private final int[][] localDistinctCountsByPartition;
     private final long[] exactComparisonsByLhs;
     private final long[] candidateEvaluationsByLhs;
     private final DataOrientation orientation;
@@ -144,6 +146,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final CandidateTrackingMode candidateTracking;
     private final ValueOwnerClusterIndex pruneClusters;
     private final ValueOwnerCqf pruneCqf;
+    private final PruneMetricsCollector pruneMetrics;
     private long statusSequence;
 
     public static String entityId(int bucketId) {
@@ -168,6 +171,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.membershipStore = membershipStore;
         this.valueIdStore = valueIdStore;
         this.localDistinctCounts =new int[metadata.totalCols()];
+        this.pruneMetrics = new PruneMetricsCollector(metadata.totalCols());
         this.exactComparisonsByLhs = new long[metadata.totalCols()];
         this.candidateEvaluationsByLhs = new long[metadata.totalCols()];
         this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
@@ -175,16 +179,19 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         this.batchProcessor=newProcessor(orientation);
         this.candidateTracking=Objects.requireNonNull(candidateTracking,"candidateTracking");
         if (candidateTracking == CandidateTrackingMode.PRUNE) {
+            this.localDistinctCountsByPartition =new int[metadata.totalCols()][UserConfig.PRUNE_COUNT_PARTITIONS];
             this.pruneClusters = new ValueOwnerClusterIndex(bucketId, metadata.totalCols());
             this.pruneCqf = UserConfig.PRUNE_CQF_ENABLED? new ValueOwnerCqf(bucketId, metadata.totalCols()): null;
         } else {
+            this.localDistinctCountsByPartition = null;
             this.pruneClusters = null;
             this.pruneCqf = null;
         }
         this.candidateTracker = switch (candidateTracking) {
             case COUNT -> new CountCandidateTracker();
             case WITNESS -> new WitnessCandidateTracker(UserConfig.MAX_TRACKED_VIOLATIONS);
-            case PRUNE -> new PruneCandidateTracker(pruneCqf, pruneClusters, localDistinctCounts);
+            case PRUNE -> new PruneCandidateTracker(pruneCqf, pruneClusters, localDistinctCounts,
+                    localDistinctCountsByPartition, pruneMetrics);
         };
         this.resolvedBatches = new LinkedHashMap<>(recentBatchLimit, 0.75f, true) {
             @Override
@@ -213,7 +220,8 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                     .tell(new CMCommand.ValueOwnerDrained(msg.finalRound(), bucketId,
                             msg.expectedBuckets(), emptyFinalStatus,
                             candidateEvaluationsByLhs[lhsCol],
-                            exactComparisonsByLhs[lhsCol]));
+                            exactComparisonsByLhs[lhsCol],
+                            pruneMetrics.snapshot(lhsCol)));
         }
         if(Debug.INTERNAL)
             getContext().getLog().info(
@@ -278,6 +286,11 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                 Integer previous = record.put(columnId, Math.addExact(previousCount, count));
                 if (previous == null) {
                     localDistinctCounts[columnId] =Math.addExact(localDistinctCounts[columnId], 1);
+                    if (localDistinctCountsByPartition != null) {
+                        int partition = countPartition(valueId, localDistinctCountsByPartition[columnId].length);
+                        localDistinctCountsByPartition[columnId][partition] = Math.addExact(
+                                localDistinctCountsByPartition[columnId][partition], 1);
+                    }
                     addedColumns.add(columnId);
                     if (pruneCqf != null)
                         pruneCqf.addMembership(columnId, valueId);
@@ -373,11 +386,15 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                     long compactKey =candidateKey(lhsCol, rhsCol);
                     if (pruneMode) {
                         // Invali, lhs: Skip
-                        if (locallyRejectedCandidates.contains(compactKey)) 
+                        if (locallyRejectedCandidates.contains(compactKey)) {
+                            pruneMetrics.invalidLhsSkipped(lhsCol);
                             continue;
+                        }
                 
-                        if (newlyRejectedThisBatch.contains(compactKey)) 
+                        if (newlyRejectedThisBatch.contains(compactKey)) {
+                            pruneMetrics.sameBatchSkipped(lhsCol);
                             continue;
+                        }
                     }
                     countComparison(evaluatedCandidates, lhsCol, rhsCol);
                     if (!after.contains(rhsCol)) {
@@ -394,11 +411,15 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
                         if (compatible(lhsCol, rhsCol)) {
                             long compactKey =candidateKey(lhsCol, rhsCol);
                             if (pruneMode) {
-                                if (newlyRejectedThisBatch.contains(compactKey)) 
+                                if (newlyRejectedThisBatch.contains(compactKey)) {
+                                    pruneMetrics.sameBatchSkipped(lhsCol);
                                     return;
+                                }
                                 //Valid + RHS: Skip
-                                if (!locallyRejectedCandidates.contains(compactKey)) 
+                                if (!locallyRejectedCandidates.contains(compactKey)) {
+                                    pruneMetrics.validRhsSkipped(lhsCol);
                                     return;
+                                }
                             }
                             countComparison(evaluatedCandidates, lhsCol, rhsCol);
                             changes.violationRepaired(lhsCol,rhsCol,valueId);
@@ -436,6 +457,17 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
 
     private static long candidateKey(int lhsCol, int rhsCol) {
         return ((long) lhsCol << Integer.SIZE) | (rhsCol & 0xffffffffL);
+    }
+
+    //Look into something else
+    private static int countPartition(int valueId, int partitionCount) {
+        int hash = valueId;
+        hash ^= hash >>> 16;
+        hash *= 0x7feb352d;
+        hash ^= hash >>> 15;
+        hash *= 0x846ca68b;
+        hash ^= hash >>> 16;
+        return hash & (partitionCount - 1);
     }
 
     private ColumnSet newColumnSet() {
