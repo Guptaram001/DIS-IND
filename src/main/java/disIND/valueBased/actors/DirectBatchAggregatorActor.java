@@ -15,19 +15,29 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Short lived 
+ * Short lived
  */
 public final class DirectBatchAggregatorActor
         extends AbstractBehavior<DirectBatchAggregatorActor.Command> {
 
-    public interface Command extends AkkaSerializable {}
-    public static final EntityTypeKey<Command> TYPE_KEY =
-            EntityTypeKey.create(Command.class, "DirectBatchAggregatorActor");
+    public interface Command extends AkkaSerializable {
+    }
+
+    public static final EntityTypeKey<Command> TYPE_KEY = EntityTypeKey.create(Command.class,
+            "DirectBatchAggregatorActor");
+
     public record PrepareBatch(InputBatchDetails details, int expectedOwners,
-                               ActorRef<BatchHandle> replyTo) implements Command {}
-    public record BatchHandle(ActorRef<Command> aggregator) implements AkkaSerializable {}
-    public record AwaitCompletion(ActorRef<BDReply> replyTo) implements Command {}
-    public record ValueOwnerPersisted(int bucketId) implements Command {}
+            ActorRef<BatchHandle> replyTo) implements Command {
+    }
+
+    public record BatchHandle(ActorRef<Command> aggregator) implements AkkaSerializable {
+    }
+
+    public record AwaitCompletion(ActorRef<BDReply> replyTo) implements Command {
+    }
+
+    public record ValueOwnerPersisted(int bucketId) implements Command {
+    }
 
     private InputBatchDetails batchDetails;
     private int remainingOwners = -1;

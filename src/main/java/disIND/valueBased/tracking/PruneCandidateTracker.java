@@ -1,4 +1,4 @@
-package disIND.valueBased.structures;
+package disIND.valueBased.tracking;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -8,12 +8,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-
-import disIND.valueBased.actors.ValueOwnerActor.CandidateChanges;
-import disIND.valueBased.actors.ValueOwnerActor.CandidateTracker;
-import disIND.valueBased.actors.ValueOwnerActor.TrackingResult;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
+import disIND.valueBased.structures.PruneMetricsCollector;
+import disIND.valueBased.structures.ValueOwnerClusterIndex;
+import disIND.valueBased.structures.ValueOwnerCqf;
+import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.PruneState;
@@ -57,52 +57,53 @@ public final class PruneCandidateTracker implements CandidateTracker {
         }
     }
 
-    private static final class PruneChanges implements CandidateChanges {
+    private static final class PruneChanges implements CandidateViolationAfterApplyingUpdates {
         private final int bucketId;
-        private final Map<CandidateKey, PruneDelta> deltas =new HashMap<>();
+        private final Map<CandidateKey, PruneDelta> deltas = new HashMap<>();
 
         private PruneChanges(int bucketId) {
             this.bucketId = bucketId;
         }
 
         @Override
-        public void violationCreated(int lhsCol,int rhsCol,int valueId) {
+        public void violationCreated(int lhsCol, int rhsCol, int valueId) {
             delta(lhsCol, rhsCol).violationCreated = true;
         }
 
         @Override
-        public void violationRepaired(int lhsCol,int rhsCol,int valueId) {
+        public void violationRepaired(int lhsCol, int rhsCol, int valueId) {
             delta(lhsCol, rhsCol);
         }
 
-        private PruneDelta delta(int lhsCol,int rhsCol) {
-            CandidateKey key =new CandidateKey(bucketId,lhsCol,rhsCol);
-            return deltas.computeIfAbsent(key,ignored -> new PruneDelta());
+        private PruneDelta delta(int lhsCol, int rhsCol) {
+            CandidateKey key = new CandidateKey(bucketId, lhsCol, rhsCol);
+            return deltas.computeIfAbsent(key, ignored -> new PruneDelta());
         }
     }
 
     @Override
-    public CandidateChanges newChanges(int bucketId) {
+    public CandidateViolationAfterApplyingUpdates newChanges(int bucketId) {
         return new PruneChanges(bucketId);
     }
 
     @Override
-    public TrackingResult apply(CandidateChanges changes,Map<Integer, Int2IntMap>
-                    updatedMembership,ValueOwnerMembershipStore store) {
+    public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
+            Map<Integer, Int2IntMap> updatedMembership,
+            ValueOwnerMembershipStore store) {
         Objects.requireNonNull(updatedMembership, "updatedMembership");
         Objects.requireNonNull(store, "store");
 
-        if (!(changes instanceof PruneChanges pruneChanges)) 
+        if (!(changes instanceof PruneChanges pruneChanges))
             throw new IllegalArgumentException("Prune tracker received incompatible changes");
 
-        Set<CandidateKey> keys =pruneChanges.deltas.keySet();
-        if (keys.isEmpty()) 
-            return new TrackingResult(Map.of(),Map.of());
-        
-        Map<CandidateKey, CandidateState> previousStates =store.loadCandidates(keys,CandidateTrackingMode.PRUNE);
-        Map<CandidateKey, PruneState> nextStates =new HashMap<>();
+        Set<CandidateKey> keys = pruneChanges.deltas.keySet();
+        if (keys.isEmpty())
+            return new TrackingResult(Map.of(), Map.of());
 
-        Set<CandidateKey> unresolved =new LinkedHashSet<>();
+        Map<CandidateKey, CandidateState> previousStates = store.loadCandidates(keys, CandidateTrackingMode.PRUNE);
+        Map<CandidateKey, PruneState> nextStates = new HashMap<>();
+
+        Set<CandidateKey> unresolved = new LinkedHashSet<>();
         for (Map.Entry<CandidateKey, PruneDelta> entry : pruneChanges.deltas.entrySet()) {
             CandidateKey key = entry.getKey();
             PruneDelta delta = entry.getValue();
@@ -122,7 +123,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
             int lhsDistinct = distinctCount(key.lhsCol());
             int rhsDistinct = distinctCount(key.rhsCol());
             if (lhsDistinct > rhsDistinct) {
-                nextStates.put(key,PruneState.rejectedByCardinality());
+                nextStates.put(key, PruneState.rejectedByCardinality());
                 metrics.wholeCountPruned(key.lhsCol());
                 continue;
             }
@@ -136,7 +137,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
             unresolved.add(key);
         }
 
-        Set<CandidateKey> cqfViolations = cqf == null? Set.of() : cqf.proposeWitnesses(unresolved).keySet();
+        Set<CandidateKey> cqfViolations = cqf == null ? Set.of() : cqf.proposeWitnesses(unresolved).keySet();
         Set<CandidateKey> clusterCandidates = new LinkedHashSet<>(unresolved);
         clusterCandidates.removeAll(cqfViolations);
         Set<CandidateKey> clusterViolations = clusters.findViolations(clusterCandidates);
@@ -146,7 +147,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
         clusterViolations.forEach(key -> metrics.exactRejected(key.lhsCol()));
         clusterCandidates.stream().filter(key -> !clusterViolations.contains(key))
                 .forEach(key -> metrics.exactValidated(key.lhsCol()));
-    
+
         for (CandidateKey key : unresolved) {
             PruneState after = cqfViolations.contains(key) || clusterViolations.contains(key)
                     ? PruneState.rejectedByCluster()
@@ -154,26 +155,26 @@ public final class PruneCandidateTracker implements CandidateTracker {
             nextStates.put(key, after);
         }
 
-        Map<CandidateKey, CandidateState> changedStates =new HashMap<>();
+        Map<CandidateKey, CandidateState> changedStates = new HashMap<>();
 
-        Map<Integer, List<CandidateLocalStatus>>transitionsByLhs = new HashMap<>();
+        Map<Integer, List<CandidateLocalStatus>> transitionsByLhs = new HashMap<>();
 
         for (CandidateKey key : keys) {
-            PruneState before =(PruneState) previousStates.get(key);
-            PruneState after =nextStates.get(key);
-            if (after == null) 
-                throw new IllegalStateException("No prune result for candidate "+ key);
-            
-            if (!after.equals(before)) 
+            PruneState before = (PruneState) previousStates.get(key);
+            PruneState after = nextStates.get(key);
+            if (after == null)
+                throw new IllegalStateException("No prune result for candidate " + key);
+
+            if (!after.equals(before))
                 changedStates.put(key, after);
 
             if (before.rejected() != after.rejected()) {
-                transitionsByLhs.computeIfAbsent(key.lhsCol(),ignored -> new ArrayList<>())
-                        .add(new CandidateLocalStatus(key.rhsCol(),!after.rejected()));
+                transitionsByLhs.computeIfAbsent(key.lhsCol(), ignored -> new ArrayList<>())
+                        .add(new CandidateLocalStatus(key.rhsCol(), !after.rejected()));
             }
         }
 
-        return new TrackingResult(changedStates,transitionsByLhs);
+        return new TrackingResult(changedStates, transitionsByLhs);
     }
 
     public boolean cqfEnabled() {
@@ -182,7 +183,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
 
     private int distinctCount(int columnId) {
         if (columnId < 0 || columnId >= localDistinctCounts.length) {
-            throw new IllegalArgumentException("Column ID outside local distinct-count array: "+ columnId);
+            throw new IllegalArgumentException("Column ID outside local distinct-count array: " + columnId);
         }
         return localDistinctCounts[columnId];
     }

@@ -1,4 +1,4 @@
-package disIND.valueBased.structures;
+package disIND.valueBased.tracking;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -8,12 +8,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import disIND.valueBased.actors.ValueOwnerActor;
-import disIND.valueBased.actors.ValueOwnerActor.CandidateChanges;
-import disIND.valueBased.actors.ValueOwnerActor.CandidateTracker;
-import disIND.valueBased.actors.ValueOwnerActor.TrackingResult;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
+import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.WitnessState;
@@ -24,7 +21,8 @@ public final class WitnessCandidateTracker implements CandidateTracker {
 
     public WitnessCandidateTracker(int witnessLimit) {
         if (witnessLimit <= 0 || witnessLimit > ValueOwnerMembershipStore.MAX_WITNESSES) {
-            throw new IllegalArgumentException( "Witness limit must be between 1 and "+ ValueOwnerMembershipStore.MAX_WITNESSES);
+            throw new IllegalArgumentException(
+                    "Witness limit must be between 1 and " + ValueOwnerMembershipStore.MAX_WITNESSES);
         }
         this.witnessLimit = witnessLimit;
     }
@@ -34,7 +32,7 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         private final Set<Integer> repaired = new HashSet<>();
     }
 
-    private final class WitnessChanges implements CandidateChanges {
+    private final class WitnessChanges implements CandidateViolationAfterApplyingUpdates {
         private final int bucketId;
         private final Map<CandidateKey, WitnessDelta> deltas = new HashMap<>();
 
@@ -55,23 +53,24 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         }
 
         private WitnessDelta delta(int lhsCol, int rhsCol) {
-            return deltas.computeIfAbsent(new CandidateKey(bucketId, lhsCol, rhsCol),ignored -> new WitnessDelta());
+            return deltas.computeIfAbsent(new CandidateKey(bucketId, lhsCol, rhsCol), ignored -> new WitnessDelta());
         }
     }
 
     @Override
-    public CandidateChanges newChanges(int bucketId) {
+    public CandidateViolationAfterApplyingUpdates newChanges(int bucketId) {
         return new WitnessChanges(bucketId);
     }
 
     @Override
-    public TrackingResult apply(CandidateChanges changes,Map<Integer, Int2IntMap> updatedMembership,
+    public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
+            Map<Integer, Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
         if (!(changes instanceof WitnessChanges witnessChanges))
             throw new IllegalArgumentException("Witness tracker received incompatible changes");
 
         Set<CandidateKey> keys = witnessChanges.deltas.keySet();
-        Map<CandidateKey, CandidateState> previousStates =store.loadCandidates(keys, CandidateTrackingMode.WITNESS);
+        Map<CandidateKey, CandidateState> previousStates = store.loadCandidates(keys, CandidateTrackingMode.WITNESS);
         Map<CandidateKey, CandidateState> changedStates = new HashMap<>();
         Map<Integer, List<CandidateLocalStatus>> transitionsByLhs = new HashMap<>();
 
@@ -91,16 +90,16 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         return new TrackingResult(changedStates, transitionsByLhs);
     }
 
-    private WitnessState updateState(CandidateKey key,WitnessState before,WitnessDelta delta,Map<Integer, Int2IntMap> updatedMembership,
+    private WitnessState updateState(CandidateKey key, WitnessState before, WitnessDelta delta,
+            Map<Integer, Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
         boolean removesStoredWitness = before.witnesses().stream().anyMatch(delta.repaired::contains);
         boolean hasRoomForCreatedWitness = before.witnesses().size() < witnessLimit && !delta.created.isEmpty();
 
-        // Most updates should not touch one of this candidate's stored witnesses.
         if (!removesStoredWitness && !hasRoomForCreatedWitness)
             return before;
 
-        LinkedHashSet<Integer> witnesses =new LinkedHashSet<>(before.witnesses());
+        LinkedHashSet<Integer> witnesses = new LinkedHashSet<>(before.witnesses());
         witnesses.removeAll(delta.repaired);
         for (int valueId : delta.created) {
             if (witnesses.size() == witnessLimit)
@@ -109,7 +108,8 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         }
 
         if (witnesses.isEmpty() && before.rejected()) {
-            return new WitnessState(store.findWitnesses(key.bucketId(),key.lhsCol(),key.rhsCol(),witnessLimit,updatedMembership));
+            return new WitnessState(
+                    store.findWitnesses(key.bucketId(), key.lhsCol(), key.rhsCol(), witnessLimit, updatedMembership));
         }
         return new WitnessState(List.copyOf(witnesses));
     }

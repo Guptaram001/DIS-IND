@@ -27,8 +27,8 @@ import org.roaringbitmap.RoaringBitmap;
 import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
 
 public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
-    public static final EntityTypeKey<CMCommand> TYPE_KEY =
-            EntityTypeKey.create(CMCommand.class, "CandidateManagerActor");
+    public static final EntityTypeKey<CMCommand> TYPE_KEY = EntityTypeKey.create(CMCommand.class,
+            "CandidateManagerActor");
 
     private final int lhsOwnerCol;
     private final DatasetMetadata metadata;
@@ -46,21 +46,21 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private PruneMetrics pruneMetrics = PruneMetrics.empty();
 
     public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef, DatasetMetadata metadata) {
-        return Behaviors.setup(ctx ->new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
+        return Behaviors.setup(ctx -> new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
     }
 
-    private CandidateManagerActor_(ActorContext<CMCommand> context, int lhsOwnerCol,ActorRef<RCCommand> rcRef,
-        DatasetMetadata metadata) {
+    private CandidateManagerActor_(ActorContext<CMCommand> context, int lhsOwnerCol, ActorRef<RCCommand> rcRef,
+            DatasetMetadata metadata) {
         super(context);
         this.lhsOwnerCol = lhsOwnerCol;
         this.rcRef = rcRef;
         this.metadata = metadata;
         this.liveResultFile = Path.of(System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR", "diagnostics"),
                 "cm-live-results-lhs-" + lhsOwnerCol + ".tsv");
-        this.violationCountByRhs=new int[metadata.totalCols()];
-        Arrays.fill(violationCountByRhs,0);
-        this.latestVoSequenceByBucket=new int[UserConfig.VALUE_OWNER_BUCKETS];
-        Arrays.fill(latestVoSequenceByBucket,-1);
+        this.violationCountByRhs = new int[metadata.totalCols()];
+        Arrays.fill(violationCountByRhs, 0);
+        this.latestVoSequenceByBucket = new int[UserConfig.VALUE_OWNER_BUCKETS];
+        Arrays.fill(latestVoSequenceByBucket, -1);
 
         var column = metadata.column(lhsOwnerCol);
         getContext().getLog().info(
@@ -84,29 +84,28 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
-            int bucketId = msg.bucketId();
-            if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length) 
-                return this;
-            if (msg.voSequence() <= latestVoSequenceByBucket[bucketId]) 
-                return this;
-            latestVoSequenceByBucket[bucketId] = msg.voSequence();
+        int bucketId = msg.bucketId();
+        if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length)
+            return this;
+        if (msg.voSequence() <= latestVoSequenceByBucket[bucketId])
+            return this;
+        latestVoSequenceByBucket[bucketId] = msg.voSequence();
 
-            for (CandidateLocalStatus status : msg.statuses()) {
-                int rhsCol = status.rhsCol();
-                if (rhsCol < 0 || rhsCol >= violationCountByRhs.length) 
+        for (CandidateLocalStatus status : msg.statuses()) {
+            int rhsCol = status.rhsCol();
+            if (rhsCol < 0 || rhsCol >= violationCountByRhs.length)
+                continue;
+
+            if (status.valid()) {
+                if (violationCountByRhs[rhsCol] == 0) {
+                    getContext().getLog().warn("Unexpected valid transition: rhs={} bucket={} sequence={}",
+                            rhsCol, bucketId, msg.voSequence());
                     continue;
-            
-                if (status.valid()){ 
-                    if (violationCountByRhs[rhsCol] == 0) {
-                        getContext().getLog().warn("Unexpected valid transition: rhs={} bucket={} sequence={}",
-                        rhsCol, bucketId, msg.voSequence());
-                        continue;
-                    }
-                    violationCountByRhs[rhsCol]--;
                 }
-                else
-                    violationCountByRhs[rhsCol]++;
-            }
+                violationCountByRhs[rhsCol]--;
+            } else
+                violationCountByRhs[rhsCol]++;
+        }
         return this;
     }
 
@@ -124,8 +123,10 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         finalRound = msg.finalRound();
         expectedValueOwnerDrains = msg.expectedBuckets();
         if (!drainedValueOwners.contains(msg.bucketId())) {
-            candidateEvaluationsWithoutPruning = Math.addExact(candidateEvaluationsWithoutPruning, msg.candidateEvaluationsWithoutPruning());
-            exactComparisonsWithoutPruning = Math.addExact( exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
+            candidateEvaluationsWithoutPruning = Math.addExact(candidateEvaluationsWithoutPruning,
+                    msg.candidateEvaluationsWithoutPruning());
+            exactComparisonsWithoutPruning = Math.addExact(exactComparisonsWithoutPruning,
+                    msg.exactValueProbesWithoutPruning());
             pruneMetrics = pruneMetrics.plus(msg.pruneMetrics());
         }
         drainedValueOwners.add(msg.bucketId());
@@ -140,10 +141,11 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         finishedReported = true;
 
         List<UnaryPair> clean = new ArrayList<>();
-        for(int i=0;i>=violationCountByRhs.length;i++)
-        {
-            if(violationCountByRhs[i]==0)
-                clean.add(new UnaryPair(lhsOwnerCol, violationCountByRhs[i]));
+        for (int rhsCol = 0; rhsCol < violationCountByRhs.length; rhsCol++) {
+            if (rhsCol != lhsOwnerCol && testCompatibility(metadata.typeOf(lhsOwnerCol), metadata.typeOf(rhsCol))
+                    && violationCountByRhs[rhsCol] == 0) {
+                clean.add(new UnaryPair(lhsOwnerCol, rhsCol));
+            }
         }
         rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound,
                 List.copyOf(clean), List.<NaryPair>of(),

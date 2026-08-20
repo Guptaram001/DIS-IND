@@ -1,9 +1,9 @@
 package disIND.valueBased.structures;
 
 //import com.github.luben.zstd.Zstd;
-import disIND.valueBased.actors.ValueOwnerActor.ColumnValues;
-import disIND.valueBased.actors.ValueOwnerActor.ValueRows;
 import disIND.valueBased.model.AkkaSerializable;
+import disIND.valueBased.protocol.ValueOwnerProtocol.ColumnValues;
+import disIND.valueBased.protocol.ValueOwnerProtocol.ValueRows;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;

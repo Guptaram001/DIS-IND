@@ -25,19 +25,21 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     private ActorRef<BDReply> finishReplyTo;
     private int finalRound = -1;
     private boolean discoveryFinished = false;
-    private final Map<Integer,List<UnaryPair>> unaryResults = new HashMap<>();
-    private final Map<Integer,List<NaryPair>> naryResults = new HashMap<>();
+    private final Map<Integer, List<UnaryPair>> unaryResults = new HashMap<>();
+    private final Map<Integer, List<NaryPair>> naryResults = new HashMap<>();
     private final List<ActorRef<IndReport>> pendingReportReplies = new ArrayList<>();
     private final Path comparisonMetricsFile;
     private final Path pruneMetricsFile;
     private long exactComparisonsWithoutPruning;
     private long candidateEvaluationsWithoutPruning;
     private PruneMetrics pruneMetrics = PruneMetrics.empty();
-    public static Behavior<RCCommand> create( DatasetMetadata metadata, ActorRef<StatsCommand> statsRef) {
-        return Behaviors.setup(ctx -> new ResultCollectorActor(ctx,metadata,statsRef));
+
+    public static Behavior<RCCommand> create(DatasetMetadata metadata, ActorRef<StatsCommand> statsRef) {
+        return Behaviors.setup(ctx -> new ResultCollectorActor(ctx, metadata, statsRef));
     }
 
-    private ResultCollectorActor(ActorContext<RCCommand> ctx, DatasetMetadata metadata, ActorRef<StatsCommand> statsRef) {
+    private ResultCollectorActor(ActorContext<RCCommand> ctx, DatasetMetadata metadata,
+            ActorRef<StatsCommand> statsRef) {
         super(ctx);
         this.metadata = metadata;
         this.statsRef = statsRef;
@@ -74,7 +76,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.rc(),
                     -1, "", String.valueOf(Debug.State.NONE),
                     " Received CM {} unary={} nary={} ",
-                    msg.lhsOwnerCol(),msg.unaryPairs().size(),msg.naryPairs().size());
+                    msg.lhsOwnerCol(), msg.unaryPairs().size(), msg.naryPairs().size());
         tryFinishDiscovery();
         return this;
     }
@@ -113,8 +115,10 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     }
 
     private void tryFinishDiscovery() {
-        if (discoveryFinished) return;
-        if (finishReplyTo == null) return;
+        if (discoveryFinished)
+            return;
+        if (finishReplyTo == null)
+            return;
 
         if (finishedCms.cardinality() < metadata.totalCols())
             return;
@@ -132,7 +136,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.STATE), Debug.rc(),
                     -1, "", String.valueOf(Debug.State.NONE),
                     "Discovery finished for finalRound={} confirmedCms={}/{} ",
-                    finalRound, finishedCms.cardinality(),metadata.totalCols());
+                    finalRound, finishedCms.cardinality(), metadata.totalCols());
     }
 
     private void writeComparisonMetrics() {

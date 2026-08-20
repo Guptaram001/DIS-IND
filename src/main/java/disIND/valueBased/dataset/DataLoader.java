@@ -9,11 +9,12 @@ import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import disIND.valueBased.actors.DirectBatchAggregatorActor;
 import disIND.valueBased.actors.INDGuardian;
 import disIND.valueBased.actors.ValueOwnerActor;
-import disIND.valueBased.actors.ValueOwnerActor.BatchBody;
+import disIND.valueBased.ingestion.ColumnMajorBatchBuilder;
+import disIND.valueBased.ingestion.ValueMajorBatchBuilder;
 import disIND.valueBased.model.SharedModel;
 import disIND.valueBased.model.SharedModel.*;
-import disIND.valueBased.structures.ColumnMajorBatchBuilder;
-import disIND.valueBased.structures.ValueMajorBatchBuilder;
+import disIND.valueBased.protocol.ValueOwnerProtocol.BatchBody;
+import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
 import disIND.valueBased.utility.InferDataAttributes;
 import disIND.valueBased.utility.UserConfig;
 
@@ -27,22 +28,26 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import it.unimi.dsi.fastutil.longs.LongArrayList;
 
 public final class DataLoader {
     private static final Pattern PAT_CSV_EXT = Pattern.compile("\\.(csv|tbl)$");
-    public interface OwnerBatchBuilder {
-        void add(int columnId, String value, long rowId);
-        ValueOwnerActor.BatchBody build();
+
+    public interface OrientetationBatchBuilder {
+        void add(int columnId, String value, int rowId);
+
+        BatchBody build();
     }
 
-    private DataLoader() {}
+    private DataLoader() {
+    }
 
-    //Discover the basic metadata of the dataset
-    public static INDGuardian.Config discoverConfig(String csvDir,DataOrientation orientation, CandidateTrackingMode candidateTracking) throws IOException {
+    // Discover the basic metadata of the dataset
+    public static INDGuardian.Config discoverConfig(String csvDir, DataOrientation orientation,
+            CandidateTrackingMode candidateTracking) throws IOException {
         Path dir = Paths.get(csvDir);
         List<String> files = listInputFiles(dir);
 
@@ -96,13 +101,14 @@ public final class DataLoader {
 
         DatasetMetadata metadata = new DatasetMetadata(totalCols, offsets, nCols, tableNames, columns);
 
-        return INDGuardian.Config.withAll(metadata,orientation,candidateTracking);
+        return INDGuardian.Config.withAll(metadata, orientation, candidateTracking);
     }
 
-    public static void run(ActorSystem<BDCommand> system, DatasetMetadata metadata,String csvDir, int batchSize, int timeoutSec,
+    public static void run(ActorSystem<BDCommand> system, DatasetMetadata metadata, String csvDir, int batchSize,
+            int timeoutSec,
             String outputFile, DataOrientation orientation) throws Exception {
 
-        AskPattern.ask(system, BDCommand.GetIngestionReady::new,Duration.ofSeconds(10), system.scheduler())
+        AskPattern.ask(system, BDCommand.GetIngestionReady::new, Duration.ofSeconds(10), system.scheduler())
                 .toCompletableFuture().get();
         Path dir = Paths.get(csvDir);
         List<String> files = listInputFiles(dir);
@@ -114,11 +120,12 @@ public final class DataLoader {
 
         long startMs = System.currentTimeMillis();
         IngestionResult ingestion;
-        ingestion = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), batchSize,orientation);
+        ingestion = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), batchSize, orientation);
 
-        System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", ingestion.totalRows(), (System.currentTimeMillis() - startMs) / 1000.0);
+        System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", ingestion.totalRows(),
+                (System.currentTimeMillis() - startMs) / 1000.0);
         CompletionStage<BDReply> doneFuture = AskPattern.ask(system, replyTo -> new BDCommand.FinishDiscovery(
-                                ingestion.finalRound(), ingestion.finalBatchByTable(),replyTo), Duration.ofMinutes(30),
+                ingestion.finalRound(), ingestion.finalBatchByTable(), replyTo), Duration.ofMinutes(30),
                 system.scheduler());
         doneFuture.toCompletableFuture().get();
 
@@ -128,7 +135,7 @@ public final class DataLoader {
 
         ActorRef<RCCommand> rcRef = rcFuture.toCompletableFuture().get();
 
-        //IndReport report = reportFuture.toCompletableFuture().get();
+        // IndReport report = reportFuture.toCompletableFuture().get();
         IndReport report = AskPattern.ask(rcRef, RCCommand.GetReport::new, Duration.ofSeconds(30), system.scheduler())
                 .toCompletableFuture().get();
 
@@ -137,19 +144,20 @@ public final class DataLoader {
         system.tell(new BDCommand.Shutdown());
     }
 
-    private static IngestionResult ingestAllInterleaved(ActorSystem<BDCommand> system, List<String> files, List<Integer> offsets,
-            List<Integer> nCols, int batchSize,DataOrientation orientation) throws Exception {
+    private static IngestionResult ingestAllInterleaved(ActorSystem<BDCommand> system, List<String> files,
+            List<Integer> offsets,
+            List<Integer> nCols, int batchSize, DataOrientation orientation) throws Exception {
         int n = files.size();
         BufferedReader[] readers = new BufferedReader[n];
         String[] delims = new String[n];
         boolean[] tblFlags = new boolean[n];
         boolean[] active = new boolean[n];
         long[] rowCounts = new long[n];
-        long[] nextRowId = new long[n];
+        int[] nextRowId = new int[n];
         int[] individualBatchIds = new int[n];
         Map<Integer, Integer> latestBatchByTable = new HashMap<>();
         Deque<CompletionStage<BDReply>> inFlight = new ArrayDeque<>();
-        AtomicLong nextEpoch = new AtomicLong();
+        AtomicInteger nextEpoch = new AtomicInteger();
         long totalRows = 0;
         int round = 0;
 
@@ -181,8 +189,8 @@ public final class DataLoader {
                 int batchId = individualBatchIds[i]++;
                 List<String[]> firstBatch = new ArrayList<>(1);
                 firstBatch.add(splitRow(firstLine, delim, true));
-                inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), offsets, nCols,i, nextRowId[i], 
-                firstBatch, round, batchId,orientation));
+                inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), offsets, nCols, i, nextRowId[i],
+                        firstBatch, round, batchId, orientation));
                 waitForCredit(inFlight);
                 latestBatchByTable.put(i, batchId);
                 nextRowId[i]++;
@@ -195,13 +203,13 @@ public final class DataLoader {
 
         System.out.println("[Loader] Interleaved round-robin ingestion started...");
         boolean anyActive = true;
-        long addedRows=0;
-        int numberOfColsSent=0;
+        long addedRows = 0;
+        int numberOfColsSent = 0;
         while (anyActive) {
             anyActive = false;
             round++;
-            addedRows=totalRows;
-            numberOfColsSent=0;
+            addedRows = totalRows;
+            numberOfColsSent = 0;
             for (int i = 0; i < n; i++) {
                 if (!active[i])
                     continue;
@@ -221,11 +229,11 @@ public final class DataLoader {
                     rowCounts[i]++;
                     totalRows++;
                 }
-                numberOfColsSent+=nCols.get(i);
+                numberOfColsSent += nCols.get(i);
                 if (!batchRows.isEmpty()) {
                     int batchId = individualBatchIds[i]++;
                     inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), offsets, nCols,
-                            i, nextRowId[i], batchRows, round, batchId,orientation));
+                            i, nextRowId[i], batchRows, round, batchId, orientation));
                     waitForCredit(inFlight);
                     latestBatchByTable.put(i, batchId);
                     nextRowId[i] += batchRows.size();
@@ -233,7 +241,7 @@ public final class DataLoader {
                 }
             }
             System.out.printf("[Loader] Round %d: %d rows added: %d rows  with %d cols ingested %n", round, totalRows,
-            totalRows-addedRows,numberOfColsSent);
+                    totalRows - addedRows, numberOfColsSent);
         }
         waitForAll(inFlight);
         int finalRound = round;
@@ -246,90 +254,69 @@ public final class DataLoader {
         return new IngestionResult(totalRows, finalRound, new HashMap<>(latestBatchByTable));
     }
 
-    private static CompletionStage<BDReply> sendTableBatch(ActorSystem<BDCommand> system, long epoch,
-            List<Integer> offsets,List<Integer> nCols,int tableId,long startRowId,List<String[]> rows,int round,int individualBatchId,DataOrientation orientation) {
+    private static CompletionStage<BDReply> sendTableBatch(ActorSystem<BDCommand> system, int epoch,
+            List<Integer> offsets, List<Integer> nCols, int tableId, int startRowId, List<String[]> rows,
+            int round, int individualBatchId, DataOrientation orientation) {
 
         List<RawColumnBatch> columns = columnize(rows, startRowId, offsets.get(tableId), nCols.get(tableId));
-        Map<Integer, BatchBody> ownerBatches = buildOwnerBatches(columns,orientation);
+        Map<Integer, BatchBody> ownerBatches = buildOwnerBatches(columns, orientation);
         InputBatchDetails details = new InputBatchDetails(tableId, startRowId, individualBatchId, epoch, round, -1);
         ClusterSharding sharding = ClusterSharding.get(system);
-        
+
         EntityRef<DirectBatchAggregatorActor.Command> aggregator = sharding.entityRefFor(
                 DirectBatchAggregatorActor.TYPE_KEY,
                 "direct-batch-" + epoch + "-" + tableId + "-" + individualBatchId);
-        
+
         Duration timeout = Duration.ofSeconds(UserConfig.BATCH_ACK_TIMEOUT_SECONDS);
-        
+
         return aggregator.<DirectBatchAggregatorActor.BatchHandle>ask(
                 replyTo -> new DirectBatchAggregatorActor.PrepareBatch(
-                        details, ownerBatches.size(), replyTo), timeout)
+                        details, ownerBatches.size(), replyTo),
+                timeout)
                 .thenCompose(handle -> {
                     ActorRef<DirectBatchAggregatorActor.Command> completionRef = handle.aggregator();
                     CompletionStage<BDReply> completion = AskPattern.ask(
                             completionRef, DirectBatchAggregatorActor.AwaitCompletion::new,
                             timeout, system.scheduler());
-                    ownerBatches.forEach((ownerId, body) ->
-                            sharding.entityRefFor(ValueOwnerActor.TYPE_KEY, ValueOwnerActor.entityId(ownerId))
-                                    .tell(new ValueOwnerActor.StoreBatch(epoch, tableId, individualBatchId, round,
-                                            ownerId, orientation, body, completionRef)));
+                    ownerBatches.forEach((ownerId, body) -> sharding
+                            .entityRefFor(ValueOwnerActor.TYPE_KEY, ValueOwnerActor.entityId(ownerId))
+                            .tell(new StoreBatch(epoch, tableId, individualBatchId, round,
+                                    ownerId, orientation, body, completionRef)));
                     return completion;
                 });
     }
 
-    private static Map<Integer, BatchBody> buildOwnerBatches(List<RawColumnBatch> columns, DataOrientation orientation) {
+    private static Map<Integer, BatchBody> buildOwnerBatches(List<RawColumnBatch> columns,
+            DataOrientation orientation) {
 
-        Map<Integer, OwnerBatchBuilder> builders =new HashMap<>();
+        Map<Integer, OrientetationBatchBuilder> builders = new HashMap<>();
 
         for (RawColumnBatch column : columns) {
-            for (int index = 0;index < column.values().length;index++) {
+            for (int index = 0; index < column.values().length; index++) {
                 String value = column.values()[index];
-                long rowId = column.rowIds()[index];
-                int ownerId = Math.floorMod(value.hashCode(),UserConfig.VALUE_OWNER_BUCKETS);
-                OwnerBatchBuilder builder =builders.computeIfAbsent(ownerId,ignored -> newBuilder(orientation));
-                builder.add(column.colId(),value,rowId);
+                int rowId = column.rowIds()[index];
+                int ownerId = Math.floorMod(value.hashCode(), UserConfig.VALUE_OWNER_BUCKETS);
+                OrientetationBatchBuilder builder = builders.computeIfAbsent(ownerId,
+                        ignored -> newBuilder(orientation));
+                builder.add(column.colId(), value, rowId);
             }
         }
 
-        Map<Integer, BatchBody> result =new HashMap<>(builders.size());
-        builders.forEach((ownerId, builder) ->result.put(ownerId, builder.build()));
+        Map<Integer, BatchBody> result = new HashMap<>(builders.size());
+        builders.forEach((ownerId, builder) -> result.put(ownerId, builder.build()));
         return result;
     }
 
-    private static OwnerBatchBuilder newBuilder(DataOrientation orientation) {
+    private static OrientetationBatchBuilder newBuilder(DataOrientation orientation) {
         return switch (orientation) {
-            case VALUE_MAJOR ->new ValueMajorBatchBuilder();
-            case COLUMN_MAJOR ->new ColumnMajorBatchBuilder();
+            case VALUE_MAJOR -> new ValueMajorBatchBuilder();
+            case COLUMN_MAJOR -> new ColumnMajorBatchBuilder();
         };
     }
 
-    // private static Map<Integer, List<ValueOwnerActor.ColumnValues>> bucketByValue(List<RawColumnBatch> columns) {
-    //     Map<Integer, Map<Integer, Map<String, LongArrayList>>> grouped = new HashMap<>();
-    //     for (RawColumnBatch column : columns) {
-    //         for (int index = 0; index < column.values().length; index++) {
-    //             String value = column.values()[index];
-    //             int ownerId = Math.floorMod(value.hashCode(), UserConfig.VALUE_OWNER_BUCKETS);
-    //             grouped.computeIfAbsent(ownerId, ignored -> new LinkedHashMap<>())
-    //                     .computeIfAbsent(column.colId(), ignored -> new LinkedHashMap<>())
-    //                     .computeIfAbsent(value, ignored -> new LongArrayList())
-    //                     .add(column.rowIds()[index]);
-    //         }
-    //     }
-    //     Map<Integer, List<ValueOwnerActor.ColumnValues>> result = new HashMap<>();
-    //     grouped.forEach((ownerId, columnsById) -> {
-    //         List<ValueOwnerActor.ColumnValues> encodedColumns = new ArrayList<>(columnsById.size());
-    //         columnsById.forEach((colId, rowsByValue) -> {
-    //             List<ValueOwnerActor.ValueRows> encodedValues = new ArrayList<>(rowsByValue.size());
-    //             rowsByValue.forEach((value, rowIds) ->
-    //                     encodedValues.add(new ValueOwnerActor.ValueRows(value, rowIds.toLongArray())));
-    //             encodedColumns.add(new ValueOwnerActor.ColumnValues(colId, encodedValues));
-    //         });
-    //         result.put(ownerId, encodedColumns);
-    //     });
-    //     return result;
-    // }
-
-    private static List<RawColumnBatch> columnize(List<String[]> rows,long startRowId,int globalColumnOffset,int numColumns) {
-        long[][] rowIds = new long[numColumns][rows.size()];
+    private static List<RawColumnBatch> columnize(List<String[]> rows, int startRowId, int globalColumnOffset,
+            int numColumns) {
+        int[][] rowIds = new int[numColumns][rows.size()];
         String[][] values = new String[numColumns][rows.size()];
         int[] counts = new int[numColumns];
 
@@ -373,9 +360,9 @@ public final class DataLoader {
     private static List<String> listInputFiles(Path dir) throws IOException {
         try (Stream<Path> paths = Files.list(dir)) {
             return paths.filter(p -> {
-                        String s = p.toString().toLowerCase(Locale.ROOT);
-                        return s.endsWith(".csv") || s.endsWith(".tbl");
-                    })
+                String s = p.toString().toLowerCase(Locale.ROOT);
+                return s.endsWith(".csv") || s.endsWith(".tbl");
+            })
                     .map(Path::toString)
                     .sorted()
                     .toList();
@@ -442,8 +429,7 @@ public final class DataLoader {
                     .forEach(p -> sb.append(String.format(
                             "IND(%s, %s)%n",
                             name(names, p.lhsCol()),
-                            name(names, p.rhsCol())
-                    )));
+                            name(names, p.rhsCol()))));
         }
 
         List<SharedModel.NaryPair> nary = report.confirmedNary();
@@ -462,8 +448,7 @@ public final class DataLoader {
                             "  arity=%-2d  %-45s  ⊆  %s%n",
                             p.arity(),
                             tuple(names, p.lhsCols()),
-                            tuple(names, p.rhsCols())
-                    )));
+                            tuple(names, p.rhsCols()))));
         }
 
         sb.append("\n").append("=".repeat(72)).append("\n");
@@ -488,7 +473,7 @@ public final class DataLoader {
     }
 
     // private static String name(Map<Integer, String> names, int col) {
-    //     return names.getOrDefault(col, "col" + col);
+    // return names.getOrDefault(col, "col" + col);
     // }
 
     private static String name(Map<Integer, String> names, int colId) {
