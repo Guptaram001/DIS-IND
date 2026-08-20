@@ -148,7 +148,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     private final ValueOwnerClusterIndex pruneClusters;
     private final ValueOwnerCqf pruneCqf;
     private final PruneMetricsCollector pruneMetrics;
-    private long statusSequence;
+    private int statusSequence;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
@@ -256,7 +256,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         return this;
     }
 
-    private void applyUpdates(StoreBatch message, MembershipUpdates updates, long voSequence) {
+    private void applyUpdates(StoreBatch message, MembershipUpdates updates, int voSequence) {
 
         if (updates instanceof ValueUpdates valueUpdates) {
             applyValueUpdates(message, valueUpdates.byValue(), voSequence);
@@ -273,7 +273,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
     }
 
     private void applyValueUpdates(StoreBatch message, Map<Integer, Map<Integer, Integer>> updatesByValue,
-            long voSequence) {
+            int voSequence) {
         Map<Integer, Int2IntMap> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
         Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
 
@@ -328,7 +328,7 @@ public class ValueOwnerActor extends AbstractBehavior<ValueOwnerActor.Command> {
         pruneClusters.moveMembership(beforeSignature, afterSignature);
     }
 
-    private void sendCandidateStatusTransitions(StoreBatch batch, long voSequence,
+    private void sendCandidateStatusTransitions(StoreBatch batch, int voSequence,
             Map<Integer, List<CandidateLocalStatus>> transitionsByLhs, int affectedCandidateCount) {
 
         transitionsByLhs.forEach((lhsCol, transitions) -> {

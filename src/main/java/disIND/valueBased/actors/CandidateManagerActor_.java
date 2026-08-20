@@ -8,6 +8,7 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.typed.Cluster;
+import disIND.valueBased.utility.UserConfig;
 import disIND.valueBased.model.SharedModel.CMCommand;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
@@ -34,8 +35,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final ActorRef<RCCommand> rcRef;
     private final Path liveResultFile;
 
-    private final RoaringBitmap[] validBucketsByRhs;
-    private final long[][] latestVoSequenceByRhsAndBucket;
+    private final int[] violationCountByRhs;
+    private final int[] latestVoSequenceByBucket;
     private final RoaringBitmap drainedValueOwners = new RoaringBitmap();
     private int expectedValueOwnerDrains = -1;
     private int finalRound = -1;
@@ -56,18 +57,10 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         this.metadata = metadata;
         this.liveResultFile = Path.of(System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR", "diagnostics"),
                 "cm-live-results-lhs-" + lhsOwnerCol + ".tsv");
-        this.validBucketsByRhs = new RoaringBitmap[metadata.totalCols()];
-        this.latestVoSequenceByRhsAndBucket =new long[metadata.totalCols()][disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS];
-        for (long[] bucketSequences : latestVoSequenceByRhsAndBucket)
-            Arrays.fill(bucketSequences, -1L);
-
-        for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
-            if (rhsCol != lhsOwnerCol && testCompatibility(metadata.typeOf(lhsOwnerCol), metadata.typeOf(rhsCol))) {
-                RoaringBitmap validBuckets = new RoaringBitmap();
-                validBuckets.add(0L, disIND.valueBased.utility.UserConfig.VALUE_OWNER_BUCKETS);
-                validBucketsByRhs[rhsCol] = validBuckets;
-            }
-        }
+        this.violationCountByRhs=new int[metadata.totalCols()];
+        Arrays.fill(violationCountByRhs,0);
+        this.latestVoSequenceByBucket=new int[UserConfig.VALUE_OWNER_BUCKETS];
+        Arrays.fill(latestVoSequenceByBucket,-1);
 
         var column = metadata.column(lhsOwnerCol);
         getContext().getLog().info(
@@ -91,22 +84,29 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
-        for (CandidateLocalStatus status : msg.statuses()) {
-            int rhsCol = status.rhsCol();
-            if (rhsCol < 0 || rhsCol >= validBucketsByRhs.length || validBucketsByRhs[rhsCol] == null
-                    || msg.bucketId() < 0 || msg.bucketId() >= latestVoSequenceByRhsAndBucket[rhsCol].length) {
-                continue;
-            }
-            long previousSequence = latestVoSequenceByRhsAndBucket[rhsCol][msg.bucketId()];
-            if (msg.voSequence() <= previousSequence)
-                continue;
-            latestVoSequenceByRhsAndBucket[rhsCol][msg.bucketId()] = msg.voSequence();
+            int bucketId = msg.bucketId();
+            if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length) 
+                return this;
+            if (msg.voSequence() <= latestVoSequenceByBucket[bucketId]) 
+                return this;
+            latestVoSequenceByBucket[bucketId] = msg.voSequence();
 
-            if (status.valid())
-                validBucketsByRhs[rhsCol].add(msg.bucketId());
-            else
-                validBucketsByRhs[rhsCol].remove(msg.bucketId());
-        }
+            for (CandidateLocalStatus status : msg.statuses()) {
+                int rhsCol = status.rhsCol();
+                if (rhsCol < 0 || rhsCol >= violationCountByRhs.length) 
+                    continue;
+            
+                if (status.valid()){ 
+                    if (violationCountByRhs[rhsCol] == 0) {
+                        getContext().getLog().warn("Unexpected valid transition: rhs={} bucket={} sequence={}",
+                        rhsCol, bucketId, msg.voSequence());
+                        continue;
+                    }
+                    violationCountByRhs[rhsCol]--;
+                }
+                else
+                    violationCountByRhs[rhsCol]++;
+            }
         return this;
     }
 
@@ -140,9 +140,10 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         finishedReported = true;
 
         List<UnaryPair> clean = new ArrayList<>();
-        for (int rhsCol = 0; rhsCol < validBucketsByRhs.length; rhsCol++) {
-            if (validBucketsByRhs[rhsCol] != null && validBucketsByRhs[rhsCol].getCardinality() == expectedValueOwnerDrains)
-                clean.add(new UnaryPair(lhsOwnerCol, rhsCol));
+        for(int i=0;i>=violationCountByRhs.length;i++)
+        {
+            if(violationCountByRhs[i]==0)
+                clean.add(new UnaryPair(lhsOwnerCol, violationCountByRhs[i]));
         }
         rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound,
                 List.copyOf(clean), List.<NaryPair>of(),
