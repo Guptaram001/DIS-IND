@@ -32,9 +32,10 @@ public final class PruneCandidateTracker implements CandidateTracker {
         this.cqf = cqf;
         this.clusters = Objects.requireNonNull(clusters, "clusters");
         this.localDistinctCounts = Objects.requireNonNull(localDistinctCounts, "localDistinctCounts");
-        this.localDistinctCountsByPartition = Objects.requireNonNull(
-                localDistinctCountsByPartition, "localDistinctCountsByPartition");
+        this.localDistinctCountsByPartition = localDistinctCountsByPartition;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        if (localDistinctCountsByPartition == null)
+            return;
         if (localDistinctCountsByPartition.length != localDistinctCounts.length)
             throw new IllegalArgumentException("Partition-count columns must match distinct-count columns");
         int partitionCount = -1;
@@ -189,6 +190,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
     }
 
     private boolean rejectedByPartitionCounts(int lhsCol, int rhsCol) {
+        if (localDistinctCountsByPartition == null)
+            return false;
         int[] lhsCounts = localDistinctCountsByPartition[lhsCol];
         int[] rhsCounts = localDistinctCountsByPartition[rhsCol];
         for (int partition = 0; partition < lhsCounts.length; partition++) {

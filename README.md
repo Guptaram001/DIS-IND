@@ -173,6 +173,8 @@ streams the rows.
 | `COORDINATOR_CPUS` | Docker CPU quota for the coordinator | `1.0` |
 | `DIS_IND_VALUE_OWNER_HOT_ENTRIES` | Decoded VO membership records cached per worker | `100000` |
 | `DIS_IND_VALUE_OWNER_DISK_DIR` | RocksDB directory for VO membership records | run diagnostics directory |
+| `DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED` | Enable per-partition cardinality pruning in `prune` tracking mode | `true` |
+| `DIS_IND_PRUNE_COUNT_PARTITIONS` | Number of cardinality partitions; must be a positive power of two | `64` |
 | `AKKA_MAXIMUM_FRAME_SIZE` | Maximum serialized remote message frame | `64 MiB` |
 | `AKKA_BUFFER_POOL_SIZE` | Reusable Artery direct buffers per node | `4` |
 | `DIS_IND_NODE_ROLE` | Whether a JVM ingests (`coordinator`) or only computes (`worker`) | Set by Compose |

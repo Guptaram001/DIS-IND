@@ -82,7 +82,9 @@ public sealed interface ModeSpecificContext
 
         private PruneContext(int bucketId, int totalColumns) {
             localDistinctCounts = new int[totalColumns];
-            localDistinctCountsByPartition = new int[totalColumns][UserConfig.PRUNE_COUNT_PARTITIONS];
+            localDistinctCountsByPartition = UserConfig.PRUNE_PARTITION_COUNTS_ENABLED
+                    ? new int[totalColumns][UserConfig.PRUNE_COUNT_PARTITIONS]
+                    : null;
             clusters = new ValueOwnerClusterIndex(bucketId, totalColumns);
             cqf = UserConfig.PRUNE_CQF_ENABLED ? new ValueOwnerCqf(bucketId, totalColumns) : null;
             metrics = new PruneMetricsCollector(totalColumns);
@@ -103,9 +105,11 @@ public sealed interface ModeSpecificContext
         @Override
         public void membershipAdded(int columnId, int valueId) {
             localDistinctCounts[columnId] = Math.addExact(localDistinctCounts[columnId], 1);
-            int partition = countPartition(valueId, localDistinctCountsByPartition[columnId].length);
-            localDistinctCountsByPartition[columnId][partition] = Math.addExact(
-                    localDistinctCountsByPartition[columnId][partition], 1);
+            if (localDistinctCountsByPartition != null) {
+                int partition = countPartition(valueId, localDistinctCountsByPartition[columnId].length);
+                localDistinctCountsByPartition[columnId][partition] = Math.addExact(
+                        localDistinctCountsByPartition[columnId][partition], 1);
+            }
             if (cqf != null)
                 cqf.addMembership(columnId, valueId);
         }
