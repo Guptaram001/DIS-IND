@@ -3,9 +3,8 @@ package disIND.valueBased.membership;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.tracking.ModeSpecificContext;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
-
-import java.util.HashMap;
-import java.util.Map;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 
 public final class MembershipUpdater {
     private final int bucketId;
@@ -22,34 +21,42 @@ public final class MembershipUpdater {
     }
 
     // Return complete records after merging with updates that later write to Db.
-    public MembershipBatchResult apply(Map<Integer, Int2IntMap> updatesByValue) {
+    public MembershipBatchResult apply(Int2ObjectMap<Int2IntMap> updatesByValue) {
         // Loads the membership from the RocksDB store or caches if any
-        Map<Integer, Int2IntMap> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
-        Map<Integer, ColumnSet> addedColumnsByValue = new HashMap<>();
+        Int2ObjectMap<Int2IntMap> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
+        Int2ObjectMap<ColumnSet> addedColumnsByValue = new Int2ObjectOpenHashMap<>();
 
-        updatesByValue.forEach((valueId, columnUpdates) -> {
+        for (Int2ObjectMap.Entry<Int2IntMap> valueEntry : updatesByValue.int2ObjectEntrySet()) {
+
+            int valueId = valueEntry.getIntKey();
+            Int2IntMap columnUpdates = valueEntry.getValue();
             Int2IntMap record = records.get(valueId);
+
             if (record == null)
                 throw new IllegalStateException("No membership record loaded for value " + valueId);
 
-            ColumnSet addedColumns = columnSets.create();
-            columnUpdates.forEach((columnId, count) -> {
-                int primitiveColumnId = columnId.intValue();
-                int primitiveCount = count.intValue();
-                int previousCount = record.getOrDefault(primitiveColumnId, 0);
-                boolean wasPresent = record.containsKey(primitiveColumnId);
-                record.put(primitiveColumnId, Math.addExact(previousCount, primitiveCount));
-                if (!wasPresent) {
-                    addedColumns.add(primitiveColumnId);
-                    modeSpecificContext.membershipAdded(primitiveColumnId, valueId);
-                }
-            });
+            // Allocate only if a new membership is discovered.
+            ColumnSet addedColumns = null;
+            for (Int2IntMap.Entry columnEntry : columnUpdates.int2IntEntrySet()) {
+                int columnId = columnEntry.getIntKey();
+                int count = columnEntry.getIntValue();
+                boolean wasPresent = record.containsKey(columnId);
+                int previousCount = record.getOrDefault(columnId, 0);
+                record.put(columnId, Math.addExact(previousCount, count));
 
-            if (!addedColumns.isEmpty()) {
+                if (!wasPresent) {
+                    if (addedColumns == null)
+                        addedColumns = columnSets.create();
+                    addedColumns.add(columnId);
+                    modeSpecificContext.membershipAdded(columnId, valueId);
+                }
+            }
+
+            if (addedColumns != null) {
                 modeSpecificContext.membershipChanged(record, addedColumns);
                 addedColumnsByValue.put(valueId, addedColumns);
             }
-        });
+        }
 
         return new MembershipBatchResult(records, addedColumnsByValue);
     }

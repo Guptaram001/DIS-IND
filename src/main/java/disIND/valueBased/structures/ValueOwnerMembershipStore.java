@@ -2,6 +2,7 @@ package disIND.valueBased.structures;
 
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+
 import org.rocksdb.BlockBasedTableConfig;
 import org.rocksdb.BloomFilter;
 import org.rocksdb.Options;
@@ -33,8 +34,14 @@ import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.utility.UserConfig;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2IntMaps;
 import it.unimi.dsi.fastutil.ints.IntIterator;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
+import it.unimi.dsi.fastutil.ints.IntSet;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 
 /**
@@ -42,12 +49,6 @@ import it.unimi.dsi.fastutil.objects.ObjectIterator;
  */
 public final class ValueOwnerMembershipStore implements AutoCloseable {
     private static final float BLOOM_FILTER_BITS_PER_KEY = UserConfig.BLOOM_FILTER_BITS_PER_KEY;
-
-    private record CacheKey(int bucketId, int valueId) {
-    }
-
-    public record MembershipWrite(int bucketId, Map<Integer, Int2IntMap> changedRecords) {
-    }
 
     static {
         RocksDB.loadLibrary();
@@ -57,7 +58,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private final Options options;
     private final WriteOptions writeOptions;
     private final RocksDB db;
-    private final Cache<CacheKey, Int2IntMap> membershipCache;
+    private final BucketMembershipCache[] bucketCaches;
 
     private static final byte CANDIDATE_PREFIX = 0x43;
     private static final byte COUNT_STATE_TYPE = 1;
@@ -66,6 +67,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private static final int CANDIDATE_STATE_HEADER_BYTES = Byte.BYTES;
 
     public static final int MAX_WITNESSES = UserConfig.MAX_VALUE_OWNER_WITNESSES;
+    private static final int MAX_MEMBERSHIP_CACHE_BYTES = 512 * 1024 * 1024;
     private static final int CANDIDATE_CACHE_BASE_WEIGHT = 10;
 
     public record CandidateKey(int bucketId, int lhsCol, int rhsCol) {
@@ -172,17 +174,68 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
     }
 
-    public ValueOwnerMembershipStore(Path directory, long hotEntries) {
-        this(directory, hotEntries, CandidateTrackingMode.COUNT);
+    private static final class BucketMembershipCache {
+
+        private final Int2ObjectLinkedOpenHashMap<Int2IntMap> entries = new Int2ObjectLinkedOpenHashMap<>();
+        private final long maxWeight;
+        private long currentWeight;
+
+        private BucketMembershipCache(long maxWeight) {
+            this.maxWeight = maxWeight;
+        }
+
+        Int2IntMap get(int valueId) {
+            Int2IntMap cached = entries.getAndMoveToLast(valueId);
+            // Return a mutable copy because MembershipUpdater modifies it.
+            return cached == null ? null : new Int2IntOpenHashMap(cached);
+        }
+
+        void put(int valueId, Int2IntMap membership) {
+            Int2IntMap previous = entries.remove(valueId);
+
+            if (previous != null)
+                currentWeight -= weight(previous);
+
+            Int2IntMap cached = immutableCacheCopy(membership);
+
+            entries.putAndMoveToLast(valueId, cached);
+            currentWeight += weight(cached);
+
+            while (currentWeight > maxWeight && !entries.isEmpty()) {
+                Int2IntMap evicted = entries.removeFirst();
+                currentWeight -= weight(evicted);
+            }
+        }
+
+        private static long weight(Int2IntMap membership) {
+            return 64L + membership.size() * 16L;
+        }
+
+        void clear() {
+            entries.clear();
+            currentWeight = 0;
+        }
     }
 
     private static Int2IntMap immutableCacheCopy(Int2IntMap source) {
         return Int2IntMaps.unmodifiable(new Int2IntOpenHashMap(source));
     }
 
+    public ValueOwnerMembershipStore(Path directory, long hotEntries) {
+        this(directory, hotEntries, CandidateTrackingMode.COUNT, UserConfig.VALUE_OWNER_BUCKETS);
+    }
+
     public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode) {
+        this(directory, hotEntries, trackingMode, UserConfig.VALUE_OWNER_BUCKETS);
+    }
+
+    public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
+            int bucketCount) {
+        if (bucketCount <= 0)
+            throw new IllegalArgumentException("bucketCount must be positive");
         try {
             Files.createDirectories(directory);
+            this.bucketCaches = new BucketMembershipCache[bucketCount];
             this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
                     .setFilterPolicy(bloomFilter)
@@ -199,10 +252,21 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             else
                 candidateStateCache = CacheBuilder.newBuilder().maximumSize(hotEntries).build();
             this.db = RocksDB.open(options, directory.toString());
-            this.membershipCache = CacheBuilder.newBuilder().maximumSize(hotEntries).build();
         } catch (IOException | RocksDBException exception) {
             throw new IllegalStateException("Unable to open ValueOwner membership store at " + directory, exception);
         }
+    }
+
+    private BucketMembershipCache bucketCache(int bucketId) {
+        if (bucketId < 0 || bucketId >= bucketCaches.length)
+            throw new IllegalArgumentException("Invalid bucketId: " + bucketId);
+        BucketMembershipCache cache = bucketCaches[bucketId];
+        if (cache == null) {
+            long bytesPerBucket = MAX_MEMBERSHIP_CACHE_BYTES / bucketCaches.length;
+            cache = new BucketMembershipCache(bytesPerBucket);
+            bucketCaches[bucketId] = cache;
+        }
+        return cache;
     }
 
     private static byte[] candidateKey(CandidateKey key) {
@@ -290,6 +354,20 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return new WitnessState(witnesses);
     }
 
+    private static void putInt(byte[] target, int offset, int value) {
+        target[offset] = (byte) (value >>> 24);
+        target[offset + 1] = (byte) (value >>> 16);
+        target[offset + 2] = (byte) (value >>> 8);
+        target[offset + 3] = (byte) value;
+    }
+
+    private static byte[] key(int bucketId, int valueId) {
+        byte[] key = new byte[Integer.BYTES * 2];
+        putInt(key, 0, bucketId);
+        putInt(key, Integer.BYTES, valueId);
+        return key;
+    }
+
     public Map<CandidateKey, Integer> findOneWitnessPerCandidate(int bucketId, Set<CandidateKey> candidates,
             Map<Integer, Int2IntMap> updatedRecords) {
 
@@ -356,7 +434,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         if (proposals.isEmpty())
             return Map.of();
 
-        Set<Integer> diskValueIds = new HashSet<>();
+        IntSet diskValueIds = new IntOpenHashSet();
         for (int valueId : proposals.values()) {
             if (!updatedRecords.containsKey(valueId))
                 diskValueIds.add(valueId);
@@ -529,14 +607,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return new IllegalStateException("Invalid persisted candidate state " + detail);
     }
 
-    public Map<Integer, Int2IntMap> loadBatch(int bucketId, Set<Integer> valueIds) {
-        Map<Integer, Int2IntMap> result = new HashMap<>(valueIds.size());
-        List<Integer> misses = new ArrayList<>();
+    public Int2ObjectMap<Int2IntMap> loadBatch(int bucketId, IntSet valueIds) {
+        Int2ObjectMap<Int2IntMap> result = new Int2ObjectOpenHashMap<>(valueIds.size());
+        IntArrayList misses = new IntArrayList();
         List<byte[]> missKeys = new ArrayList<>();
 
         for (int valueId : valueIds) {
-            CacheKey cacheKey = new CacheKey(bucketId, valueId);
-            Int2IntMap cached = membershipCache.getIfPresent(cacheKey);
+            Int2IntMap cached = bucketCache(bucketId).get(valueId);
             if (cached == null) {
                 misses.add(valueId);
                 missKeys.add(key(bucketId, valueId));
@@ -549,10 +626,10 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             try {
                 List<byte[]> encoded = db.multiGetAsList(missKeys);
                 for (int index = 0; index < misses.size(); index++) {
-                    int valueId = misses.get(index);
+                    int valueId = misses.getInt(index);
                     byte[] stored = encoded.get(index);
                     Int2IntMap record = stored == null ? new Int2IntOpenHashMap() : decode(stored);
-                    membershipCache.put(new CacheKey(bucketId, valueId), immutableCacheCopy(record));
+                    bucketCache(bucketId).put(valueId, record);
                     result.put(valueId, record);
                 }
             } catch (RocksDBException exception) {
@@ -562,13 +639,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return result;
     }
 
-    public void writeBatch(int bucketId, Map<Integer, Int2IntMap> changedRecords,
+    public void writeBatch(int bucketId, Int2ObjectMap<Int2IntMap> changedRecords,
             Map<CandidateKey, CandidateState> changedCandidates) {
 
         try (WriteBatch batch = new WriteBatch()) {
             // Membership updates
-            for (var entry : changedRecords.entrySet()) {
-                batch.put(key(bucketId, entry.getKey()), encode(entry.getValue()));
+            for (Int2ObjectMap.Entry<Int2IntMap> entry : changedRecords.int2ObjectEntrySet()) {
+                batch.put(key(bucketId, entry.getIntKey()), encode(entry.getValue()));
             }
 
             // Candidate updates
@@ -587,8 +664,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         // Update caches only after RocksDB succeeds.
-        changedRecords.forEach(
-                (valueId, record) -> membershipCache.put(new CacheKey(bucketId, valueId), immutableCacheCopy(record)));
+        changedRecords.forEach((valueId, record) -> bucketCache(bucketId).put(valueId, record));
         changedCandidates.forEach((key, state) -> {
             if (state.rejected())
                 candidateStateCache.put(key, state);
@@ -603,8 +679,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             throw new IllegalArgumentException("Witness limit must be between 1 and " + MAX_WITNESSES);
         }
 
-        List<Integer> witnesses = new ArrayList<>(limit);
-        Set<Integer> seenUpdatedValues = new HashSet<>();
+        IntArrayList witnesses = new IntArrayList(limit);
+        IntSet seenUpdatedValues = new IntOpenHashSet();
         byte[] prefix = bucketPrefix(bucketId);
 
         try (RocksIterator iterator = db.newIterator()) {
@@ -672,13 +748,6 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return ByteBuffer.allocate(Integer.BYTES).putInt(bucketId).array();
     }
 
-    private static byte[] key(int bucketId, int valueId) {
-        return ByteBuffer.allocate(Integer.BYTES * 2)
-                .putInt(bucketId)
-                .putInt(valueId)
-                .array();
-    }
-
     private static boolean hasPrefix(byte[] key, byte[] prefix) {
         if (key.length < prefix.length)
             return false;
@@ -692,31 +761,6 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private static boolean isViolation(Int2IntMap membership, int lhsCol, int rhsCol) {
         return membership.containsKey(lhsCol) && !membership.containsKey(rhsCol);
     }
-
-    // private static byte[] encode(Int2IntMap columns) {
-    // try {
-    // ByteArrayOutputStream bytes = new ByteArrayOutputStream(
-    // Integer.BYTES + columns.size() * (Integer.BYTES + Integer.BYTES));
-    // try (DataOutputStream output = new DataOutputStream(bytes)) {
-    // output.writeInt(columns.size());
-    // columns.entrySet().stream()
-    // .sorted(Map.Entry.comparingByKey())
-    // .forEach(entry -> {
-    // try {
-    // output.writeInt(entry.getKey());
-    // output.writeInt(entry.getValue());
-    // } catch (IOException exception) {
-    // throw new EncodingException(exception);
-    // }
-    // });
-    // }
-    // return bytes.toByteArray();
-    // } catch (IOException | EncodingException exception) {
-    // Throwable cause = exception instanceof EncodingException ?
-    // exception.getCause() : exception;
-    // throw new IllegalStateException("Unable to encode VO membership", cause);
-    // }
-    // }
 
     // Removed Sorted one
     private static byte[] encode(Int2IntMap columns) {
@@ -742,27 +786,30 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private static Int2IntMap decode(byte[] encoded) {
-        try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(encoded))) {
-            int size = input.readInt();
-            Int2IntOpenHashMap columns = new Int2IntOpenHashMap(size);
-            for (int index = 0; index < size; index++)
-                columns.put(input.readInt(), input.readInt());
-            return columns;
-        } catch (IOException exception) {
-            throw new IllegalStateException("Unable to decode VO membership", exception);
-        }
-    }
+        if (encoded.length < Integer.BYTES)
+            throw new IllegalStateException("Truncated membership record");
 
-    private static final class EncodingException extends RuntimeException {
-        private EncodingException(IOException cause) {
-            super(cause);
-        }
+        ByteBuffer buffer = ByteBuffer.wrap(encoded);
+        int size = buffer.getInt();
+
+        if (size < 0 || encoded.length != Integer.BYTES + size * 2 * Integer.BYTES)
+            throw new IllegalStateException("Invalid membership record size");
+
+        Int2IntOpenHashMap columns = new Int2IntOpenHashMap(size);
+        for (int index = 0; index < size; index++)
+            columns.put(buffer.getInt(), buffer.getInt());
+
+        return columns;
     }
 
     @Override
     public void close() {
-        membershipCache.invalidateAll();
         candidateStateCache.invalidateAll();
+
+        for (BucketMembershipCache cache : bucketCaches) {
+            if (cache != null)
+                cache.clear();
+        }
         db.close();
         writeOptions.close();
         options.close();

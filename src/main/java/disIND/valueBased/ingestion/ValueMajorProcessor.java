@@ -9,6 +9,9 @@ import disIND.valueBased.protocol.ValueOwnerProtocol.ValueMajorBatch;
 import disIND.valueBased.structures.WorkerValueIdStore;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2IntMap;
 
 import java.util.Map;
 import java.util.List;
@@ -27,21 +30,22 @@ public class ValueMajorProcessor implements BatchProcessor {
             throw new IllegalArgumentException("ValueMajorProcessor expected ValueMajorBatch, received ");
 
         ValueMajorBatch batch = (ValueMajorBatch) body;
+        List<ValueData> batchValues = batch.values();
 
-        List<String> distinctValues = batch.values().stream()
-                .map(ValueData::value)
-                .distinct()
-                .toList();
+        // List<String> distinctValues = batch.values().stream()
+        // .map(ValueData::value)
+        // .distinct()
+        // .toList();
 
-        Map<String, Integer> idsByValue = valueIds.resolveBatch(bucketId, distinctValues);
-        Map<Integer, Int2IntMap> updatesByValue = new LinkedHashMap<>();
+        Object2IntMap<String> idsByValue = valueIds.resolveBatch(bucketId, batchValues);
+        Int2ObjectMap<Int2IntMap> updatesByValue = new Int2ObjectOpenHashMap<>();
         for (ValueData valueData : batch.values()) {
             Integer valueId = idsByValue.get(valueData.value());
 
-            if (valueId == null)
+            if (valueId == WorkerValueIdStore.UNRESOLVED)
                 throw new IllegalStateException("No ID resolved for value: " + valueData.value());
 
-            Map<Integer, Integer> columnUpdates = updatesByValue.computeIfAbsent(valueId,
+            Int2IntMap columnUpdates = updatesByValue.computeIfAbsent(valueId,
                     ignored -> new Int2IntOpenHashMap());
 
             for (ColumnRows column : valueData.columns()) {
