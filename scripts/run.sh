@@ -162,6 +162,9 @@ export_docker_application_arguments() {
             --bd-aa-credit-window) export DIS_IND_BD_AA_CREDIT_WINDOW="$value" ;;
             --batch-ack-timeout-seconds) export DIS_IND_BATCH_ACK_TIMEOUT_SECONDS="$value" ;;
             --final-cm-drain-timeout-seconds) export DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS="$value" ;;
+            --drain-max-in-flight) export DIS_IND_DRAIN_MAX_IN_FLIGHT="$value" ;;
+            --drain-batch-size) export DIS_IND_DRAIN_BATCH_SIZE="$value" ;;
+            --drain-retry-seconds) export DIS_IND_DRAIN_RETRY_SECONDS="$value" ;;
             --store-value-strings) export DIS_IND_STORE_VALUE_STRINGS="$value" ;;
             --value-id-hot-entries) export DIS_IND_VALUE_ID_HOT_ENTRIES="$value" ;;
             --value-id-disk-dir) export DIS_IND_VALUE_ID_DISK_DIR="$value" ;;
@@ -320,6 +323,8 @@ run_distributed_docker() {
         echo "java_xms_per_container=$JAVA_XMS"
         echo "coordinator_java_xmx=$COORDINATOR_JAVA_XMX"
         echo "worker_java_xmx=$JAVA_XMX"
+        echo "coordinator_jmx_port=${COORDINATOR_JMX_PORT:-9011}"
+        echo "worker_jmx_base_port=${WORKER_JMX_BASE_PORT:-9012}"
         echo "aggregate_java_xmx_bytes=$aggregate_heap_bytes"
         docker info --format 'docker_memory_bytes={{.MemTotal}} docker_cpus={{.NCPU}}'
         docker version
@@ -333,10 +338,84 @@ run_distributed_docker() {
     echo "Input dataset: $input_dir_abs"
     echo "Diagnostics directory: $RUN_DIR"
 
+    local coordinator_jmx_port="${COORDINATOR_JMX_PORT:-9011}"
+    local worker_jmx_base_port="${WORKER_JMX_BASE_PORT:-9012}"
+    local worker_names=()
+    export COORDINATOR_JMX_PORT="$coordinator_jmx_port"
+
+    echo "Building the Docker image..."
+    (cd "$PROJECT_DIR" && docker compose build)
+
+    # Remove containers left by an earlier scaled run. All containers started
+    # below remain in this Compose project and therefore share its network.
+    (cd "$PROJECT_DIR" && docker compose rm -sf worker coordinator >/dev/null 2>&1) || true
+
+    echo "Starting coordinator with JMX at localhost:$coordinator_jmx_port"
+    (cd "$PROJECT_DIR" && docker compose up -d --force-recreate --remove-orphans coordinator)
+
+    echo "Starting $WORKERS worker replica(s) with dedicated JMX ports..."
+    local i
+    for ((i = 0; i < WORKERS; i++)); do
+        local current_port=$((worker_jmx_base_port + i))
+        local worker_name="dis-ind-worker-$((i + 1))"
+        worker_names+=("$worker_name")
+
+        echo "  $worker_name -> localhost:$current_port"
+        (
+            cd "$PROJECT_DIR" &&
+            docker compose run -d --no-deps \
+                --name "$worker_name" \
+                -e "JMX_PORT=$current_port" \
+                -p "127.0.0.1:$current_port:$current_port" \
+                worker
+        ) >/dev/null
+    done
+
+    echo "JConsole connections:"
+    echo "  coordinator -> localhost:$coordinator_jmx_port"
+    for ((i = 0; i < WORKERS; i++)); do
+        echo "  worker $((i + 1))    -> localhost:$((worker_jmx_base_port + i))"
+    done
+
     (
-        cd "$PROJECT_DIR" &&
-        docker compose up --build --force-recreate --remove-orphans --scale "worker=$WORKERS" \
-            --abort-on-container-exit --exit-code-from coordinator
+        cd "$PROJECT_DIR" || exit 1
+
+        local_log_pids=()
+        docker compose logs -f coordinator &
+        local_log_pids+=("$!")
+        for worker_name in "${worker_names[@]}"; do
+            docker logs -f "$worker_name" &
+            local_log_pids+=("$!")
+        done
+
+        coordinator_id="$(docker compose ps -q coordinator)"
+        coordinator_status="$(docker wait "$coordinator_id")"
+
+        for log_pid in "${local_log_pids[@]}"; do
+            kill "$log_pid" 2>/dev/null || true
+        done
+
+        # Workers normally stop themselves after observing coordinator
+        # departure. Give them time to leave the cluster cleanly.
+        for _ in {1..15}; do
+            running=0
+            for worker_name in "${worker_names[@]}"; do
+                if [[ "$(docker inspect -f '{{.State.Running}}' "$worker_name" 2>/dev/null)" == "true" ]]; then
+                    running=1
+                    break
+                fi
+            done
+            (( running == 0 )) && break
+            sleep 1
+        done
+
+        for worker_name in "${worker_names[@]}"; do
+            if [[ "$(docker inspect -f '{{.State.Running}}' "$worker_name" 2>/dev/null)" == "true" ]]; then
+                docker stop -t 10 "$worker_name" >/dev/null || true
+            fi
+        done
+
+        exit "$coordinator_status"
     ) > >(tee "$RUN_DIR/docker-compose.log") 2>&1 &
     APP_PID=$!
     echo "$APP_PID" > "$RUN_DIR/docker-compose.pid"

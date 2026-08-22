@@ -16,6 +16,21 @@ set -eu
 
 export AKKA_HOSTNAME AKKA_PORT
 
+#Adding Ports to view through jconsole
+JMX_OPTIONS=""
+
+if [ -n "${JMX_PORT:-}" ]; then
+  JMX_OPTIONS="
+    -Dcom.sun.management.jmxremote
+    -Dcom.sun.management.jmxremote.port=${JMX_PORT}
+    -Dcom.sun.management.jmxremote.rmi.port=${JMX_PORT}
+    -Dcom.sun.management.jmxremote.authenticate=false
+    -Dcom.sun.management.jmxremote.ssl=false
+    -Dcom.sun.management.jmxremote.local.only=false
+    -Djava.rmi.server.hostname=127.0.0.1
+  "
+fi
+
 exec java \
   "-Xms${JAVA_XMS}" \
   "-Xmx${JAVA_XMX}" \
@@ -27,6 +42,7 @@ exec java \
   "-XX:StartFlightRecording=name=disIND,settings=profile,filename=${DIS_IND_DIAGNOSTICS_DIR}/${AKKA_NODE_ID}.jfr,disk=true,dumponexit=true,maxsize=512m" \
   "-Dakka.cluster.roles.0=${DIS_IND_NODE_ROLE}" \
   "-Dakka.cluster.seed-nodes.0=akka://disIND@${AKKA_SEED_HOST}:${AKKA_SEED_PORT}" \
+  ${JMX_OPTIONS} \
   ${JAVA_OPTS:-} \
   -cp /opt/dis-ind/dis-ind.jar \
   "${DIS_IND_MAIN_CLASS}" \
