@@ -1,7 +1,5 @@
 package disIND.valueBased.membership;
 
-import java.util.function.IntConsumer;
-
 public interface ColumnSet {
     void add(int column);
 
@@ -11,7 +9,7 @@ public interface ColumnSet {
 
     int cardinality();
 
-    void forEach(IntConsumer action);
+    int nextSetBit(int fromColumn);
 
     ColumnSet copy();
 

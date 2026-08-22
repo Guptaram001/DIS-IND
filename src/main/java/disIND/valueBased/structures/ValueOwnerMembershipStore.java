@@ -618,7 +618,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 misses.add(valueId);
                 missKeys.add(key(bucketId, valueId));
             } else {
-                result.put(valueId, new Int2IntOpenHashMap(cached));
+                result.put(valueId, cached);
             }
         }
 

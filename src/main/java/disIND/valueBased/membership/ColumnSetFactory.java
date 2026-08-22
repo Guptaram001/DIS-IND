@@ -48,13 +48,11 @@ public final class ColumnSetFactory {
         }
 
         @Override
-        public void forEach(IntConsumer action) {
-            long remaining = bits;
-            while (remaining != 0) {
-                int column = Long.numberOfTrailingZeros(remaining);
-                action.accept(column);
-                remaining &= remaining - 1;
-            }
+        public int nextSetBit(int fromColumn) {
+            if (fromColumn < 0 || fromColumn >= Long.SIZE)
+                return -1;
+            long remaining = bits & (-1L << fromColumn);
+            return remaining == 0 ? -1 : Long.numberOfTrailingZeros(remaining);
         }
 
         @Override
@@ -100,8 +98,8 @@ public final class ColumnSetFactory {
         }
 
         @Override
-        public void forEach(IntConsumer action) {
-            bits.forEach((int column) -> action.accept(column));
+        public int nextSetBit(int fromColumn) {
+            return (int) bits.nextValue(fromColumn);
         }
 
         @Override
