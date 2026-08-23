@@ -1,11 +1,9 @@
 package disIND.valueBased.model;
 
 import akka.actor.typed.ActorRef;
-import akka.cluster.sharding.typed.javadsl.EntityRef;
-import disIND.valueBased.model.AkkaSerializable;
-import disIND.valueBased.model.SharedModel.MembershipUpdates;
 import disIND.valueBased.structures.BitmapStore;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 
 import org.roaringbitmap.RoaringBitmap;
 
@@ -40,7 +38,7 @@ public final class SharedModel {
     }
 
     // valueId -> columnId ->count
-    public record ValueUpdates(Map<Integer, Int2IntMap> byValue) implements MembershipUpdates {
+    public record ValueUpdates(Int2ObjectMap<Int2IntMap> byValue) implements MembershipUpdates {
     }
 
     // columnId -> valueId -> count
@@ -458,6 +456,7 @@ public final class SharedModel {
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
             CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta, CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
             CMCommand.MembershipResult, CMCommand.ValueOwnerCandidateStatusUpdate, CMCommand.ValueOwnerDrained,
+            CMCommand.DrainReadyProbe, CMCommand.OwnersDrained,
             CMCommand.NoMoreCandidates, CMCommand.ForceFinish {
 
         static String entityId(int lhsCol) {
@@ -513,6 +512,13 @@ public final class SharedModel {
                 locallyRejectedRhs = locallyRejectedRhs.clone();
                 Objects.requireNonNull(pruneMetrics, "pruneMetrics");
             }
+        }
+
+        record DrainReadyProbe(int finalRound, int lhsCol, int bucketId,
+                ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
+        }
+
+        record OwnersDrained(disIND.valueBased.protocol.DrainProtocol.OwnersDrained batch) implements CMCommand {
         }
 
         record LhsReplayDelta(UnaryPair pair, int colId, int fromRound, int toRound,

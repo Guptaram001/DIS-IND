@@ -2,8 +2,6 @@ package disIND.valueBased.membership;
 
 import org.roaringbitmap.RoaringBitmap;
 
-import java.util.function.IntConsumer;
-
 public final class ColumnSetFactory {
     private final int totalColumns;
 
@@ -64,6 +62,11 @@ public final class ColumnSetFactory {
         public void andNot(ColumnSet other) {
             bits &= ~((LongColumnSet) other).bits;
         }
+
+        @Override
+        public void clear() {
+            bits = 0L;
+        }
     }
 
     private static final class RoaringColumnSet implements ColumnSet {
@@ -110,6 +113,11 @@ public final class ColumnSetFactory {
         @Override
         public void andNot(ColumnSet other) {
             bits.andNot(((RoaringColumnSet) other).bits);
+        }
+
+        @Override
+        public void clear() {
+            bits.clear();
         }
     }
 }

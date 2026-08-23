@@ -13,9 +13,7 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 
-import java.util.Map;
 import java.util.List;
-import java.util.LinkedHashMap;
 
 public class ValueMajorProcessor implements BatchProcessor {
     /*
@@ -32,21 +30,19 @@ public class ValueMajorProcessor implements BatchProcessor {
         ValueMajorBatch batch = (ValueMajorBatch) body;
         List<ValueData> batchValues = batch.values();
 
-        // List<String> distinctValues = batch.values().stream()
-        // .map(ValueData::value)
-        // .distinct()
-        // .toList();
-
         Object2IntMap<String> idsByValue = valueIds.resolveBatch(bucketId, batchValues);
         Int2ObjectMap<Int2IntMap> updatesByValue = new Int2ObjectOpenHashMap<>();
         for (ValueData valueData : batch.values()) {
-            Integer valueId = idsByValue.get(valueData.value());
+            int valueId = idsByValue.getInt(valueData.value());
 
             if (valueId == WorkerValueIdStore.UNRESOLVED)
                 throw new IllegalStateException("No ID resolved for value: " + valueData.value());
+            Int2IntMap columnUpdates = updatesByValue.get(valueId);
 
-            Int2IntMap columnUpdates = updatesByValue.computeIfAbsent(valueId,
-                    ignored -> new Int2IntOpenHashMap());
+            if (columnUpdates == null) {
+                columnUpdates = new Int2IntOpenHashMap(valueData.columns().size());
+                updatesByValue.put(valueId, columnUpdates);
+            }
 
             for (ColumnRows column : valueData.columns()) {
                 int count = column.count();

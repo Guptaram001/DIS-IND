@@ -1,3 +1,4 @@
+
 package disIND.valueBased.tracking;
 
 import disIND.valueBased.membership.ColumnSet;
@@ -15,7 +16,6 @@ import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
 import java.util.BitSet;
 
 public final class CandidateEvaluator {
-    private final ColumnSetFactory columnSets;
     private final ModeSpecificContext modeSpecificContext;
     // metrics
     private final long[] exactComparisonsByLhs;
@@ -27,15 +27,16 @@ public final class CandidateEvaluator {
     private final LongOpenHashSet evaluatedCandidates = new LongOpenHashSet();
     private final LongOpenHashSet newlyRejectedThisBatch = new LongOpenHashSet();
 
+    private final ColumnSet afterChangeSet;
+
     public CandidateEvaluator(DatasetMetadata metadata, ColumnSetFactory columnSets,
             ModeSpecificContext modeSpecificContext) {
-        this.columnSets = columnSets;
         this.modeSpecificContext = modeSpecificContext;
         this.exactComparisonsByLhs = new long[metadata.totalCols()];
         this.candidateEvaluationsByLhs = new long[metadata.totalCols()];
         this.totalColumns = metadata.totalCols();
         this.compatibleRhsByLhs = buildCompatibility(metadata);
-
+        this.afterChangeSet = columnSets.create();
     }
 
     public void evaluate(Int2ObjectMap<ColumnSet> addedColumnsByValue, Int2ObjectMap<Int2IntMap> updatedRecordsByValue,
@@ -56,14 +57,15 @@ public final class CandidateEvaluator {
             if (updatedRecord == null)
                 throw new IllegalStateException("No updated membership for value " + valueId);
 
-            ColumnSet after = buildColumnSet(updatedRecord);
-            ColumnSet before = after.copy();
-            before.andNot(addedColumns);
+            loadAfter(updatedRecord);
+            // ColumnSet after = buildColumnSet(updatedRecord);
+            // ColumnSet before = after.copy();
+            // before.andNot(addedColumns);
 
             for (int lhsCol = addedColumns.nextSetBit(0); lhsCol >= 0; lhsCol = addedColumns.nextSetBit(lhsCol + 1))
-                evaluateCreatedViolations(valueId, lhsCol, after, prune, changes);
+                evaluateCreatedViolations(valueId, lhsCol, afterChangeSet, prune, changes);
             for (int rhsCol = addedColumns.nextSetBit(0); rhsCol >= 0; rhsCol = addedColumns.nextSetBit(rhsCol + 1))
-                evaluateRepairedViolations(valueId, rhsCol, before, prune, changes);
+                evaluateRepairedViolations(valueId, rhsCol, updatedRecord, addedColumns, prune, changes);
         }
     }
 
@@ -93,10 +95,14 @@ public final class CandidateEvaluator {
         }
     }
 
-    private void evaluateRepairedViolations(int valueId, int rhsCol, ColumnSet before, boolean prune,
-            CandidateViolationAfterApplyingUpdates changes) {
+    private void evaluateRepairedViolations(int valueId, int rhsCol, Int2IntMap updatedRecord,
+            ColumnSet addedColumns, boolean prune, CandidateViolationAfterApplyingUpdates changes) {
 
-        for (int lhsCol = before.nextSetBit(0); lhsCol >= 0; lhsCol = before.nextSetBit(lhsCol + 1)) {
+        IntIterator iterator = updatedRecord.keySet().iterator();
+        while (iterator.hasNext()) {
+            int lhsCol = iterator.nextInt();
+            if (addedColumns.contains(lhsCol))
+                continue;
             if (!compatibleRhsByLhs[lhsCol].get(rhsCol))
                 continue;
             long compactKey = candidateKey(lhsCol, rhsCol);
@@ -115,12 +121,12 @@ public final class CandidateEvaluator {
         }
     }
 
-    private ColumnSet buildColumnSet(Int2IntMap membership) {
-        ColumnSet result = columnSets.create();
+    private void loadAfter(Int2IntMap membership) {
+        afterChangeSet.clear();
+
         IntIterator iterator = membership.keySet().iterator();
         while (iterator.hasNext())
-            result.add(iterator.nextInt());
-        return result;
+            afterChangeSet.add(iterator.nextInt());
     }
 
     public long candidateEvaluationsFor(int lhsCol) {

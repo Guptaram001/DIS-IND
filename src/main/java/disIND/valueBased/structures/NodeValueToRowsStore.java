@@ -18,7 +18,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * One RocksDB instance shared by all AAs on a node. 
+ * One RocksDB instance shared by all AAs on a node.
  */
 public final class NodeValueToRowsStore implements AutoCloseable {
     private static final int MULTI_GET_CHUNK_SIZE = 4_096;
@@ -42,11 +42,13 @@ public final class NodeValueToRowsStore implements AutoCloseable {
         this.databasePath = databasePath;
         try {
             Files.createDirectories(databasePath);
-            this.options = new Options().setCreateIfMissing(true);
-            this.durableWriteOptions = new WriteOptions().setDisableWAL(false).setSync(true);
+            this.options = new Options();
+            this.options.setCreateIfMissing(true);
+            this.durableWriteOptions = new WriteOptions();
+            this.durableWriteOptions.setDisableWAL(false).setSync(true);
             this.database = RocksDB.open(options, databasePath.toString());
         } catch (IOException | RocksDBException exception) {
-            throw new IllegalStateException("Cannot open RocksDB "+ databasePath, exception);
+            throw new IllegalStateException("Cannot open RocksDB " + databasePath, exception);
         }
     }
 
@@ -61,8 +63,9 @@ public final class NodeValueToRowsStore implements AutoCloseable {
             if (previousRound.isPresent() && round <= previousRound.getAsInt()) {
                 if (round == previousRound.getAsInt() && delta.isEmpty())
                     return;
-                throw new IllegalArgumentException("Checkpoint round " + round+ " must be newer than current round " + previousRound.getAsInt()
-                        + " for column " + colId);
+                throw new IllegalArgumentException(
+                        "Checkpoint round " + round + " must be newer than current round " + previousRound.getAsInt()
+                                + " for column " + colId);
             }
 
             try (WriteBatch checkpoint = new WriteBatch()) {
@@ -133,7 +136,7 @@ public final class NodeValueToRowsStore implements AutoCloseable {
         }
     }
 
-    private void mergeValueChunk(List<byte[]> keys,List<IntArrayList> newRowsByValue,WriteBatch checkpoint) {
+    private void mergeValueChunk(List<byte[]> keys, List<IntArrayList> newRowsByValue, WriteBatch checkpoint) {
         if (keys.isEmpty())
             return;
         try {
@@ -177,9 +180,7 @@ public final class NodeValueToRowsStore implements AutoCloseable {
             Map<Integer, int[]> result = new HashMap<>();
             byte[] prefix = valueRowsPrefix(colId);
             try (RocksIterator iterator = database.newIterator()) {
-                for (iterator.seek(prefix);
-                     iterator.isValid() && hasPrefix(iterator.key(), prefix);
-                     iterator.next()) {
+                for (iterator.seek(prefix); iterator.isValid() && hasPrefix(iterator.key(), prefix); iterator.next()) {
                     result.put(decodeValueId(iterator.key()), decodeRows(iterator.value()));
                 }
                 iterator.status();
@@ -224,23 +225,24 @@ public final class NodeValueToRowsStore implements AutoCloseable {
     }
 
     private static byte[] encodeMergedRows(int[] existingRows, IntArrayList newRows) {
-        ByteBuffer buffer = ByteBuffer.allocate(Integer.BYTES + Math.multiplyExact(existingRows.length + newRows.size(), Integer.BYTES));
+        ByteBuffer buffer = ByteBuffer
+                .allocate(Integer.BYTES + Math.multiplyExact(existingRows.length + newRows.size(), Integer.BYTES));
         buffer.putInt(existingRows.length + newRows.size());
-        for (int row : existingRows) 
+        for (int row : existingRows)
             buffer.putInt(row);
-        
+
         newRows.forEach((int row) -> buffer.putInt(row));
         return buffer.array();
     }
 
     private static int[] decodeRows(byte[] bytes) {
         ByteBuffer buffer = ByteBuffer.wrap(bytes);
-        if (buffer.remaining() < Integer.BYTES) 
+        if (buffer.remaining() < Integer.BYTES)
             throw new IllegalStateException("Invalid rows record header");
         int count = buffer.getInt();
-        if (count < 0 || buffer.remaining() != Math.multiplyExact(count, Integer.BYTES)) 
+        if (count < 0 || buffer.remaining() != Math.multiplyExact(count, Integer.BYTES))
             throw new IllegalStateException("Invalid rows record length");
-        
+
         int[] rows = new int[count];
         for (int index = 0; index < count; index++) {
             rows[index] = buffer.getInt();
@@ -266,18 +268,18 @@ public final class NodeValueToRowsStore implements AutoCloseable {
     }
 
     private static int decodeValueId(byte[] key) {
-        if (key.length != 1 + Integer.BYTES * 2 || key[0] != VALUE_ROWS_PREFIX) 
+        if (key.length != 1 + Integer.BYTES * 2 || key[0] != VALUE_ROWS_PREFIX)
             throw new IllegalStateException("Invalid value-to-rows key");
-        
+
         return ByteBuffer.wrap(key, 1 + Integer.BYTES, Integer.BYTES).getInt();
     }
 
     private static boolean hasPrefix(byte[] key, byte[] prefix) {
-        if (key.length < prefix.length) 
+        if (key.length < prefix.length)
             return false;
-        
+
         for (int index = 0; index < prefix.length; index++) {
-            if (key[index] != prefix[index]) 
+            if (key[index] != prefix[index])
                 return false;
         }
         return true;
@@ -288,7 +290,7 @@ public final class NodeValueToRowsStore implements AutoCloseable {
     }
 
     private static int decodeInt(byte[] bytes) {
-        if (bytes.length != Integer.BYTES) 
+        if (bytes.length != Integer.BYTES)
             throw new IllegalStateException("Invalid integer record length: " + bytes.length);
         return ByteBuffer.wrap(bytes).getInt();
     }

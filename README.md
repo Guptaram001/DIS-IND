@@ -172,6 +172,9 @@ streams the rows.
 | `WORKER_CPUS` | Docker CPU quota per worker | `1.0` |
 | `COORDINATOR_CPUS` | Docker CPU quota for the coordinator | `1.0` |
 | `DIS_IND_VALUE_OWNER_HOT_ENTRIES` | Decoded VO membership records cached per worker | `100000` |
+| `DIS_IND_DRAIN_MAX_IN_FLIGHT` | Maximum unacknowledged drain batches per worker | `128` |
+| `DIS_IND_DRAIN_BATCH_SIZE` | Value-owner drain records aggregated per CM message | `16` |
+| `DIS_IND_DRAIN_RETRY_SECONDS` | Readiness-probe and unacknowledged-batch retry interval | `2` |
 | `DIS_IND_VALUE_OWNER_DISK_DIR` | RocksDB directory for VO membership records | run diagnostics directory |
 | `DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED` | Enable per-partition cardinality pruning in `prune` tracking mode | `true` |
 | `DIS_IND_PRUNE_COUNT_PARTITIONS` | Number of cardinality partitions; must be a positive power of two | `64` |

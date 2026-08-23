@@ -7,7 +7,8 @@ import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 
 public final class UserConfig {
-    private UserConfig() {}
+    private UserConfig() {
+    }
 
     public static final String DEFAULT_INPUT_DIR = "data/synthetic";
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
@@ -16,13 +17,16 @@ public final class UserConfig {
     public static final int MAX_VALUE_OWNER_WITNESSES = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
-    public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 200;
+    public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 100;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 8;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
-    public static final float BLOOM_FILTER_BITS_PER_KEY=10.0f;
+    public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
     public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
+    public static final int DEFAULT_DRAIN_MAX_IN_FLIGHT = 128;
+    public static final int DEFAULT_DRAIN_BATCH_SIZE = 16;
+    public static final int DEFAULT_DRAIN_RETRY_SECONDS = 2;
     public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
@@ -30,13 +34,13 @@ public final class UserConfig {
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 200_000;
     public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 200_000;
-    public static final DataOrientation DEFAULT_DATA_ORIENTATION =DataOrientation.VALUE_MAJOR;
-    public static final CandidateTrackingMode DEFAULT_CANDIDATE_TRACKING =CandidateTrackingMode.COUNT;
-    public static final String DEFAULT_VALUE_ID_DISK_DIR =System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
-    public static final String DEFAULT_VALUE_TO_ROWS_DISK_DIR =
-            System.getProperty("java.io.tmpdir") + "/dis-ind-value-to-rows";
-    public static final String DEFAULT_VALUE_OWNER_DISK_DIR =
-            System.getProperty("java.io.tmpdir") + "/dis-ind-value-owners";
+    public static final DataOrientation DEFAULT_DATA_ORIENTATION = DataOrientation.VALUE_MAJOR;
+    public static final CandidateTrackingMode DEFAULT_CANDIDATE_TRACKING = CandidateTrackingMode.COUNT;
+    public static final String DEFAULT_VALUE_ID_DISK_DIR = System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
+    public static final String DEFAULT_VALUE_TO_ROWS_DISK_DIR = System.getProperty("java.io.tmpdir")
+            + "/dis-ind-value-to-rows";
+    public static final String DEFAULT_VALUE_OWNER_DISK_DIR = System.getProperty("java.io.tmpdir")
+            + "/dis-ind-value-owners";
 
     public static String inputDir = DEFAULT_INPUT_DIR;
     public static String outputDir = DEFAULT_OUTPUT_FILE;
@@ -49,6 +53,9 @@ public final class UserConfig {
     public static int VALUE_OWNER_BUCKETS = DEFAULT_VALUE_OWNER_BUCKETS;
     public static int BATCH_ACK_TIMEOUT_SECONDS = DEFAULT_BATCH_ACK_TIMEOUT_SECONDS;
     public static int FINAL_CM_DRAIN_TIMEOUT_SECONDS = DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS;
+    public static int DRAIN_MAX_IN_FLIGHT = DEFAULT_DRAIN_MAX_IN_FLIGHT;
+    public static int DRAIN_BATCH_SIZE = DEFAULT_DRAIN_BATCH_SIZE;
+    public static int DRAIN_RETRY_SECONDS = DEFAULT_DRAIN_RETRY_SECONDS;
     public static int CHECKPOINT_WRITERS_PER_NODE = DEFAULT_CHECKPOINT_WRITERS_PER_NODE;
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static boolean PRUNE_CQF_ENABLED = DEFAULT_PRUNE_CQF_ENABLED;
@@ -59,7 +66,7 @@ public final class UserConfig {
     public static String VALUE_ID_DISK_DIR = DEFAULT_VALUE_ID_DISK_DIR;
     public static String VALUE_TO_ROWS_DISK_DIR = DEFAULT_VALUE_TO_ROWS_DISK_DIR;
     public static String VALUE_OWNER_DISK_DIR = DEFAULT_VALUE_OWNER_DISK_DIR;
-    public static DataOrientation DATA_ORIENTATION =DEFAULT_DATA_ORIENTATION;
+    public static DataOrientation DATA_ORIENTATION = DEFAULT_DATA_ORIENTATION;
     public static CandidateTrackingMode CANDIDATE_TRACKING = DEFAULT_CANDIDATE_TRACKING;
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
@@ -75,6 +82,9 @@ public final class UserConfig {
         CLI_PROPERTIES.put("value-owner-buckets", "dis.ind.value-owner-buckets");
         CLI_PROPERTIES.put("batch-ack-timeout-seconds", "dis.ind.batch-ack-timeout-seconds");
         CLI_PROPERTIES.put("final-cm-drain-timeout-seconds", "dis.ind.final-cm-drain-timeout-seconds");
+        CLI_PROPERTIES.put("drain-max-in-flight", "dis.ind.drain-max-in-flight");
+        CLI_PROPERTIES.put("drain-batch-size", "dis.ind.drain-batch-size");
+        CLI_PROPERTIES.put("drain-retry-seconds", "dis.ind.drain-retry-seconds");
         CLI_PROPERTIES.put("checkpoint-writers-per-node", "dis.ind.checkpoint-writers-per-node");
         CLI_PROPERTIES.put("store-value-strings", "dis.ind.store-value-strings");
         CLI_PROPERTIES.put("prune-cqf-enabled", "dis.ind.prune-cqf-enabled");
@@ -85,8 +95,8 @@ public final class UserConfig {
         CLI_PROPERTIES.put("value-to-rows-disk-dir", "dis.ind.value-to-rows-disk-dir");
         CLI_PROPERTIES.put("value-owner-hot-entries", "dis.ind.value-owner-hot-entries");
         CLI_PROPERTIES.put("value-owner-disk-dir", "dis.ind.value-owner-disk-dir");
-        CLI_PROPERTIES.put("data-orientation","dis.ind.data-orientation");
-        CLI_PROPERTIES.put("candidate-tracking","dis.ind.candidate-tracking");
+        CLI_PROPERTIES.put("data-orientation", "dis.ind.data-orientation");
+        CLI_PROPERTIES.put("candidate-tracking", "dis.ind.candidate-tracking");
     }
 
     /**
@@ -116,6 +126,12 @@ public final class UserConfig {
                 "dis.ind.batch-ack-timeout-seconds", DEFAULT_BATCH_ACK_TIMEOUT_SECONDS);
         FINAL_CM_DRAIN_TIMEOUT_SECONDS = positiveIntSetting("DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS",
                 "dis.ind.final-cm-drain-timeout-seconds", DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS);
+        DRAIN_MAX_IN_FLIGHT = positiveIntSetting("DIS_IND_DRAIN_MAX_IN_FLIGHT",
+                "dis.ind.drain-max-in-flight", DEFAULT_DRAIN_MAX_IN_FLIGHT);
+        DRAIN_BATCH_SIZE = positiveIntSetting("DIS_IND_DRAIN_BATCH_SIZE",
+                "dis.ind.drain-batch-size", DEFAULT_DRAIN_BATCH_SIZE);
+        DRAIN_RETRY_SECONDS = positiveIntSetting("DIS_IND_DRAIN_RETRY_SECONDS",
+                "dis.ind.drain-retry-seconds", DEFAULT_DRAIN_RETRY_SECONDS);
         CHECKPOINT_WRITERS_PER_NODE = positiveIntSetting("DIS_IND_CHECKPOINT_WRITERS_PER_NODE",
                 "dis.ind.checkpoint-writers-per-node", DEFAULT_CHECKPOINT_WRITERS_PER_NODE);
         STORE_VALUE_STRINGS = booleanSetting("DIS_IND_STORE_VALUE_STRINGS",
@@ -137,16 +153,17 @@ public final class UserConfig {
         VALUE_OWNER_DISK_DIR = stringSetting("DIS_IND_VALUE_OWNER_DISK_DIR",
                 "dis.ind.value-owner-disk-dir", DEFAULT_VALUE_OWNER_DISK_DIR);
         DATA_ORIENTATION = orientationSetting("DIS_IND_DATA_ORIENTATION",
-                            "dis.ind.data-orientation",DEFAULT_DATA_ORIENTATION);
+                "dis.ind.data-orientation", DEFAULT_DATA_ORIENTATION);
         CANDIDATE_TRACKING = candidateTrackingSetting("DIS_IND_CANDIDATE_TRACKING",
-                                            "dis.ind.candidate-tracking",DEFAULT_CANDIDATE_TRACKING);
-        // if (CANDIDATE_TRACKING == CandidateTrackingMode.WITNESS && MAX_TRACKED_VIOLATIONS > MAX_VALUE_OWNER_WITNESSES) {
-        //     throw new IllegalArgumentException("dis.ind.max-tracked-violations / "
-        //                     + "DIS_IND_MAX_TRACKED_VIOLATIONS must be at most "
-        //                     + MAX_VALUE_OWNER_WITNESSES
-        //                     + " when witness candidate tracking is selected: "
-        //                     + MAX_TRACKED_VIOLATIONS);
-        //}
+                "dis.ind.candidate-tracking", DEFAULT_CANDIDATE_TRACKING);
+        // if (CANDIDATE_TRACKING == CandidateTrackingMode.WITNESS &&
+        // MAX_TRACKED_VIOLATIONS > MAX_VALUE_OWNER_WITNESSES) {
+        // throw new IllegalArgumentException("dis.ind.max-tracked-violations / "
+        // + "DIS_IND_MAX_TRACKED_VIOLATIONS must be at most "
+        // + MAX_VALUE_OWNER_WITNESSES
+        // + " when witness candidate tracking is selected: "
+        // + MAX_TRACKED_VIOLATIONS);
+        // }
     }
 
     private static void applyCommandLine(String[] args) {
@@ -188,20 +205,21 @@ public final class UserConfig {
         return environment == null || environment.isBlank() ? fallback : environment;
     }
 
-    private static int positiveIntSetting(String environmentName,String propertyName,int fallback) {
-        String value = stringSetting(environmentName,propertyName,null);
+    private static int positiveIntSetting(String environmentName, String propertyName, int fallback) {
+        String value = stringSetting(environmentName, propertyName, null);
         if (value == null) {
             return fallback;
         }
         try {
             int parsed = Integer.parseInt(value);
             if (parsed <= 0) {
-                throw new IllegalArgumentException(settingName(environmentName, propertyName)+ " must be greater than zero: " + value);
+                throw new IllegalArgumentException(
+                        settingName(environmentName, propertyName) + " must be greater than zero: " + value);
             }
             return parsed;
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException(
-                    settingName(environmentName, propertyName)+ " must be an integer: " + value,exception);
+                    settingName(environmentName, propertyName) + " must be an integer: " + value, exception);
         }
     }
 
@@ -214,9 +232,9 @@ public final class UserConfig {
         return value;
     }
 
-    private static double doubleSetting(String environmentName,String propertyName,double fallback) {
+    private static double doubleSetting(String environmentName, String propertyName, double fallback) {
 
-        String value = stringSetting(environmentName,propertyName,null);
+        String value = stringSetting(environmentName, propertyName, null);
         if (value == null) {
             return fallback;
         }
@@ -224,13 +242,14 @@ public final class UserConfig {
             double parsed = Double.parseDouble(value);
             return parsed;
         } catch (NumberFormatException exception) {
-            throw new IllegalArgumentException(settingName(environmentName, propertyName)+ " must be a number: " + value,exception);
+            throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be a number: " + value, exception);
         }
     }
 
-    private static boolean booleanSetting(String environmentName,String propertyName,boolean fallback) {
+    private static boolean booleanSetting(String environmentName, String propertyName, boolean fallback) {
 
-        String value = stringSetting(environmentName,propertyName,null);
+        String value = stringSetting(environmentName, propertyName, null);
 
         if (value == null) {
             return fallback;
@@ -239,42 +258,44 @@ public final class UserConfig {
         return switch (value.toLowerCase()) {
             case "true", "1", "yes" -> true;
             case "false", "0", "no" -> false;
-            default -> throw new IllegalArgumentException(settingName(environmentName, propertyName)+ " must be true or false: " + value);
+            default -> throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be true or false: " + value);
         };
     }
 
-    private static String settingName(String environmentName,String propertyName) {
+    private static String settingName(String environmentName, String propertyName) {
         return propertyName + " / " + environmentName;
     }
 
-    private static DataOrientation orientationSetting(String environmentName,String propertyName,
-        DataOrientation fallback) {
+    private static DataOrientation orientationSetting(String environmentName, String propertyName,
+            DataOrientation fallback) {
 
-        String value = stringSetting(environmentName,propertyName,null);
+        String value = stringSetting(environmentName, propertyName, null);
 
         if (value == null)
             return fallback;
 
         return switch (value.trim().toLowerCase()) {
-            case "value", "value-major" ->DataOrientation.VALUE_MAJOR;
-            case "column", "column-major" ->DataOrientation.COLUMN_MAJOR;
-            default -> throw new IllegalArgumentException(settingName(environmentName, propertyName)+
-                " must be value or column: " + value);
+            case "value", "value-major" -> DataOrientation.VALUE_MAJOR;
+            case "column", "column-major" -> DataOrientation.COLUMN_MAJOR;
+            default -> throw new IllegalArgumentException(settingName(environmentName, propertyName) +
+                    " must be value or column: " + value);
         };
     }
-    private static CandidateTrackingMode candidateTrackingSetting(String environmentName,String propertyName,
+
+    private static CandidateTrackingMode candidateTrackingSetting(String environmentName, String propertyName,
             CandidateTrackingMode fallback) {
 
-        String value = stringSetting(environmentName,propertyName,null);
+        String value = stringSetting(environmentName, propertyName, null);
         if (value == null)
             return fallback;
 
         return switch (value.trim().toLowerCase()) {
-            case "count", "counter" ->CandidateTrackingMode.COUNT;
-            case "witness", "witnesses" ->CandidateTrackingMode.WITNESS;
-            case "prune", "pruner" ->CandidateTrackingMode.PRUNE;
+            case "count", "counter" -> CandidateTrackingMode.COUNT;
+            case "witness", "witnesses" -> CandidateTrackingMode.WITNESS;
+            case "prune", "pruner" -> CandidateTrackingMode.PRUNE;
             default -> throw new IllegalArgumentException(
-                    settingName(environmentName, propertyName)+ " must be count or witness: "+ value);
+                    settingName(environmentName, propertyName) + " must be count or witness: " + value);
         };
     }
 }

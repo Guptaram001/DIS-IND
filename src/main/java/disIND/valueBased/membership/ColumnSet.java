@@ -14,4 +14,6 @@ public interface ColumnSet {
     ColumnSet copy();
 
     void andNot(ColumnSet other);
+
+    void clear();
 }

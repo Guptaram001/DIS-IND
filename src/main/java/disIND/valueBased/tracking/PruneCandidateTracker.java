@@ -2,6 +2,7 @@ package disIND.valueBased.tracking;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +19,10 @@ import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.PruneState;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
 
 public final class PruneCandidateTracker implements CandidateTracker {
     private final ValueOwnerCqf cqf;
@@ -50,36 +55,30 @@ public final class PruneCandidateTracker implements CandidateTracker {
         }
     }
 
-    private static final class PruneDelta {
-        private boolean violationCreated;
-
-        private boolean hasCreatedViolation() {
-            return violationCreated;
-        }
-    }
-
     private static final class PruneChanges implements CandidateViolationAfterApplyingUpdates {
         private final int bucketId;
-        private final Map<CandidateKey, PruneDelta> deltas = new HashMap<>();
+        private static final byte REPAIRED_ONLY = 0;
+        private static final byte VIOLATION_CREATED = 1;
+        private final Long2ByteOpenHashMap deltas = new Long2ByteOpenHashMap();
 
         private PruneChanges(int bucketId) {
+            deltas.defaultReturnValue(REPAIRED_ONLY);
             this.bucketId = bucketId;
         }
 
         @Override
         public void violationCreated(int lhsCol, int rhsCol, int valueId) {
-            delta(lhsCol, rhsCol).violationCreated = true;
+            long key = CandidateEvaluator.candidateKey(lhsCol, rhsCol);
+            deltas.put(key, VIOLATION_CREATED);
         }
 
         @Override
         public void violationRepaired(int lhsCol, int rhsCol, int valueId) {
-            delta(lhsCol, rhsCol);
+            long key = CandidateEvaluator.candidateKey(lhsCol, rhsCol);
+            if (!deltas.containsKey(key))
+                deltas.put(key, REPAIRED_ONLY);
         }
 
-        private PruneDelta delta(int lhsCol, int rhsCol) {
-            CandidateKey key = new CandidateKey(bucketId, lhsCol, rhsCol);
-            return deltas.computeIfAbsent(key, ignored -> new PruneDelta());
-        }
     }
 
     @Override
@@ -89,7 +88,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
 
     @Override
     public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
-            Map<Integer, Int2IntMap> updatedMembership,
+            Int2ObjectMap<Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
         Objects.requireNonNull(updatedMembership, "updatedMembership");
         Objects.requireNonNull(store, "store");
@@ -97,85 +96,126 @@ public final class PruneCandidateTracker implements CandidateTracker {
         if (!(changes instanceof PruneChanges pruneChanges))
             throw new IllegalArgumentException("Prune tracker received incompatible changes");
 
-        Set<CandidateKey> keys = pruneChanges.deltas.keySet();
+        Set<CandidateKey> keys = new HashSet<>(pruneChanges.deltas.size());
+        LongIterator keyIterator = pruneChanges.deltas.keySet().iterator();
+        while (keyIterator.hasNext()) {
+            long compactKey = keyIterator.nextLong();
+            keys.add(new CandidateKey(pruneChanges.bucketId, lhsColumn(compactKey), rhsColumn(compactKey)));
+        }
         if (keys.isEmpty())
-            return new TrackingResult(Map.of(), Map.of());
+            return new TrackingResult(Map.of(), new Int2ObjectOpenHashMap<>());
 
         Map<CandidateKey, CandidateState> previousStates = store.loadCandidates(keys, CandidateTrackingMode.PRUNE);
-        Map<CandidateKey, PruneState> nextStates = new HashMap<>();
+        Map<CandidateKey, CandidateState> changedStates = new HashMap<>(keys.size());
+        Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
 
         Set<CandidateKey> unresolved = new LinkedHashSet<>();
-        for (Map.Entry<CandidateKey, PruneDelta> entry : pruneChanges.deltas.entrySet()) {
-            CandidateKey key = entry.getKey();
-            PruneDelta delta = entry.getValue();
+        for (CandidateKey key : keys) {
+            long compactKey = CandidateEvaluator.candidateKey(key.lhsCol(), key.rhsCol());
+            byte delta = pruneChanges.deltas.get(compactKey);
             PruneState before = (PruneState) previousStates.get(key);
+            if (before == null)
+                throw new IllegalStateException("No previous prune state for candidate " + key);
 
-            if (delta.hasCreatedViolation()) {
-                nextStates.put(key, PruneState.rejectedByCluster());
+            if (delta == PruneChanges.VIOLATION_CREATED) {
+                PruneState after = PruneState.rejectedByCluster();
                 metrics.directLhsRejected(key.lhsCol());
+
+                recordResult(
+                        key,
+                        before,
+                        after,
+                        changedStates,
+                        transitionsByLhs);
+
                 continue;
             }
 
             if (!before.rejected()) {
-                nextStates.put(key, before);
                 continue;
             }
 
-            int lhsDistinct = distinctCount(key.lhsCol());
-            int rhsDistinct = distinctCount(key.rhsCol());
-            if (lhsDistinct > rhsDistinct) {
-                nextStates.put(key, PruneState.rejectedByCardinality());
-                metrics.wholeCountPruned(key.lhsCol());
+            int lhsCol = key.lhsCol();
+            int rhsCol = key.rhsCol();
+            if (distinctCount(lhsCol) > distinctCount(rhsCol)) {
+                metrics.wholeCountPruned(lhsCol);
+                recordResult(key, before, PruneState.rejectedByCardinality(), changedStates, transitionsByLhs);
                 continue;
             }
 
-            if (rejectedByPartitionCounts(key.lhsCol(), key.rhsCol())) {
-                nextStates.put(key, PruneState.rejectedByCardinality());
-                metrics.partitionCountPruned(key.lhsCol());
+            if (rejectedByPartitionCounts(lhsCol, rhsCol)) {
+                metrics.partitionCountPruned(lhsCol);
+                recordResult(key, before, PruneState.rejectedByCardinality(), changedStates, transitionsByLhs);
                 continue;
             }
 
             unresolved.add(key);
         }
 
-        Set<CandidateKey> cqfViolations = cqf == null ? Set.of() : cqf.proposeWitnesses(unresolved).keySet();
-        Set<CandidateKey> clusterCandidates = new LinkedHashSet<>(unresolved);
-        clusterCandidates.removeAll(cqfViolations);
-        Set<CandidateKey> clusterViolations = clusters.findViolations(clusterCandidates);
+        if (!unresolved.isEmpty()) {
+            Set<CandidateKey> cqfViolations = cqf == null ? Set.of() : cqf.proposeWitnesses(unresolved).keySet();
 
-        cqfViolations.forEach(key -> metrics.cqfPruned(key.lhsCol()));
-        clusterCandidates.forEach(key -> metrics.exactTested(key.lhsCol()));
-        clusterViolations.forEach(key -> metrics.exactRejected(key.lhsCol()));
-        clusterCandidates.stream().filter(key -> !clusterViolations.contains(key))
-                .forEach(key -> metrics.exactValidated(key.lhsCol()));
+            /*
+             * CQF-resolved candidates do not need exact cluster
+             * evaluation.
+             */
+            for (CandidateKey key : cqfViolations) {
+                metrics.cqfPruned(key.lhsCol());
+                PruneState before = (PruneState) previousStates.get(key);
+                recordResult(key, before, PruneState.rejectedByCluster(), changedStates, transitionsByLhs);
+            }
 
-        for (CandidateKey key : unresolved) {
-            PruneState after = cqfViolations.contains(key) || clusterViolations.contains(key)
-                    ? PruneState.rejectedByCluster()
-                    : PruneState.valid();
-            nextStates.put(key, after);
-        }
+            /*
+             * Reuse unresolved as the exact-evaluation set instead
+             * of allocating clusterCandidates.
+             */
+            unresolved.removeAll(cqfViolations);
 
-        Map<CandidateKey, CandidateState> changedStates = new HashMap<>();
-
-        Map<Integer, List<CandidateLocalStatus>> transitionsByLhs = new HashMap<>();
-
-        for (CandidateKey key : keys) {
-            PruneState before = (PruneState) previousStates.get(key);
-            PruneState after = nextStates.get(key);
-            if (after == null)
-                throw new IllegalStateException("No prune result for candidate " + key);
-
-            if (!after.equals(before))
-                changedStates.put(key, after);
-
-            if (before.rejected() != after.rejected()) {
-                transitionsByLhs.computeIfAbsent(key.lhsCol(), ignored -> new ArrayList<>())
-                        .add(new CandidateLocalStatus(key.rhsCol(), !after.rejected()));
+            if (!unresolved.isEmpty()) {
+                Set<CandidateKey> clusterViolations = clusters.findViolations(unresolved);
+                for (CandidateKey key : unresolved) {
+                    metrics.exactTested(key.lhsCol());
+                    boolean rejected = clusterViolations.contains(key);
+                    PruneState after;
+                    if (rejected) {
+                        metrics.exactRejected(key.lhsCol());
+                        after = PruneState.rejectedByCluster();
+                    } else {
+                        metrics.exactValidated(key.lhsCol());
+                        after = PruneState.valid();
+                    }
+                    PruneState before = (PruneState) previousStates.get(key);
+                    recordResult(key, before, after, changedStates, transitionsByLhs);
+                }
             }
         }
 
         return new TrackingResult(changedStates, transitionsByLhs);
+    }
+
+    private static void recordResult(CandidateKey key, PruneState before, PruneState after,
+            Map<CandidateKey, CandidateState> changedStates,
+            Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs) {
+
+        if (!after.equals(before))
+            changedStates.put(key, after);
+        if (before.rejected() != after.rejected()) {
+            int lhsCol = key.lhsCol();
+            List<CandidateLocalStatus> transitions = transitionsByLhs.get(lhsCol);
+            if (transitions == null) {
+                transitions = new ArrayList<>();
+                transitionsByLhs.put(lhsCol, transitions);
+            }
+            transitions.add(new CandidateLocalStatus(key.rhsCol(), !after.rejected()));
+        }
+    }
+
+    private static int lhsColumn(long compactKey) {
+        return (int) (compactKey >>> Integer.SIZE);
+    }
+
+    private static int rhsColumn(long compactKey) {
+        return (int) compactKey;
     }
 
     public boolean cqfEnabled() {

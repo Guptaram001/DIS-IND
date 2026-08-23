@@ -14,6 +14,7 @@ import akka.cluster.typed.ClusterSingleton;
 import akka.cluster.typed.SingletonActor;
 import disIND.valueBased.model.SharedModel.*;
 import disIND.valueBased.protocol.ValueOwnerProtocol.FinalizeMembership;
+import disIND.valueBased.protocol.DrainProtocol;
 import disIND.valueBased.monitor.DiscoveryStatsActor;
 import disIND.valueBased.monitor.StatsCommand;
 import disIND.valueBased.structures.*;
@@ -25,6 +26,11 @@ import disIND.valueBased.utility.UserConfig;
 import static disIND.valueBased.utility.Debug.formLog;
 
 public final class INDGuardian extends AbstractBehavior<BDCommand> {
+    private static final String DISPATCHER_DEFAULT = "akka.actor.default-dispatcher";
+    private static final String DISPATCHER_INTERNAL = "akka.actor.internal-dispatcher";
+    private static final String DISPATCHER_CHECKPOINT = "akka.actor.checkpoint-io-dispatcher";
+    private static final String DISPATCHER_IO = "akka.actor.io-dispatcher";
+    private static final String DISPATCHER_CPU_INTENSIVE = "akka.actor.io-dispatcher";
 
     public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold, DatasetMetadata metadata,
             DataOrientation orientation, CandidateTrackingMode candidateTracking) {
@@ -40,6 +46,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private final DatasetMetadata metadata;
     private final AtomicLong totalRows = new AtomicLong(0L);
     private final ValueOwnerMembershipStore valueOwnerMembershipStore;
+    private final ActorRef<DrainProtocol.Command> drainDispatcher;
 
     public static Behavior<BDCommand> create(Config cfg) {
         return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg));
@@ -52,31 +59,37 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ClusterSingleton singletons = ClusterSingleton.get(ctx.getSystem());
 
         ActorRef<StatsCommand> statsRef = singletons
-                .init(SingletonActor.of(DiscoveryStatsActor.create(), "discovery-stats"));
+                .init(SingletonActor.of(DiscoveryStatsActor.create(), "discovery-stats")
+                        .withProps(Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT)));
+
         this.rcRef = singletons
-                .init(SingletonActor.of(ResultCollectorActor.create(metadata, statsRef), "result-collector"));
+                .init(SingletonActor.of(ResultCollectorActor.create(metadata, statsRef), "result-collector")
+                        .withProps(Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT)));
 
         String nodeId = Cluster.get(ctx.getSystem()).selfMember().address().toString().replaceAll("[^A-Za-z0-9._-]",
                 "_");
 
         this.valueOwnerMembershipStore = new ValueOwnerMembershipStore(Path.of(UserConfig.VALUE_OWNER_DISK_DIR, nodeId),
-                UserConfig.VALUE_OWNER_HOT_ENTRIES, cfg.candidateTracking);
+                UserConfig.VALUE_OWNER_HOT_ENTRIES, cfg.candidateTracking,
+                UserConfig.VALUE_OWNER_BUCKETS);
 
         WorkerValueIdStore workerValueIdStore = new WorkerValueIdStore(Path.of(UserConfig.VALUE_ID_DISK_DIR, nodeId),
                 UserConfig.VALUE_ID_HOT_ENTRIES, UserConfig.VALUE_OWNER_BUCKETS);
 
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         this.sharding = sharding;
+        this.drainDispatcher = ctx.spawn(DrainDispatcherActor.create(sharding), "drainer",
+                Props.empty().withDispatcherFromConfig(DISPATCHER_CPU_INTENSIVE));
 
         sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY, entityCtx -> {
             return ValueOwnerActor.create(entityCtx.getEntityId(),
                     sharding, metadata, valueOwnerMembershipStore, workerValueIdStore, cfg.orientation(),
-                    cfg.candidateTracking());
-        }).withRole("worker")
-                .withEntityProps(Props.empty().withDispatcherFromConfig("checkpoint-io-dispatcher")));
+                    cfg.candidateTracking(), drainDispatcher);
+        }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT)));
 
         sharding.init(Entity.of(DirectBatchAggregatorActor.TYPE_KEY, entityCtx -> DirectBatchAggregatorActor.create())
-                .withRole("worker"));
+                .withRole("worker").withEntityProps(Props.empty()
+                        .withDispatcherFromConfig(DISPATCHER_CPU_INTENSIVE)));
 
         if (Debug.INTERNAL)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(), -1, "-",
@@ -85,7 +98,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         sharding.init(Entity.of(CandidateManagerActor_.TYPE_KEY, entityCtx -> {
             int lhsCol = Integer.parseInt(entityCtx.getEntityId().substring("cm-lhs-".length()));
             return CandidateManagerActor_.create(lhsCol, rcRef, metadata);
-        }).withRole("worker"));
+        }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_CPU_INTENSIVE)));
 
         if (Debug.INTERNAL)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(), -1, "-",

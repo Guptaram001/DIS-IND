@@ -42,7 +42,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private final int ownerCount;
     private final Path databasePath;
     // Since each value is ultimately mapped to one bucket
-    private final Object2IntLinkedOpenHashMap<String>[] ownerCaches;
+    private final OwnerCache[] ownerCaches;
     private final int[] nextIds;
     private final byte[][] nextIdKeys;
     private final BloomFilter bloomFilter;
@@ -52,6 +52,15 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private volatile boolean closed;
     private final int maxHotEntries;
     private final int maxEntriesPerOwner;
+
+    private static final class OwnerCache {
+        private final Object2IntLinkedOpenHashMap<String> values;
+
+        private OwnerCache(int initialCapacity) {
+            values = new Object2IntLinkedOpenHashMap<>(initialCapacity);
+            values.defaultReturnValue(UNRESOLVED);
+        }
+    }
 
     public WorkerValueIdStore(Path databasePath, int maxHotEntries, int ownerCount) {
         if (maxHotEntries < 0)
@@ -65,7 +74,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
         this.nextIdKeys = new byte[ownerCount][];
         this.maxHotEntries = maxHotEntries;
         this.maxEntriesPerOwner = Math.max(1, maxHotEntries / ownerCount);
-        this.ownerCaches = new Object2IntLinkedOpenHashMap[ownerCount];
+        this.ownerCaches = new OwnerCache[ownerCount];
         for (int ownerId = 0; ownerId < ownerCount; ownerId++) {
             nextIdKeys[ownerId] = ByteBuffer
                     .allocate(1 + Integer.BYTES)
@@ -79,14 +88,15 @@ public final class WorkerValueIdStore implements AutoCloseable {
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
                     .setFilterPolicy(bloomFilter)
                     .setWholeKeyFiltering(true);
-            this.options = new Options()
-                    .setCreateIfMissing(true)
-                    .setTableFormatConfig(tableConfig)
-                    .setWriteBufferSize(WRITE_BUFFER_BYTES)
-                    .setMaxWriteBufferNumber(2)
-                    .setMinWriteBufferNumberToMerge(1)
-                    .setMaxTotalWalSize(MAX_TOTAL_WAL_BYTES);
-            this.writeOptions = new WriteOptions().setSync(false).setDisableWAL(false);
+            this.options = new Options();
+            this.options.setCreateIfMissing(true);
+            this.options.setTableFormatConfig(tableConfig);
+            this.options.setWriteBufferSize(WRITE_BUFFER_BYTES);
+            this.options.setMaxWriteBufferNumber(2);
+            this.options.setMinWriteBufferNumberToMerge(1);
+            this.options.setMaxTotalWalSize(MAX_TOTAL_WAL_BYTES);
+            this.writeOptions = new WriteOptions();
+            this.writeOptions.setSync(false).setDisableWAL(false);
             this.database = RocksDB.open(options, databasePath.toString());
         } catch (IOException | RocksDBException exception) {
             throw new IllegalStateException("Cannot open worker value-ID RocksDB at " + databasePath, exception);
@@ -94,13 +104,12 @@ public final class WorkerValueIdStore implements AutoCloseable {
     }
 
     private Object2IntLinkedOpenHashMap<String> ownerCache(int ownerId) {
-        Object2IntLinkedOpenHashMap<String> cache = ownerCaches[ownerId];
+        OwnerCache cache = ownerCaches[ownerId];
         if (cache == null) {
-            cache = new Object2IntLinkedOpenHashMap<>(Math.min(maxEntriesPerOwner, 1_024));
-            cache.defaultReturnValue(UNRESOLVED);
+            cache = new OwnerCache(Math.min(maxEntriesPerOwner, 1_024));
             ownerCaches[ownerId] = cache;
         }
-        return cache;
+        return cache.values;
     }
 
     public Object2IntMap<String> resolveBatch(int ownerId, List<ValueData> values) {
@@ -123,7 +132,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
             if (resolved.containsKey(value))
                 continue;
 
-            Integer cached = cache.getAndMoveToLast(value);
+            int cached = cache.getAndMoveToLast(value);
             if (cached != UNRESOLVED) {
                 resolved.put(value, cached);
             } else {
@@ -259,9 +268,9 @@ public final class WorkerValueIdStore implements AutoCloseable {
             return;
         closed = true;
 
-        for (Object2IntLinkedOpenHashMap<String> cache : ownerCaches)
+        for (OwnerCache cache : ownerCaches)
             if (cache != null)
-                cache.clear();
+                cache.values.clear();
 
         database.close();
         writeOptions.close();

@@ -12,6 +12,7 @@ import disIND.valueBased.utility.UserConfig;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.ints.IntIterator;
 
 import java.util.BitSet;
 import java.util.Map;
@@ -80,6 +81,9 @@ public sealed interface ModeSpecificContext
         private final ValueOwnerCqf cqf;
         private final PruneMetricsCollector metrics;
 
+        private final BitSet beforeSignature;
+        private final BitSet afterSignature;
+
         private PruneContext(int bucketId, int totalColumns) {
             localDistinctCounts = new int[totalColumns];
             localDistinctCountsByPartition = UserConfig.PRUNE_PARTITION_COUNTS_ENABLED
@@ -90,6 +94,9 @@ public sealed interface ModeSpecificContext
             metrics = new PruneMetricsCollector(totalColumns);
             tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, localDistinctCountsByPartition,
                     metrics);
+
+            beforeSignature = new BitSet(totalColumns);
+            afterSignature = new BitSet(totalColumns);
         }
 
         @Override
@@ -116,10 +123,15 @@ public sealed interface ModeSpecificContext
 
         @Override
         public void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns) {
-            BitSet afterSignature = new BitSet(localDistinctCounts.length);
-            membershipAfter.keySet().forEach(afterSignature::set);
-            BitSet beforeSignature = (BitSet) afterSignature.clone();
-            addedColumns.forEach(beforeSignature::clear);
+            afterSignature.clear();
+            IntIterator membershipIterator = membershipAfter.keySet().iterator();
+            while (membershipIterator.hasNext())
+                afterSignature.set(membershipIterator.nextInt());
+            beforeSignature.clear();
+            beforeSignature.or(afterSignature);
+            for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns.nextSetBit(column + 1)) {
+                beforeSignature.clear(column);
+            }
             clusters.moveMembership(beforeSignature, afterSignature);
         }
 
@@ -130,13 +142,15 @@ public sealed interface ModeSpecificContext
 
         @Override
         public void candidateStatesChanged(Map<CandidateKey, CandidateState> changedStates) {
-            changedStates.forEach((key, state) -> {
+            for (Map.Entry<CandidateKey, CandidateState> entry : changedStates.entrySet()) {
+                CandidateKey key = entry.getKey();
                 long compactKey = candidateKey(key.lhsCol(), key.rhsCol());
+                CandidateState state = entry.getValue();
                 if (state.rejected())
                     locallyRejectedCandidates.add(compactKey);
                 else
                     locallyRejectedCandidates.remove(compactKey);
-            });
+            }
         }
 
         @Override

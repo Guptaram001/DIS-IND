@@ -16,7 +16,7 @@ public final class ValueOwnerProtocol {
     }
 
     public sealed interface Command extends AkkaSerializable
-            permits StoreBatch, GetBucket, FinalizeMembership {
+            permits StoreBatch, GetBucket, FinalizeMembership, CandidateManagerReady, DrainQueued, RetryDrainProbe {
     }
 
     @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "batchType")
@@ -79,6 +79,14 @@ public final class ValueOwnerProtocol {
 
     public record FinalizeMembership(int finalRound, int expectedBuckets, int totalColumns) implements Command {
     }
+
+    public record CandidateManagerReady(int finalRound, int lhsCol, int bucketId) implements Command {
+    }
+
+    public record DrainQueued(int finalRound, int lhsCol, int bucketId) implements Command {
+    }
+
+    public enum RetryDrainProbe implements Command { INSTANCE }
 
     public record ColumnCount(int colId, long count) implements AkkaSerializable {
     }

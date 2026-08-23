@@ -79,6 +79,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         return newReceiveBuilder()
                 .onMessage(CMCommand.ValueOwnerCandidateStatusUpdate.class, this::onCandidateStatusUpdate)
                 .onMessage(CMCommand.ValueOwnerDrained.class, this::onValueOwnerDrained)
+                .onMessage(CMCommand.DrainReadyProbe.class, this::onDrainReadyProbe)
+                .onMessage(CMCommand.OwnersDrained.class, this::onOwnersDrained)
                 .onMessage(CMCommand.NoMoreCandidates.class, this::onNoMoreCandidates)
                 .build();
     }
@@ -132,6 +134,30 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         drainedValueOwners.add(msg.bucketId());
         if (drainedValueOwners.getCardinality() == expectedValueOwnerDrains)
             reportFinished();
+        return this;
+    }
+
+    private Behavior<CMCommand> onDrainReadyProbe(CMCommand.DrainReadyProbe msg) {
+        msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.CandidateManagerReady(
+                msg.finalRound(), lhsOwnerCol, msg.bucketId()));
+        return this;
+    }
+
+    private Behavior<CMCommand> onOwnersDrained(CMCommand.OwnersDrained message) {
+        var batch = message.batch();
+        for (var record : batch.owners()) {
+            if (record.lhsCol() != lhsOwnerCol) {
+                getContext().getLog().warn("Ignoring misrouted drain batch={} lhs={} expectedLhs={}",
+                        batch.batchId(), record.lhsCol(), lhsOwnerCol);
+                continue;
+            }
+            onValueOwnerDrained(new CMCommand.ValueOwnerDrained(record.finalRound(), record.bucketId(),
+                    record.expectedBuckets(), record.locallyRejectedRhs(),
+                    record.candidateEvaluationsWithoutPruning(), record.exactValueProbesWithoutPruning(),
+                    record.pruneMetrics()));
+        }
+        batch.replyTo().tell(new disIND.valueBased.protocol.DrainProtocol.BatchAcknowledged(
+                batch.batchId(), lhsOwnerCol));
         return this;
     }
 
