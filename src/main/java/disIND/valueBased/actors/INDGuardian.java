@@ -28,9 +28,9 @@ import static disIND.valueBased.utility.Debug.formLog;
 public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private static final String DISPATCHER_DEFAULT = "akka.actor.default-dispatcher";
     private static final String DISPATCHER_INTERNAL = "akka.actor.internal-dispatcher";
-    private static final String DISPATCHER_CHECKPOINT = "akka.actor.checkpoint-io-dispatcher";
+    private static final String DISPATCHER_VO = "akka.actor.checkpoint-vo-work-dispatcher";
     private static final String DISPATCHER_IO = "akka.actor.io-dispatcher";
-    private static final String DISPATCHER_CPU_INTENSIVE = "akka.actor.io-dispatcher";
+    private static final String DISPATCHER_CPU_INTENSIVE = "akka.actor.cpu-intensive-dispatcher";
 
     public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold, DatasetMetadata metadata,
             DataOrientation orientation, CandidateTrackingMode candidateTracking) {
@@ -79,17 +79,17 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         this.sharding = sharding;
         this.drainDispatcher = ctx.spawn(DrainDispatcherActor.create(sharding), "drainer",
-                Props.empty().withDispatcherFromConfig(DISPATCHER_CPU_INTENSIVE));
+                Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT));
 
         sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY, entityCtx -> {
             return ValueOwnerActor.create(entityCtx.getEntityId(),
                     sharding, metadata, valueOwnerMembershipStore, workerValueIdStore, cfg.orientation(),
                     cfg.candidateTracking(), drainDispatcher);
-        }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT)));
+        }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_VO)));
 
         sharding.init(Entity.of(DirectBatchAggregatorActor.TYPE_KEY, entityCtx -> DirectBatchAggregatorActor.create())
                 .withRole("worker").withEntityProps(Props.empty()
-                        .withDispatcherFromConfig(DISPATCHER_CPU_INTENSIVE)));
+                        .withDispatcherFromConfig(DISPATCHER_DEFAULT)));
 
         if (Debug.INTERNAL)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(), -1, "-",

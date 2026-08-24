@@ -8,9 +8,13 @@ import org.roaringbitmap.RoaringBitmap;
 import java.util.List;
 import java.util.Objects;
 
-/** Reliable, worker-local delivery protocol for the final VO -> CM drain fan-out. */
+/**
+ * Reliable, worker-local delivery protocol for the final VO -> CM drain
+ * fan-out.
+ */
 public final class DrainProtocol {
-    private DrainProtocol() {}
+    private DrainProtocol() {
+    }
 
     public sealed interface Command extends AkkaSerializable
             permits Enqueue, BatchAcknowledged, RetryTick {
@@ -36,14 +40,17 @@ public final class DrainProtocol {
     public record BatchAcknowledged(long batchId, int lhsCol) implements Command {
     }
 
-    public enum RetryTick implements Command { INSTANCE }
+    public enum RetryTick implements Command {
+        INSTANCE
+    }
 
     public record OwnersDrained(long batchId, List<DrainRecord> owners,
             ActorRef<Command> replyTo) implements AkkaSerializable {
         public OwnersDrained {
             owners = List.copyOf(owners);
             Objects.requireNonNull(replyTo, "replyTo");
-            if (owners.isEmpty()) throw new IllegalArgumentException("owners must not be empty");
+            if (owners.isEmpty())
+                throw new IllegalArgumentException("owners must not be empty");
         }
     }
 }
