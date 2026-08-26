@@ -1,19 +1,18 @@
 
 package disIND.valueBased.tracking;
 
+import disIND.valueBased.membership.CandidateDomain;
+import disIND.valueBased.membership.CandidateIndex;
+import disIND.valueBased.membership.CandidateSet;
+import disIND.valueBased.membership.CandidateSetFactory;
 import disIND.valueBased.membership.ColumnSet;
 import disIND.valueBased.membership.ColumnSetFactory;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import it.unimi.dsi.fastutil.ints.IntIterator;
-
-import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
-
-import java.util.BitSet;
 
 public final class CandidateEvaluator {
     private final ModeSpecificContext modeSpecificContext;
@@ -22,20 +21,23 @@ public final class CandidateEvaluator {
     private final long[] candidateEvaluationsByLhs;
 
     private final int totalColumns;
-    private final BitSet[] compatibleRhsByLhs;
-
-    private final LongOpenHashSet evaluatedCandidates = new LongOpenHashSet();
-    private final LongOpenHashSet newlyRejectedThisBatch = new LongOpenHashSet();
+    private final CandidateDomain candidateDomain;
+    private final CandidateIndex candidateIndex;
+    private final CandidateSet evaluatedCandidates;
+    private final CandidateSet newlyRejectedThisBatch;
 
     private final ColumnSet afterChangeSet;
 
     public CandidateEvaluator(DatasetMetadata metadata, ColumnSetFactory columnSets,
-            ModeSpecificContext modeSpecificContext) {
+            ModeSpecificContext modeSpecificContext, CandidateDomain candidateDomain) {
         this.modeSpecificContext = modeSpecificContext;
         this.exactComparisonsByLhs = new long[metadata.totalCols()];
         this.candidateEvaluationsByLhs = new long[metadata.totalCols()];
         this.totalColumns = metadata.totalCols();
-        this.compatibleRhsByLhs = buildCompatibility(metadata);
+        this.candidateDomain = candidateDomain;
+        this.candidateIndex = new CandidateIndex(totalColumns);
+        this.evaluatedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
+        this.newlyRejectedThisBatch = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
         this.afterChangeSet = columnSets.create();
     }
 
@@ -58,9 +60,6 @@ public final class CandidateEvaluator {
                 throw new IllegalStateException("No updated membership for value " + valueId);
 
             loadAfter(updatedRecord);
-            // ColumnSet after = buildColumnSet(updatedRecord);
-            // ColumnSet before = after.copy();
-            // before.andNot(addedColumns);
 
             for (int lhsCol = addedColumns.nextSetBit(0); lhsCol >= 0; lhsCol = addedColumns.nextSetBit(lhsCol + 1))
                 evaluateCreatedViolations(valueId, lhsCol, afterChangeSet, prune, changes);
@@ -72,25 +71,24 @@ public final class CandidateEvaluator {
     private void evaluateCreatedViolations(int valueId, int lhsCol, ColumnSet after, boolean prune,
             CandidateViolationAfterApplyingUpdates changes) {
 
-        BitSet compatibleRhs = compatibleRhsByLhs[lhsCol];
-        for (int rhsCol = compatibleRhs.nextSetBit(0); rhsCol >= 0; rhsCol = compatibleRhs.nextSetBit(
-                rhsCol + 1)) {
-            long compactKey = candidateKey(lhsCol, rhsCol);
+        for (int rhsCol = candidateDomain.firstCompatibleRhs(lhsCol); rhsCol >= 0; rhsCol = candidateDomain
+                .nextCompatibleRhs(lhsCol, rhsCol)) {
+            int index = candidateIndex.index(lhsCol, rhsCol);
             if (prune) {
-                if (modeSpecificContext.locallyRejected(compactKey)) {
+                if (modeSpecificContext.locallyRejected(index)) {
                     modeSpecificContext.invalidLhsSkipped(lhsCol);
                     continue;
                 }
-                if (newlyRejectedThisBatch.contains(compactKey)) {
+                if (newlyRejectedThisBatch.contains(index)) {
                     modeSpecificContext.sameBatchSkipped(lhsCol);
                     continue;
                 }
             }
-            countComparison(lhsCol, compactKey);
+            countComparison(lhsCol, index);
             if (!after.contains(rhsCol)) {
                 changes.violationCreated(lhsCol, rhsCol, valueId);
                 if (prune)
-                    newlyRejectedThisBatch.add(compactKey);
+                    newlyRejectedThisBatch.add(index);
             }
         }
     }
@@ -103,20 +101,20 @@ public final class CandidateEvaluator {
             int lhsCol = iterator.nextInt();
             if (addedColumns.contains(lhsCol))
                 continue;
-            if (!compatibleRhsByLhs[lhsCol].get(rhsCol))
+            if (!candidateDomain.isCompatible(lhsCol, rhsCol))
                 continue;
-            long compactKey = candidateKey(lhsCol, rhsCol);
+            int index = candidateIndex.index(lhsCol, rhsCol);
             if (prune) {
-                if (newlyRejectedThisBatch.contains(compactKey)) {
+                if (newlyRejectedThisBatch.contains(index)) {
                     modeSpecificContext.sameBatchSkipped(lhsCol);
                     continue;
                 }
-                if (!modeSpecificContext.locallyRejected(compactKey)) {
+                if (!modeSpecificContext.locallyRejected(index)) {
                     modeSpecificContext.validRhsSkipped(lhsCol);
                     continue;
                 }
             }
-            countComparison(lhsCol, compactKey);
+            countComparison(lhsCol, index);
             changes.violationRepaired(lhsCol, rhsCol, valueId);
         }
     }
@@ -137,24 +135,11 @@ public final class CandidateEvaluator {
         return exactComparisonsByLhs[lhsCol];
     }
 
-    private void countComparison(int lhsCol, long compactKey) {
+    private void countComparison(int lhsCol, int candidateIndex) {
         exactComparisonsByLhs[lhsCol] = Math.addExact(exactComparisonsByLhs[lhsCol], 1);
-        if (evaluatedCandidates.add(compactKey)) {
+        if (evaluatedCandidates.add(candidateIndex)) {
             candidateEvaluationsByLhs[lhsCol] = Math.addExact(candidateEvaluationsByLhs[lhsCol], 1);
         }
-    }
-
-    private BitSet[] buildCompatibility(DatasetMetadata metadata) {
-        BitSet[] result = new BitSet[totalColumns];
-        for (int lhs = 0; lhs < totalColumns; lhs++) {
-            BitSet compatible = new BitSet(totalColumns);
-            for (int rhs = 0; rhs < totalColumns; rhs++) {
-                if (lhs != rhs && testCompatibility(metadata.typeOf(lhs), metadata.typeOf(rhs)))
-                    compatible.set(rhs);
-            }
-            result[lhs] = compatible;
-        }
-        return result;
     }
 
     public static long candidateKey(int lhsCol, int rhsCol) {

@@ -7,7 +7,7 @@ RUN mvn -B -DskipTests dependency:go-offline
 COPY src ./src
 RUN mvn -B -Dmaven.test.skip=true package
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jdk
 
 RUN useradd --create-home --uid 10001 disind
 WORKDIR /opt/dis-ind

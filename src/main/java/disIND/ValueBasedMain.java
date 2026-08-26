@@ -1,14 +1,6 @@
 package disIND;
 
-import akka.actor.typed.Props;
-import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
-import akka.actor.typed.javadsl.AskPattern;
-import akka.actor.typed.javadsl.Behaviors;
-import akka.cluster.sharding.typed.javadsl.ClusterSharding;
-import akka.cluster.sharding.typed.javadsl.Entity;
-import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
-import akka.cluster.sharding.typed.ShardingEnvelope;
 import akka.cluster.MemberStatus;
 import akka.cluster.Member;
 import akka.cluster.typed.Cluster;
@@ -17,9 +9,6 @@ import disIND.valueBased.actors.INDGuardian;
 import disIND.valueBased.dataset.DataLoader;
 import disIND.valueBased.model.SharedModel;
 import disIND.valueBased.utility.UserConfig;
-
-import java.time.Duration;
-import java.util.List;
 
 import java.util.concurrent.TimeUnit;
 import java.util.Locale;
@@ -39,9 +28,11 @@ public class ValueBasedMain {
         int timeoutSec = 5;
         String outputFile = UserConfig.outputDir;
 
-        INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir,UserConfig.DATA_ORIENTATION,UserConfig.CANDIDATE_TRACKING);
+        INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir, UserConfig.DATA_ORIENTATION,
+                UserConfig.CANDIDATE_TRACKING);
         System.out.println("[Main] Discovered config: " + cfg);
-        ActorSystem<SharedModel.BDCommand> system = ActorSystem.create(INDGuardian.create(cfg), "disIND", ConfigFactory.load());
+        ActorSystem<SharedModel.BDCommand> system = ActorSystem.create(INDGuardian.create(cfg), "disIND",
+                ConfigFactory.load());
         System.out.println("[Main] Value Based INDGuardian started as " + nodeRole + ".");
 
         awaitClusterReady(system);
@@ -58,7 +49,7 @@ public class ValueBasedMain {
         }
 
         try {
-            DataLoader.run(system, cfg.metadata(), inputDir, batchSize, timeoutSec, outputFile,cfg.orientation());
+            DataLoader.run(system, cfg.metadata(), inputDir, batchSize, timeoutSec, outputFile, cfg.orientation());
         } finally {
             System.out.println("[Main] Terminating actor system.");
             system.terminate();
@@ -69,7 +60,7 @@ public class ValueBasedMain {
         }
     }
 
-    private static void awaitCoordinatorDeparture(ActorSystem<?> system) throws Exception {
+    private static void awaitCoordinatorDeparture(ActorSystem<SharedModel.BDCommand> system) throws Exception {
         String coordinatorHost = System.getenv().getOrDefault("AKKA_SEED_HOST", "coordinator");
         Cluster cluster = Cluster.get(system);
 
@@ -100,7 +91,7 @@ public class ValueBasedMain {
         }
     }
 
-    private static void awaitClusterReady(ActorSystem<?> system) throws InterruptedException {
+    private static void awaitClusterReady(ActorSystem<SharedModel.BDCommand> system) throws Exception {
         int expectedMembers = Integer.parseInt(
                 System.getenv().getOrDefault("DIS_IND_EXPECTED_CLUSTER_SIZE", "1"));
         int timeoutSeconds = Integer.parseInt(
@@ -121,9 +112,12 @@ public class ValueBasedMain {
             }
             Thread.sleep(500);
         }
-        system.terminate();
-        throw new IllegalStateException(
-                "Cluster did not reach " + expectedMembers + " Up members within " + timeoutSeconds + " seconds");
+        System.out.println("[Main] Coordinator left the cluster; " + "writing worker metrics and stopping.");
+
+        system.tell(new SharedModel.BDCommand.Shutdown());
+        system.getWhenTerminated().toCompletableFuture().get();
+
+        return;
     }
 
 }

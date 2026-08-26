@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.BitSet;
 
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
@@ -23,6 +24,8 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 
 public final class PruneCandidateTracker implements CandidateTracker {
     private final ValueOwnerCqf cqf;
@@ -30,6 +33,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
     private final int[] localDistinctCounts;
     private final int[][] localDistinctCountsByPartition;
     private final PruneMetricsCollector metrics;
+    private final TransitiveValidityIndex transitiveValidity;
+    private long transitivelyValidated;
 
     public PruneCandidateTracker(ValueOwnerCqf cqf, ValueOwnerClusterIndex clusters,
             int[] localDistinctCounts, int[][] localDistinctCountsByPartition,
@@ -39,6 +44,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
         this.localDistinctCounts = Objects.requireNonNull(localDistinctCounts, "localDistinctCounts");
         this.localDistinctCountsByPartition = localDistinctCountsByPartition;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.transitiveValidity = new TransitiveValidityIndex(localDistinctCounts.length);
         if (localDistinctCountsByPartition == null)
             return;
         if (localDistinctCountsByPartition.length != localDistinctCounts.length)
@@ -96,6 +102,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
         if (!(changes instanceof PruneChanges pruneChanges))
             throw new IllegalArgumentException("Prune tracker received incompatible changes");
 
+        BitSet[] affectedRhsByLhs = buildAffectedCandidates(pruneChanges);
         Set<CandidateKey> keys = new HashSet<>(pruneChanges.deltas.size());
         LongIterator keyIterator = pruneChanges.deltas.keySet().iterator();
         while (keyIterator.hasNext()) {
@@ -118,16 +125,10 @@ public final class PruneCandidateTracker implements CandidateTracker {
                 throw new IllegalStateException("No previous prune state for candidate " + key);
 
             if (delta == PruneChanges.VIOLATION_CREATED) {
+                transitiveValidity.setValid(key.lhsCol(), key.rhsCol(), false);
                 PruneState after = PruneState.rejectedByCluster();
                 metrics.directLhsRejected(key.lhsCol());
-
-                recordResult(
-                        key,
-                        before,
-                        after,
-                        changedStates,
-                        transitionsByLhs);
-
+                recordResult(key, before, after, changedStates, transitionsByLhs);
                 continue;
             }
 
@@ -138,12 +139,14 @@ public final class PruneCandidateTracker implements CandidateTracker {
             int lhsCol = key.lhsCol();
             int rhsCol = key.rhsCol();
             if (distinctCount(lhsCol) > distinctCount(rhsCol)) {
+                transitiveValidity.setValid(lhsCol, rhsCol, false);
                 metrics.wholeCountPruned(lhsCol);
                 recordResult(key, before, PruneState.rejectedByCardinality(), changedStates, transitionsByLhs);
                 continue;
             }
 
             if (rejectedByPartitionCounts(lhsCol, rhsCol)) {
+                transitiveValidity.setValid(lhsCol, rhsCol, false);
                 metrics.partitionCountPruned(lhsCol);
                 recordResult(key, before, PruneState.rejectedByCardinality(), changedStates, transitionsByLhs);
                 continue;
@@ -160,6 +163,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
              * evaluation.
              */
             for (CandidateKey key : cqfViolations) {
+                transitiveValidity.setValid(key.lhsCol(), key.rhsCol(), false);
                 metrics.cqfPruned(key.lhsCol());
                 PruneState before = (PruneState) previousStates.get(key);
                 recordResult(key, before, PruneState.rejectedByCluster(), changedStates, transitionsByLhs);
@@ -171,11 +175,45 @@ public final class PruneCandidateTracker implements CandidateTracker {
              */
             unresolved.removeAll(cqfViolations);
 
+            BitSet[] reachableByLhs = new BitSet[localDistinctCounts.length];
+            Set<CandidateKey> transitivelyValid = new HashSet<>();
+            for (CandidateKey key : unresolved) {
+                int lhs = key.lhsCol();
+                int rhs = key.rhsCol();
+                BitSet reachable = reachableByLhs[lhs];
+                if (reachable == null) {
+                    reachable = transitiveValidity.reachableFrom(lhs, affectedRhsByLhs);
+                    reachableByLhs[lhs] = reachable;
+                }
+
+                if (reachable.get(rhs)) {
+                    transitivelyValid.add(key);
+                }
+            }
+            for (CandidateKey key : transitivelyValid) {
+                transitivelyValidated = Math.incrementExact(transitivelyValidated);
+                metrics.transitivelyValidated(key.lhsCol());
+                transitiveValidity.setValid(key.lhsCol(), key.rhsCol(), true);
+                PruneState before = (PruneState) previousStates.get(key);
+                recordResult(key, before, PruneState.valid(), changedStates, transitionsByLhs);
+            }
+
+            unresolved.removeAll(transitivelyValid);
+
             if (!unresolved.isEmpty()) {
-                Set<CandidateKey> clusterViolations = clusters.findViolations(unresolved);
+                LongOpenHashSet exactCandidateKeys = new LongOpenHashSet(unresolved.size());
+                for (CandidateKey key : unresolved) {
+                    exactCandidateKeys.add(CandidateEvaluator.candidateKey(key.lhsCol(), key.rhsCol()));
+                }
+
+                LongSet clusterViolationKeys = clusters.findViolationKeys(exactCandidateKeys);
                 for (CandidateKey key : unresolved) {
                     metrics.exactTested(key.lhsCol());
-                    boolean rejected = clusterViolations.contains(key);
+                    long compactKey = CandidateEvaluator.candidateKey(key.lhsCol(), key.rhsCol());
+
+                    boolean rejected = clusterViolationKeys.contains(
+                            compactKey);
+                    transitiveValidity.setValid(key.lhsCol(), key.rhsCol(), !rejected);
                     PruneState after;
                     if (rejected) {
                         metrics.exactRejected(key.lhsCol());
@@ -191,6 +229,26 @@ public final class PruneCandidateTracker implements CandidateTracker {
         }
 
         return new TrackingResult(changedStates, transitionsByLhs);
+
+    }
+
+    private BitSet[] buildAffectedCandidates(PruneChanges changes) {
+
+        BitSet[] affected = new BitSet[localDistinctCounts.length];
+        LongIterator iterator = changes.deltas.keySet().iterator();
+
+        while (iterator.hasNext()) {
+            long key = iterator.nextLong();
+            int lhs = lhsColumn(key);
+            int rhs = rhsColumn(key);
+            BitSet rhsSet = affected[lhs];
+            if (rhsSet == null) {
+                rhsSet = new BitSet(localDistinctCounts.length);
+                affected[lhs] = rhsSet;
+            }
+            rhsSet.set(rhs);
+        }
+        return affected;
     }
 
     private static void recordResult(CandidateKey key, PruneState before, PruneState after,
@@ -218,8 +276,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
         return (int) compactKey;
     }
 
-    public boolean cqfEnabled() {
-        return cqf != null;
+    public long transitivelyValidated() {
+        return transitivelyValidated;
     }
 
     private int distinctCount(int columnId) {

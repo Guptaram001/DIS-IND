@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.Arrays;
 import disIND.valueBased.protocol.ValueOwnerProtocol.ValueData;
 import disIND.valueBased.utility.UserConfig;
@@ -23,6 +24,8 @@ import it.unimi.dsi.fastutil.objects.Object2IntLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import disIND.valueBased.monitor.WorkerValueIdMetrics;
+import disIND.valueBased.monitor.WorkerValueIdMetrics.Snapshot;
 
 /**
  * One RocksDB db with one bounded LRU cache for each VOs.
@@ -52,6 +55,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private volatile boolean closed;
     private final int maxHotEntries;
     private final int maxEntriesPerOwner;
+    private final WorkerValueIdMetrics metrics;
 
     private static final class OwnerCache {
         private final Object2IntLinkedOpenHashMap<String> values;
@@ -62,7 +66,8 @@ public final class WorkerValueIdStore implements AutoCloseable {
         }
     }
 
-    public WorkerValueIdStore(Path databasePath, int maxHotEntries, int ownerCount) {
+    public WorkerValueIdStore(Path databasePath, int maxHotEntries, int ownerCount,
+            WorkerValueIdMetrics metrics) {
         if (maxHotEntries < 0)
             throw new IllegalArgumentException("maxHotEntries must be zero or greater");
         if (ownerCount <= 0)
@@ -75,6 +80,7 @@ public final class WorkerValueIdStore implements AutoCloseable {
         this.maxHotEntries = maxHotEntries;
         this.maxEntriesPerOwner = Math.max(1, maxHotEntries / ownerCount);
         this.ownerCaches = new OwnerCache[ownerCount];
+        this.metrics = metrics;
         for (int ownerId = 0; ownerId < ownerCount; ownerId++) {
             nextIdKeys[ownerId] = ByteBuffer
                     .allocate(1 + Integer.BYTES)
@@ -134,8 +140,10 @@ public final class WorkerValueIdStore implements AutoCloseable {
 
             int cached = cache.getAndMoveToLast(value);
             if (cached != UNRESOLVED) {
+                metrics.cacheHit();
                 resolved.put(value, cached);
             } else {
+                metrics.cacheMiss();
                 // Mark as seen so duplicates are ignored.
                 resolved.put(value, UNRESOLVED);
                 coldValues.add(value);
@@ -146,7 +154,13 @@ public final class WorkerValueIdStore implements AutoCloseable {
             return resolved;
 
         try {
-            List<byte[]> storedIds = database.multiGetAsList(coldKeys);
+            long readStarted = System.nanoTime();
+            List<byte[]> storedIds;
+            try {
+                storedIds = database.multiGetAsList(coldKeys);
+            } finally {
+                metrics.rocksRead(coldKeys.size(), System.nanoTime() - readStarted);
+            }
             IntArrayList missingIndexes = new IntArrayList(coldValues.size());
             for (int index = 0; index < coldValues.size(); index++) {
                 String value = coldValues.get(index);
@@ -199,7 +213,25 @@ public final class WorkerValueIdStore implements AutoCloseable {
         cache.putAndMoveToLast(value, valueId);
         if (cache.size() > maxEntriesPerOwner) {
             cache.removeFirstInt();
+            metrics.cacheEviction();
         }
+    }
+
+    public Snapshot metricsSnapshot() {
+        long currentEntries = 0L;
+
+        for (OwnerCache ownerCache : ownerCaches) {
+
+            if (ownerCache != null) {
+                currentEntries = Math.addExact(
+                        currentEntries,
+                        ownerCache.values.size());
+            }
+        }
+
+        return metrics.snapshot(
+                currentEntries,
+                maxHotEntries);
     }
 
     public int size(int ownerId) {

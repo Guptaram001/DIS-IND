@@ -22,10 +22,15 @@ public final class DrainProtocol {
 
     public record DrainRecord(int finalRound, int lhsCol, int bucketId, int expectedBuckets,
             RoaringBitmap locallyRejectedRhs, long candidateEvaluationsWithoutPruning,
-            long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics) implements AkkaSerializable {
+            long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics,
+            List<long[]> activeClusterSignatures) implements AkkaSerializable {
         public DrainRecord {
             locallyRejectedRhs = locallyRejectedRhs.clone();
             Objects.requireNonNull(pruneMetrics, "pruneMetrics");
+            Objects.requireNonNull(activeClusterSignatures, "activeClusterSignatures");
+            activeClusterSignatures = activeClusterSignatures.stream()
+                    .map(long[]::clone)
+                    .toList();
         }
     }
 

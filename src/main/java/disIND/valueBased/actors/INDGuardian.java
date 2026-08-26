@@ -12,24 +12,28 @@ import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.typed.Cluster;
 import akka.cluster.typed.ClusterSingleton;
 import akka.cluster.typed.SingletonActor;
+import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.model.SharedModel.*;
 import disIND.valueBased.protocol.ValueOwnerProtocol.FinalizeMembership;
 import disIND.valueBased.protocol.DrainProtocol;
-import disIND.valueBased.monitor.DiscoveryStatsActor;
-import disIND.valueBased.monitor.StatsCommand;
 import disIND.valueBased.structures.*;
 import disIND.valueBased.utility.Debug;
 import java.util.concurrent.atomic.AtomicLong;
 import java.nio.file.Path;
 import disIND.valueBased.utility.UserConfig;
-
+import disIND.valueBased.monitor.WorkerPhaseMetrics;
+import disIND.valueBased.monitor.WorkerMembershipMetrics;
+import disIND.valueBased.monitor.WorkerMetricsFlusher;
+import disIND.valueBased.monitor.WorkerMetricsWriter;
 import static disIND.valueBased.utility.Debug.formLog;
+import disIND.valueBased.monitor.WorkerValueIdMetrics;
 
 public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private static final String DISPATCHER_DEFAULT = "akka.actor.default-dispatcher";
-    private static final String DISPATCHER_INTERNAL = "akka.actor.internal-dispatcher";
-    private static final String DISPATCHER_VO = "akka.actor.checkpoint-vo-work-dispatcher";
-    private static final String DISPATCHER_IO = "akka.actor.io-dispatcher";
+    // private static final String DISPATCHER_INTERNAL =
+    // "akka.actor.internal-dispatcher";
+    private static final String DISPATCHER_VO = "akka.actor.vo-work-dispatcher";
+    // private static final String DISPATCHER_IO = "akka.actor.io-dispatcher";
     private static final String DISPATCHER_CPU_INTENSIVE = "akka.actor.cpu-intensive-dispatcher";
 
     public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold, DatasetMetadata metadata,
@@ -47,6 +51,12 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private final AtomicLong totalRows = new AtomicLong(0L);
     private final ValueOwnerMembershipStore valueOwnerMembershipStore;
     private final ActorRef<DrainProtocol.Command> drainDispatcher;
+    private final WorkerValueIdStore workerValueIdStore;
+    private final WorkerMetricsWriter metricsWriter;
+    private final WorkerPhaseMetrics workerPhaseMetrics;
+    private final WorkerValueIdMetrics valueIdMetrics;
+    private final WorkerMembershipMetrics membershipMetrics;
+    private final WorkerMetricsFlusher workerMetricsFlusher;
 
     public static Behavior<BDCommand> create(Config cfg) {
         return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg));
@@ -55,26 +65,31 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private INDGuardian(ActorContext<BDCommand> ctx, Config cfg) {
         super(ctx);
         DatasetMetadata metadata = cfg.metadata();
+        CandidateDomain candidateDomain = new CandidateDomain(metadata);
+        this.valueIdMetrics = new WorkerValueIdMetrics();
+        this.membershipMetrics = new WorkerMembershipMetrics();
         this.metadata = metadata;
         ClusterSingleton singletons = ClusterSingleton.get(ctx.getSystem());
 
-        ActorRef<StatsCommand> statsRef = singletons
-                .init(SingletonActor.of(DiscoveryStatsActor.create(), "discovery-stats")
-                        .withProps(Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT)));
-
         this.rcRef = singletons
-                .init(SingletonActor.of(ResultCollectorActor.create(metadata, statsRef), "result-collector")
+                .init(SingletonActor.of(ResultCollectorActor.create(metadata), "result-collector")
                         .withProps(Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT)));
 
         String nodeId = Cluster.get(ctx.getSystem()).selfMember().address().toString().replaceAll("[^A-Za-z0-9._-]",
                 "_");
 
+        this.workerPhaseMetrics = new WorkerPhaseMetrics();
+        this.metricsWriter = new WorkerMetricsWriter(nodeId, ctx.getLog());
+
         this.valueOwnerMembershipStore = new ValueOwnerMembershipStore(Path.of(UserConfig.VALUE_OWNER_DISK_DIR, nodeId),
                 UserConfig.VALUE_OWNER_HOT_ENTRIES, cfg.candidateTracking,
-                UserConfig.VALUE_OWNER_BUCKETS);
+                UserConfig.VALUE_OWNER_BUCKETS, membershipMetrics);
 
-        WorkerValueIdStore workerValueIdStore = new WorkerValueIdStore(Path.of(UserConfig.VALUE_ID_DISK_DIR, nodeId),
-                UserConfig.VALUE_ID_HOT_ENTRIES, UserConfig.VALUE_OWNER_BUCKETS);
+        this.workerValueIdStore = new WorkerValueIdStore(Path.of(UserConfig.VALUE_ID_DISK_DIR, nodeId),
+                UserConfig.VALUE_ID_HOT_ENTRIES, UserConfig.VALUE_OWNER_BUCKETS, valueIdMetrics);
+
+        this.workerMetricsFlusher = new WorkerMetricsFlusher(metricsWriter, workerValueIdStore,
+                valueOwnerMembershipStore, workerPhaseMetrics);
 
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         this.sharding = sharding;
@@ -84,7 +99,8 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY, entityCtx -> {
             return ValueOwnerActor.create(entityCtx.getEntityId(),
                     sharding, metadata, valueOwnerMembershipStore, workerValueIdStore, cfg.orientation(),
-                    cfg.candidateTracking(), drainDispatcher);
+                    cfg.candidateTracking(), drainDispatcher, candidateDomain, workerPhaseMetrics,
+                    workerMetricsFlusher);
         }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_VO)));
 
         sharding.init(Entity.of(DirectBatchAggregatorActor.TYPE_KEY, entityCtx -> DirectBatchAggregatorActor.create())
@@ -131,8 +147,12 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                     return this;
                 })
                 .onMessage(BDCommand.Shutdown.class, msg -> {
+                    workerMetricsFlusher.flushOnce();
+                    workerValueIdStore.close();
+                    valueOwnerMembershipStore.close();
                     return Behaviors.stopped();
                 })
                 .build();
     }
+
 }

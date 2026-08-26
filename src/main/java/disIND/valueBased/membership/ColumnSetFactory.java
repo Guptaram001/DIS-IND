@@ -1,6 +1,7 @@
 package disIND.valueBased.membership;
 
 import org.roaringbitmap.RoaringBitmap;
+import java.util.BitSet;
 
 public final class ColumnSetFactory {
     private final int totalColumns;
@@ -12,6 +13,8 @@ public final class ColumnSetFactory {
     public ColumnSet create() {
         if (totalColumns <= Long.SIZE)
             return new LongColumnSet();
+        if (totalColumns <= 2_000)
+            return new BitSetColumnSet(totalColumns);
         return new RoaringColumnSet();
     }
 
@@ -36,31 +39,11 @@ public final class ColumnSetFactory {
         }
 
         @Override
-        public boolean isEmpty() {
-            return bits == 0;
-        }
-
-        @Override
-        public int cardinality() {
-            return Long.bitCount(bits);
-        }
-
-        @Override
         public int nextSetBit(int fromColumn) {
             if (fromColumn < 0 || fromColumn >= Long.SIZE)
                 return -1;
             long remaining = bits & (-1L << fromColumn);
             return remaining == 0 ? -1 : Long.numberOfTrailingZeros(remaining);
-        }
-
-        @Override
-        public ColumnSet copy() {
-            return new LongColumnSet(bits);
-        }
-
-        @Override
-        public void andNot(ColumnSet other) {
-            bits &= ~((LongColumnSet) other).bits;
         }
 
         @Override
@@ -91,28 +74,40 @@ public final class ColumnSetFactory {
         }
 
         @Override
-        public boolean isEmpty() {
-            return bits.isEmpty();
-        }
-
-        @Override
-        public int cardinality() {
-            return bits.getCardinality();
-        }
-
-        @Override
         public int nextSetBit(int fromColumn) {
             return (int) bits.nextValue(fromColumn);
         }
 
         @Override
-        public ColumnSet copy() {
-            return new RoaringColumnSet(bits.clone());
+        public void clear() {
+            bits.clear();
+        }
+    }
+
+    private static final class BitSetColumnSet implements ColumnSet {
+        private final BitSet bits;
+
+        private BitSetColumnSet(int totalColumns) {
+            this.bits = new BitSet(totalColumns);
+        }
+
+        private BitSetColumnSet(BitSet bits) {
+            this.bits = bits;
         }
 
         @Override
-        public void andNot(ColumnSet other) {
-            bits.andNot(((RoaringColumnSet) other).bits);
+        public void add(int column) {
+            bits.set(column);
+        }
+
+        @Override
+        public boolean contains(int column) {
+            return bits.get(column);
+        }
+
+        @Override
+        public int nextSetBit(int fromColumn) {
+            return bits.nextSetBit(fromColumn);
         }
 
         @Override

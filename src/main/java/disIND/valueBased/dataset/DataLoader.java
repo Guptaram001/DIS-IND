@@ -32,9 +32,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.nio.charset.StandardCharsets;
+import disIND.valueBased.monitor.PipelineMetricsWriter;
 
 public final class DataLoader {
     private static final Pattern PAT_CSV_EXT = Pattern.compile("\\.(csv|tbl)$");
+    private static final PipelineMetricsWriter pipelineMetricsWriter = new PipelineMetricsWriter();
 
     public interface OrientetationBatchBuilder {
         void add(int columnId, String value, int rowId);
@@ -118,16 +121,21 @@ public final class DataLoader {
             return;
         }
 
-        long startMs = System.currentTimeMillis();
-        IngestionResult ingestion;
-        ingestion = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), batchSize, orientation);
+        long pipelineStarted = System.nanoTime();
+        long ingestionStarted = pipelineStarted;
+        IngestionResult ingestion = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), batchSize,
+                orientation);
+        long ingestionFinished = System.nanoTime();
+        long ingestionNanos = ingestionFinished - ingestionStarted;
+        System.out.printf("[Loader] Ingestion done: %,d rows " + "in %.3fs%n", ingestion.totalRows(),
+                ingestionNanos / 1_000_000_000.0);
 
-        System.out.printf("[Loader] Ingestion done: %,d rows in %.1fs%n", ingestion.totalRows(),
-                (System.currentTimeMillis() - startMs) / 1000.0);
         CompletionStage<BDReply> doneFuture = AskPattern.ask(system, replyTo -> new BDCommand.FinishDiscovery(
                 ingestion.finalRound(), ingestion.finalBatchByTable(), replyTo), Duration.ofMinutes(30),
                 system.scheduler());
         doneFuture.toCompletableFuture().get();
+        long finalizationFinished = System.nanoTime();
+        long finalizationNanos = finalizationFinished - ingestionFinished;
 
         System.out.println("[Loader] Waiting for discovery result...");
         CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(system, BDCommand.GetResultCollector::new,
@@ -140,6 +148,11 @@ public final class DataLoader {
                 .toCompletableFuture().get();
 
         printReport(report, outputFile);
+        long pipelineFinished = System.nanoTime();
+        long totalPipelineNanos = pipelineFinished - pipelineStarted;
+        Path metricsFile = pipelineMetricsWriter.write(ingestion, ingestionNanos, finalizationNanos, totalPipelineNanos,
+                report.confirmedUnary().size());
+        System.out.println("[PIPELINE-METRICS] writtenTo=" + metricsFile);
 
         system.tell(new BDCommand.Shutdown());
     }
@@ -159,6 +172,8 @@ public final class DataLoader {
         Deque<CompletionStage<BDReply>> inFlight = new ArrayDeque<>();
         AtomicInteger nextEpoch = new AtomicInteger();
         long totalRows = 0;
+        long totalBatches = 0L;
+        long totalCells = 0L;
         int round = 0;
 
         System.out.println("[Loader] Opening files...");
@@ -191,6 +206,8 @@ public final class DataLoader {
                 firstBatch.add(splitRow(firstLine, delim, true));
                 inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), offsets, nCols, i, nextRowId[i],
                         firstBatch, round, batchId, orientation));
+                totalBatches = Math.incrementExact(totalBatches);
+                totalCells = Math.addExact(totalCells, nCols.get(i));
                 waitForCredit(inFlight);
                 latestBatchByTable.put(i, batchId);
                 nextRowId[i]++;
@@ -234,6 +251,9 @@ public final class DataLoader {
                     int batchId = individualBatchIds[i]++;
                     inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), offsets, nCols,
                             i, nextRowId[i], batchRows, round, batchId, orientation));
+                    totalBatches = Math.incrementExact(totalBatches);
+                    long batchCells = Math.multiplyExact((long) batchRows.size(), nCols.get(i));
+                    totalCells = Math.addExact(totalCells, batchCells);
                     waitForCredit(inFlight);
                     latestBatchByTable.put(i, batchId);
                     nextRowId[i] += batchRows.size();
@@ -251,7 +271,7 @@ public final class DataLoader {
                 continue;
             System.out.printf("  %-25s %,d rows%n", Paths.get(files.get(i)).getFileName(), rowCounts[i]);
         }
-        return new IngestionResult(totalRows, finalRound, new HashMap<>(latestBatchByTable));
+        return new IngestionResult(totalRows, totalBatches, totalCells, finalRound, new HashMap<>(latestBatchByTable));
     }
 
     private static CompletionStage<BDReply> sendTableBatch(ActorSystem<BDCommand> system, int epoch,

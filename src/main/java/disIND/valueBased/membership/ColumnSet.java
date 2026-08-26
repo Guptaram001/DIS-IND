@@ -5,15 +5,7 @@ public interface ColumnSet {
 
     boolean contains(int column);
 
-    boolean isEmpty();
-
-    int cardinality();
-
     int nextSetBit(int fromColumn);
-
-    ColumnSet copy();
-
-    void andNot(ColumnSet other);
 
     void clear();
 }

@@ -18,10 +18,12 @@ import disIND.valueBased.model.SharedModel.RCCommand;
 import disIND.valueBased.model.SharedModel.UnaryPair;
 import disIND.valueBased.utility.Debug;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.BitSet;
+import java.util.HashSet;
+import java.util.Set;
 import org.roaringbitmap.RoaringBitmap;
 
 import static disIND.valueBased.utility.ColTypeCompatibility.testCompatibility;
@@ -33,7 +35,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final int lhsOwnerCol;
     private final DatasetMetadata metadata;
     private final ActorRef<RCCommand> rcRef;
-    private final Path liveResultFile;
 
     private final int[] violationCountByRhs;
     private final int[] latestVoSequenceByBucket;
@@ -44,6 +45,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private long exactComparisonsWithoutPruning;
     private long candidateEvaluationsWithoutPruning;
     private PruneMetrics pruneMetrics = PruneMetrics.empty();
+    private long activeClusterEntriesAcrossBuckets;
+    private final Set<BitSet> distinctActiveClusterSignatures = new HashSet<>();
 
     public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef, DatasetMetadata metadata) {
         return Behaviors.setup(ctx -> new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
@@ -55,8 +58,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         this.lhsOwnerCol = lhsOwnerCol;
         this.rcRef = rcRef;
         this.metadata = metadata;
-        this.liveResultFile = Path.of(System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR", "diagnostics"),
-                "cm-live-results-lhs-" + lhsOwnerCol + ".tsv");
         this.violationCountByRhs = new int[metadata.totalCols()];
         Arrays.fill(violationCountByRhs, 0);
         this.latestVoSequenceByBucket = new int[UserConfig.VALUE_OWNER_BUCKETS];
@@ -130,6 +131,10 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             exactComparisonsWithoutPruning = Math.addExact(exactComparisonsWithoutPruning,
                     msg.exactValueProbesWithoutPruning());
             pruneMetrics = pruneMetrics.plus(msg.pruneMetrics());
+            activeClusterEntriesAcrossBuckets = Math.addExact(
+                    activeClusterEntriesAcrossBuckets, msg.activeClusterSignatures().size());
+            for (long[] words : msg.activeClusterSignatures())
+                distinctActiveClusterSignatures.add(BitSet.valueOf(words));
         }
         drainedValueOwners.add(msg.bucketId());
         if (drainedValueOwners.getCardinality() == expectedValueOwnerDrains)
@@ -154,7 +159,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             onValueOwnerDrained(new CMCommand.ValueOwnerDrained(record.finalRound(), record.bucketId(),
                     record.expectedBuckets(), record.locallyRejectedRhs(),
                     record.candidateEvaluationsWithoutPruning(), record.exactValueProbesWithoutPruning(),
-                    record.pruneMetrics()));
+                    record.pruneMetrics(), record.activeClusterSignatures()));
         }
         batch.replyTo().tell(new disIND.valueBased.protocol.DrainProtocol.BatchAcknowledged(
                 batch.batchId(), lhsOwnerCol));
@@ -173,9 +178,14 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 clean.add(new UnaryPair(lhsOwnerCol, rhsCol));
             }
         }
+
         rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound,
                 List.copyOf(clean), List.<NaryPair>of(),
-                candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning, pruneMetrics));
+                candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning, pruneMetrics,
+                activeClusterEntriesAcrossBuckets,
+                distinctActiveClusterSignatures.stream()
+                        .map(BitSet::toLongArray)
+                        .toList()));
 
         if (Debug.INTERNAL) {
             getContext().getLog().info("[CM-DRAINED] lhs={} finalRound={} valueOwners={}/{} cleanCandidates={}",

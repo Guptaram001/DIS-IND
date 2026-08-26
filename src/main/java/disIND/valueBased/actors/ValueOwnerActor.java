@@ -12,6 +12,7 @@ import akka.cluster.typed.Cluster;
 import disIND.valueBased.ingestion.BatchProcessor;
 import disIND.valueBased.ingestion.ColumnMajorProcessor;
 import disIND.valueBased.ingestion.ValueMajorProcessor;
+import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.membership.ColumnSetFactory;
 import disIND.valueBased.membership.MembershipBatchResult;
 import disIND.valueBased.membership.MembershipUpdater;
@@ -22,11 +23,8 @@ import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.model.SharedModel.MembershipUpdates;
 import disIND.valueBased.model.SharedModel.ValueUpdates;
-import disIND.valueBased.protocol.ValueOwnerProtocol.BucketSnapshot;
-import disIND.valueBased.protocol.ValueOwnerProtocol.ColumnCount;
 import disIND.valueBased.protocol.ValueOwnerProtocol.Command;
 import disIND.valueBased.protocol.ValueOwnerProtocol.FinalizeMembership;
-import disIND.valueBased.protocol.ValueOwnerProtocol.GetBucket;
 import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
 import disIND.valueBased.protocol.ValueOwnerProtocol.CandidateManagerReady;
 import disIND.valueBased.protocol.ValueOwnerProtocol.RetryDrainProbe;
@@ -40,19 +38,18 @@ import disIND.valueBased.tracking.TrackingResult;
 import disIND.valueBased.tracking.ModeSpecificContext;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
+import disIND.valueBased.monitor.WorkerMetricsFlusher;
+import disIND.valueBased.monitor.WorkerPhaseMetrics;
+import disIND.valueBased.monitor.WorkerPhaseMetrics.Phase;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
-import it.unimi.dsi.fastutil.ints.Int2IntMaps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2BooleanLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 
 import org.roaringbitmap.RoaringBitmap;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.time.Duration;
 import akka.actor.typed.ActorRef;
@@ -79,42 +76,30 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private FinalizeMembership finalization;
     private int nextDrainLhs;
     private DrainProtocol.DrainRecord awaitingDrainAdmission;
+    private final WorkerPhaseMetrics phaseMetrics;
+    private final WorkerMetricsFlusher workerMetricsFlusher;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
     }
 
     public static Behavior<Command> create(
-            String entityId,
-            ClusterSharding sharding,
-            DatasetMetadata metadata,
-            ValueOwnerMembershipStore membershipStore,
-            WorkerValueIdStore valueIdStore,
-            DataOrientation orientation,
-            CandidateTrackingMode candidateTracking,
-            ActorRef<DrainProtocol.Command> drainDispatcher) {
+            String entityId, ClusterSharding sharding, DatasetMetadata metadata,
+            ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore, DataOrientation orientation,
+            CandidateTrackingMode candidateTracking, ActorRef<DrainProtocol.Command> drainDispatcher,
+            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
+            WorkerMetricsFlusher workerMetricsFlusher) {
         return Behaviors.withTimers(timers -> Behaviors.setup(ctx -> new ValueOwnerActor(
-                ctx,
-                entityId,
-                sharding,
-                metadata,
-                membershipStore,
-                valueIdStore,
-                orientation,
-                candidateTracking, drainDispatcher, timers)));
+                ctx, entityId, sharding, metadata, membershipStore, valueIdStore, orientation,
+                candidateTracking, drainDispatcher, timers, candidateDomain, phaseMetrics, workerMetricsFlusher)));
     }
 
-    private ValueOwnerActor(
-            ActorContext<Command> context,
-            String entityId,
-            ClusterSharding sharding,
-            DatasetMetadata metadata,
-            ValueOwnerMembershipStore membershipStore,
-            WorkerValueIdStore valueIdStore,
-            DataOrientation orientation,
-            CandidateTrackingMode candidateTrackingMode,
-            ActorRef<DrainProtocol.Command> drainDispatcher,
-            TimerScheduler<Command> timers) {
+    private ValueOwnerActor(ActorContext<Command> context, String entityId, ClusterSharding sharding,
+            DatasetMetadata metadata, ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore,
+            DataOrientation orientation, CandidateTrackingMode candidateTrackingMode,
+            ActorRef<DrainProtocol.Command> drainDispatcher, TimerScheduler<Command> timers,
+            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
+            WorkerMetricsFlusher workerMetricsFlusher) {
         super(context);
         this.entityId = entityId;
         this.bucketId = Integer.parseInt(entityId.substring("value-bucket-".length()));
@@ -129,11 +114,13 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.modeSpecificContext = ModeSpecificContext.create(
                 Objects.requireNonNull(candidateTrackingMode, "candidateTrackingMode"),
                 bucketId, metadata.totalCols());
+        this.workerMetricsFlusher = Objects.requireNonNull(workerMetricsFlusher);
 
         ColumnSetFactory columnSets = new ColumnSetFactory(metadata.totalCols());
+        this.phaseMetrics = Objects.requireNonNull(phaseMetrics);
         this.membershipUpdater = new MembershipUpdater(bucketId, membershipStore,
-                columnSets, modeSpecificContext);
-        this.candidateEvaluator = new CandidateEvaluator(metadata, columnSets, modeSpecificContext);
+                columnSets, modeSpecificContext, phaseMetrics);
+        this.candidateEvaluator = new CandidateEvaluator(metadata, columnSets, modeSpecificContext, candidateDomain);
 
         this.resolvedBatches = new Long2BooleanLinkedOpenHashMap(recentBatchLimit);
 
@@ -148,7 +135,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(StoreBatch.class, this::onStoreBatch)
-                .onMessage(GetBucket.class, this::onGetBucket)
+                // .onMessage(GetBucket.class, this::onGetBucket)
                 .onMessage(FinalizeMembership.class, this::onFinalizeMembership)
                 .onMessage(CandidateManagerReady.class, this::onCandidateManagerReady)
                 .onMessage(DrainQueued.class, this::onDrainQueued)
@@ -182,7 +169,9 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
         // handles the incoming message into valueId-colId-count for both cases as
         // deltas
+        long started = System.nanoTime();
         MembershipUpdates updates = batchProcessor.process(bucketId, message.body(), valueIdStore);
+        phaseMetrics.record(Phase.BATCH_PREPARATION, System.nanoTime() - started);
         statusSequence = Math.incrementExact(statusSequence);
 
         applyUpdates(message, updates, statusSequence);
@@ -214,12 +203,20 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         CandidateViolationAfterApplyingUpdates candidateViolationAfterApplyingUpdates = modeSpecificContext
                 .tracker().newChanges(bucketId);
         // Find which IND pairs might have been changed.
+        long started = System.nanoTime();
         candidateEvaluator.evaluate(membership.newlyAddedColumnsByValue(),
                 membership.updatedRecordsByValue(), candidateViolationAfterApplyingUpdates);
+        phaseMetrics.record(Phase.CANDIDATE_EVALUATION, System.nanoTime() - started);
+
+        started = System.nanoTime();
         TrackingResult trackingResult = modeSpecificContext.tracker().apply(candidateViolationAfterApplyingUpdates,
                 membership.updatedRecordsByValue(), membershipStore);
+        phaseMetrics.record(Phase.TRACKER_RESOLUTION, System.nanoTime() - started);
 
+        started = System.nanoTime();
         membershipStore.writeBatch(bucketId, membership.updatedRecordsByValue(), trackingResult.changedStates());
+        phaseMetrics.record(Phase.ROCKSDB_WRITE, System.nanoTime() - started);
+
         modeSpecificContext.candidateStatesChanged(trackingResult.changedStates());
 
         sendCandidateStatusTransitions(message, voSequence, trackingResult.transitionsByLhs(),
@@ -261,6 +258,12 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private Behavior<Command> onFinalizeMembership(FinalizeMembership message) {
         if (finalization != null && finalization.finalRound() == message.finalRound())
             return this;
+        boolean metricsWritten = workerMetricsFlusher.flushOnce();
+        if (metricsWritten) {
+            getContext().getLog().info("[WORKER-METRICS] flushed before drain node={} bucket={} round={}",
+                    Cluster.get(getContext().getSystem()).selfMember().address(),
+                    bucketId, message.finalRound());
+        }
         finalization = message;
         nextDrainLhs = 0;
         probeNextCandidateManager();
@@ -276,7 +279,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         awaitingDrainAdmission = new DrainProtocol.DrainRecord(
                 finalization.finalRound(), lhs, bucketId, finalization.expectedBuckets(), new RoaringBitmap(),
                 candidateEvaluator.candidateEvaluationsFor(lhs), candidateEvaluator.exactComparisonsFor(lhs),
-                modeSpecificContext.metricsFor(lhs));
+                modeSpecificContext.metricsFor(lhs),
+                lhs == 0 ? modeSpecificContext.activeClusterSignatures() : List.of());
         enqueueAwaitingDrain();
         return this;
     }
@@ -318,28 +322,6 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private void enqueueAwaitingDrain() {
         drainDispatcher.tell(new DrainProtocol.Enqueue(awaitingDrainAdmission, getContext().getSelf()));
         timers.startSingleTimer(RetryDrainProbe.INSTANCE, Duration.ofSeconds(UserConfig.DRAIN_RETRY_SECONDS));
-    }
-
-    private Behavior<Command> onGetBucket(GetBucket message) {
-        Int2ObjectMap<Int2IntMap> bucket = membershipStore.snapshotBucket(bucketId);
-        Int2ObjectMap<List<ColumnCount>> snapshot = new Int2ObjectOpenHashMap<>(bucket.size());
-
-        ObjectIterator<Int2ObjectMap.Entry<Int2IntMap>> valueIterator = Int2ObjectMaps.fastIterator(bucket);
-        while (valueIterator.hasNext()) {
-            Int2ObjectMap.Entry<Int2IntMap> valueEntry = valueIterator.next();
-            int valueId = valueEntry.getIntKey();
-            Int2IntMap columns = valueEntry.getValue();
-            List<ColumnCount> columnCounts = new ArrayList<>(columns.size());
-            ObjectIterator<Int2IntMap.Entry> columnIterator = Int2IntMaps.fastIterator(columns);
-            while (columnIterator.hasNext()) {
-                Int2IntMap.Entry columnEntry = columnIterator.next();
-                columnCounts.add(new ColumnCount(columnEntry.getIntKey(), columnEntry.getIntValue()));
-            }
-
-            snapshot.put(valueId, List.copyOf(columnCounts));
-        }
-        message.replyTo().tell(new BucketSnapshot(bucketId, Map.copyOf(snapshot)));
-        return this;
     }
 
     private void acknowledge(StoreBatch message) {

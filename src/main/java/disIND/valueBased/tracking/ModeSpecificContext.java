@@ -1,5 +1,8 @@
 package disIND.valueBased.tracking;
 
+import disIND.valueBased.membership.CandidateIndex;
+import disIND.valueBased.membership.CandidateSet;
+import disIND.valueBased.membership.CandidateSetFactory;
 import disIND.valueBased.membership.ColumnSet;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.SharedModel.PruneMetrics;
@@ -10,16 +13,15 @@ import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.utility.UserConfig;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.ints.IntIterator;
 
 import java.util.BitSet;
+import java.util.List;
 import java.util.Map;
 
 public sealed interface ModeSpecificContext
-        permits ModeSpecificContext.CountContext, ModeSpecificContext.WitnessContext,
-        ModeSpecificContext.PruneContext {
+        permits ModeSpecificContext.CountContext, ModeSpecificContext.WitnessContext, ModeSpecificContext.PruneContext,
+        ModeSpecificContext.ExactContext {
 
     CandidateTracker tracker();
 
@@ -33,7 +35,7 @@ public sealed interface ModeSpecificContext
     default void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns) {
     }
 
-    default boolean locallyRejected(long candidateKey) {
+    default boolean locallyRejected(int candidateIndex) {
         return false;
     }
 
@@ -53,6 +55,14 @@ public sealed interface ModeSpecificContext
         return PruneMetrics.empty();
     }
 
+    default ValueOwnerClusterIndex.ClusterMetrics clusterMetrics() {
+        return ValueOwnerClusterIndex.ClusterMetrics.empty();
+    }
+
+    default List<long[]> activeClusterSignatures() {
+        return List.of();
+    }
+
     default int locallyRejectedCount() {
         return 0;
     }
@@ -63,6 +73,7 @@ public sealed interface ModeSpecificContext
             case WITNESS -> new WitnessContext(
                     new WitnessCandidateTracker(UserConfig.MAX_TRACKED_VIOLATIONS));
             case PRUNE -> new PruneContext(bucketId, totalColumns);
+            case EXACT -> new ExactContext(bucketId, totalColumns);
         };
     }
 
@@ -72,14 +83,61 @@ public sealed interface ModeSpecificContext
     record WitnessContext(WitnessCandidateTracker tracker) implements ModeSpecificContext {
     }
 
+    final class ExactContext implements ModeSpecificContext {
+
+        private final ValueOwnerClusterIndex clusters;
+        private final ExactCandidateTracker tracker;
+
+        private final BitSet beforeSignature;
+        private final BitSet afterSignature;
+
+        private ExactContext(int bucketId, int totalColumns) {
+            clusters = new ValueOwnerClusterIndex(bucketId, totalColumns);
+            tracker = new ExactCandidateTracker(clusters);
+            beforeSignature = new BitSet(totalColumns);
+            afterSignature = new BitSet(totalColumns);
+        }
+
+        @Override
+        public ExactCandidateTracker tracker() {
+            return tracker;
+        }
+
+        @Override
+        public void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns) {
+
+            afterSignature.clear();
+            IntIterator iterator = membershipAfter.keySet().iterator();
+            while (iterator.hasNext())
+                afterSignature.set(iterator.nextInt());
+            beforeSignature.clear();
+            beforeSignature.or(afterSignature);
+            for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns.nextSetBit(column + 1)) {
+                beforeSignature.clear(column);
+            }
+            clusters.moveMembership(beforeSignature, afterSignature);
+        }
+
+        @Override
+        public ValueOwnerClusterIndex.ClusterMetrics clusterMetrics() {
+            return clusters.metrics();
+        }
+
+        @Override
+        public List<long[]> activeClusterSignatures() {
+            return clusters.activeSignaturesSnapshot();
+        }
+    }
+
     final class PruneContext implements ModeSpecificContext {
         private final PruneCandidateTracker tracker;
-        private final LongSet locallyRejectedCandidates = new LongOpenHashSet();
         private final int[] localDistinctCounts;
         private final int[][] localDistinctCountsByPartition;
         private final ValueOwnerClusterIndex clusters;
         private final ValueOwnerCqf cqf;
         private final PruneMetricsCollector metrics;
+        private final CandidateIndex candidateIndex;
+        private final CandidateSet locallyRejectedCandidates;
 
         private final BitSet beforeSignature;
         private final BitSet afterSignature;
@@ -97,6 +155,8 @@ public sealed interface ModeSpecificContext
 
             beforeSignature = new BitSet(totalColumns);
             afterSignature = new BitSet(totalColumns);
+            candidateIndex = new CandidateIndex(totalColumns);
+            locallyRejectedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
         }
 
         @Override
@@ -136,21 +196,31 @@ public sealed interface ModeSpecificContext
         }
 
         @Override
-        public boolean locallyRejected(long candidateKey) {
-            return locallyRejectedCandidates.contains(candidateKey);
+        public boolean locallyRejected(int candidateIndex) {
+            return locallyRejectedCandidates.contains(candidateIndex);
         }
 
         @Override
         public void candidateStatesChanged(Map<CandidateKey, CandidateState> changedStates) {
             for (Map.Entry<CandidateKey, CandidateState> entry : changedStates.entrySet()) {
                 CandidateKey key = entry.getKey();
-                long compactKey = candidateKey(key.lhsCol(), key.rhsCol());
+                int candidadateIndex = candidateIndex.index(key.lhsCol(), key.rhsCol());
                 CandidateState state = entry.getValue();
                 if (state.rejected())
-                    locallyRejectedCandidates.add(compactKey);
+                    locallyRejectedCandidates.add(candidadateIndex);
                 else
-                    locallyRejectedCandidates.remove(compactKey);
+                    locallyRejectedCandidates.remove(candidadateIndex);
             }
+        }
+
+        @Override
+        public ValueOwnerClusterIndex.ClusterMetrics clusterMetrics() {
+            return clusters.metrics();
+        }
+
+        @Override
+        public List<long[]> activeClusterSignatures() {
+            return clusters.activeSignaturesSnapshot();
         }
 
         @Override
@@ -186,10 +256,6 @@ public sealed interface ModeSpecificContext
             hash *= 0x846ca68b;
             hash ^= hash >>> 16;
             return hash & (partitionCount - 1);
-        }
-
-        private static long candidateKey(int lhsCol, int rhsCol) {
-            return ((long) lhsCol << Integer.SIZE) | (rhsCol & 0xffffffffL);
         }
     }
 }

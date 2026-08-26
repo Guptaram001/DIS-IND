@@ -8,7 +8,6 @@ import disIND.valueBased.model.AkkaSerializable;
 import disIND.valueBased.model.SharedModel.DataOrientation;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 public final class ValueOwnerProtocol {
@@ -16,7 +15,7 @@ public final class ValueOwnerProtocol {
     }
 
     public sealed interface Command extends AkkaSerializable
-            permits StoreBatch, GetBucket, FinalizeMembership, CandidateManagerReady, DrainQueued, RetryDrainProbe {
+            permits StoreBatch, FinalizeMembership, CandidateManagerReady, DrainQueued, RetryDrainProbe {
     }
 
     @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "batchType")
@@ -74,9 +73,6 @@ public final class ValueOwnerProtocol {
         }
     }
 
-    public record GetBucket(ActorRef<BucketSnapshot> replyTo) implements Command {
-    }
-
     public record FinalizeMembership(int finalRound, int expectedBuckets, int totalColumns) implements Command {
     }
 
@@ -86,12 +82,8 @@ public final class ValueOwnerProtocol {
     public record DrainQueued(int finalRound, int lhsCol, int bucketId) implements Command {
     }
 
-    public enum RetryDrainProbe implements Command { INSTANCE }
-
-    public record ColumnCount(int colId, long count) implements AkkaSerializable {
+    public enum RetryDrainProbe implements Command {
+        INSTANCE
     }
 
-    public record BucketSnapshot(int bucketId, Map<Integer, List<ColumnCount>> values)
-            implements AkkaSerializable {
-    }
 }

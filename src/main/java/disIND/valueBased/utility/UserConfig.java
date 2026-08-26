@@ -18,7 +18,7 @@ public final class UserConfig {
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
     public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 100;
-    public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 8;
+    public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 2;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
@@ -32,8 +32,8 @@ public final class UserConfig {
     public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED = true;
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
-    public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 200_000;
-    public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 200_000;
+    public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
+    public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 100_000;
     public static final DataOrientation DEFAULT_DATA_ORIENTATION = DataOrientation.VALUE_MAJOR;
     public static final CandidateTrackingMode DEFAULT_CANDIDATE_TRACKING = CandidateTrackingMode.COUNT;
     public static final String DEFAULT_VALUE_ID_DISK_DIR = System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
@@ -294,8 +294,9 @@ public final class UserConfig {
             case "count", "counter" -> CandidateTrackingMode.COUNT;
             case "witness", "witnesses" -> CandidateTrackingMode.WITNESS;
             case "prune", "pruner" -> CandidateTrackingMode.PRUNE;
+            case "exact" -> CandidateTrackingMode.EXACT;
             default -> throw new IllegalArgumentException(
-                    settingName(environmentName, propertyName) + " must be count or witness: " + value);
+                    settingName(environmentName, propertyName) + " must be count, exact,prune,or witness: " + value);
         };
     }
 }

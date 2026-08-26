@@ -31,7 +31,7 @@ public final class SharedModel {
     }
 
     public enum CandidateTrackingMode implements AkkaSerializable {
-        COUNT, WITNESS, PRUNE
+        COUNT, WITNESS, PRUNE, EXACT
     }
 
     public sealed interface MembershipUpdates permits ValueUpdates, ColumnUpdates {
@@ -226,7 +226,8 @@ public final class SharedModel {
         }
     }
 
-    public record IngestionResult(long totalRows, int finalRound, Map<Integer, Integer> finalBatchByTable) {
+    public record IngestionResult(long totalRows, long totalBatches, long totalCells, int finalRound,
+            Map<Integer, Integer> finalBatchByTable) {
     }
 
     public record IngestionReady() implements AkkaSerializable {
@@ -249,12 +250,13 @@ public final class SharedModel {
             long wholeCountPruned,
             long partitionCountPruned,
             long cqfPruned,
+            long transitivelyValidated,
             long exactTested,
             long exactRejected,
             long exactValidated) implements AkkaSerializable {
 
         public static PruneMetrics empty() {
-            return new PruneMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new PruneMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         public PruneMetrics plus(PruneMetrics other) {
@@ -267,6 +269,7 @@ public final class SharedModel {
                     Math.addExact(wholeCountPruned, other.wholeCountPruned),
                     Math.addExact(partitionCountPruned, other.partitionCountPruned),
                     Math.addExact(cqfPruned, other.cqfPruned),
+                    Math.addExact(transitivelyValidated, other.transitivelyValidated),
                     Math.addExact(exactTested, other.exactTested),
                     Math.addExact(exactRejected, other.exactRejected),
                     Math.addExact(exactValidated, other.exactValidated));
@@ -507,10 +510,14 @@ public final class SharedModel {
 
         record ValueOwnerDrained(int finalRound, int bucketId, int expectedBuckets, RoaringBitmap locallyRejectedRhs,
                 long candidateEvaluationsWithoutPruning, long exactValueProbesWithoutPruning,
-                PruneMetrics pruneMetrics) implements CMCommand {
+                PruneMetrics pruneMetrics, List<long[]> activeClusterSignatures) implements CMCommand {
             public ValueOwnerDrained {
                 locallyRejectedRhs = locallyRejectedRhs.clone();
                 Objects.requireNonNull(pruneMetrics, "pruneMetrics");
+                Objects.requireNonNull(activeClusterSignatures, "activeClusterSignatures");
+                activeClusterSignatures = activeClusterSignatures.stream()
+                        .map(long[]::clone)
+                        .toList();
             }
         }
 
@@ -627,7 +634,15 @@ public final class SharedModel {
 
         record CmDiscoveryComplete(int lhsOwnerCol, int round, List<UnaryPair> unaryPairs,
                 List<NaryPair> naryPairs, long candidateEvaluationsWithoutPruning,
-                long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics) implements RCCommand {
+                long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics,
+                long activeClusterEntriesAcrossBuckets,
+                List<long[]> distinctActiveClusterSignatures) implements RCCommand {
+            public CmDiscoveryComplete {
+                Objects.requireNonNull(distinctActiveClusterSignatures, "distinctActiveClusterSignatures");
+                distinctActiveClusterSignatures = distinctActiveClusterSignatures.stream()
+                        .map(long[]::clone)
+                        .toList();
+            }
         }
     }
 
