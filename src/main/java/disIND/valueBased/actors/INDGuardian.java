@@ -111,9 +111,10 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.INTERNAL), Debug.guardian(), -1, "-",
                     String.valueOf(Debug.State.NONE), " Sharding init: {} columns", cfg.numCols());
 
+        // No spawn of CM beforehand to save computation of unnecessary CMs.
         sharding.init(Entity.of(CandidateManagerActor_.TYPE_KEY, entityCtx -> {
-            int lhsCol = Integer.parseInt(entityCtx.getEntityId().substring("cm-lhs-".length()));
-            return CandidateManagerActor_.create(lhsCol, rcRef, metadata);
+            int partitionId = Integer.parseInt(entityCtx.getEntityId().substring("cm-part-".length()));
+            return CandidateManagerActor_.create(partitionId, rcRef, metadata);
         }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_CPU_INTENSIVE)));
 
         if (Debug.INTERNAL)

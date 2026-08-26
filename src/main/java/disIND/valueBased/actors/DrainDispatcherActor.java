@@ -116,7 +116,8 @@ public final class DrainDispatcherActor extends AbstractBehavior<Command> {
     }
 
     private void send(long batchId, InFlight delivery) {
-        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(delivery.lhsCol()))
+        int cmPartition = CMCommand.partitionFor(delivery.lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS);
+        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(cmPartition))
                 .tell(new CMCommand.OwnersDrained(new DrainProtocol.OwnersDrained(
                         batchId, delivery.records(), getContext().getSelf())));
     }

@@ -462,8 +462,12 @@ public final class SharedModel {
             CMCommand.DrainReadyProbe, CMCommand.OwnersDrained,
             CMCommand.NoMoreCandidates, CMCommand.ForceFinish {
 
-        static String entityId(int lhsCol) {
-            return "cm-lhs-" + lhsCol;
+        static String entityId(int partitionId) {
+            return "cm-part-" + partitionId;
+        }
+
+        static int partitionFor(int lhsCol, int partitionCount) {
+            return Math.floorMod(Integer.hashCode(lhsCol), partitionCount);
         }
 
         record UnaryCandidateProposed(UnaryCandidate candidate) implements CMCommand {
@@ -499,7 +503,7 @@ public final class SharedModel {
         record MembershipResult(UnaryPair pair, int round, RoaringBitmap missingValues) implements CMCommand {
         }
 
-        record ValueOwnerCandidateStatusUpdate(long epoch, int voSequence, int round, int bucketId,
+        record ValueOwnerCandidateStatusUpdate(int lhsCol, long epoch, int voSequence, int round, int bucketId,
                 List<CandidateLocalStatus> statuses) implements CMCommand {
             public ValueOwnerCandidateStatusUpdate {
                 if (voSequence <= 0)

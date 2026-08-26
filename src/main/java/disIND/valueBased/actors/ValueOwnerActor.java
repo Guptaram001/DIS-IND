@@ -243,9 +243,10 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 transitionCount += transitions.size();
                 affectedCms++;
             }
-            sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(lhsCol))
+            int cmPartition = CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS);
+            sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(cmPartition))
                     .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(
-                            batch.epoch(), voSequence, batch.round(), bucketId, transitions));
+                            lhsCol, batch.epoch(), voSequence, batch.round(), bucketId, transitions));
         }
         if (Debug.INTERNAL) {
             getContext().getLog().info(
@@ -313,7 +314,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private void probeNextCandidateManager() {
         if (finalization == null || nextDrainLhs >= finalization.totalColumns())
             return;
-        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(nextDrainLhs))
+        int cmPartition = CMCommand.partitionFor(nextDrainLhs, UserConfig.DEFAULT_CM_PARTITIONS);
+        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(cmPartition))
                 .tell(new CMCommand.DrainReadyProbe(finalization.finalRound(), nextDrainLhs, bucketId,
                         getContext().getSelf()));
         timers.startSingleTimer(RetryDrainProbe.INSTANCE, Duration.ofSeconds(UserConfig.DRAIN_RETRY_SECONDS));

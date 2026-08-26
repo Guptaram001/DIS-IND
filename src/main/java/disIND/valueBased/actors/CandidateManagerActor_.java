@@ -23,6 +23,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.BitSet;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import org.roaringbitmap.RoaringBitmap;
 
@@ -32,54 +34,52 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     public static final EntityTypeKey<CMCommand> TYPE_KEY = EntityTypeKey.create(CMCommand.class,
             "CandidateManagerActor");
 
-    private final int lhsOwnerCol;
+    private final int partitionId;
     private final DatasetMetadata metadata;
     private final ActorRef<RCCommand> rcRef;
+    private final Map<Integer, LhsState> states = new HashMap<>();
 
-    private final int[] violationCountByRhs;
-    private final int[] latestVoSequenceByBucket;
-    private final RoaringBitmap drainedValueOwners = new RoaringBitmap();
-    private int expectedValueOwnerDrains = -1;
-    private int finalRound = -1;
-    private boolean finishedReported;
-    private long exactComparisonsWithoutPruning;
-    private long candidateEvaluationsWithoutPruning;
-    private PruneMetrics pruneMetrics = PruneMetrics.empty();
-    private long activeClusterEntriesAcrossBuckets;
-    private final Set<BitSet> distinctActiveClusterSignatures = new HashSet<>();
+    private static final class LhsState {
+        final int lhsCol;
+        final int[] violationCountByRhs;
+        final int[] latestVoSequenceByBucket;
+        final RoaringBitmap drainedValueOwners = new RoaringBitmap();
+        int expectedValueOwnerDrains = -1;
+        int finalRound = -1;
+        boolean finishedReported;
+        long exactComparisonsWithoutPruning;
+        long candidateEvaluationsWithoutPruning;
+        PruneMetrics pruneMetrics = PruneMetrics.empty();
+        long activeClusterEntriesAcrossBuckets;
+        final Set<BitSet> distinctActiveClusterSignatures = new HashSet<>();
 
-    public static Behavior<CMCommand> create(int lhsOwnerCol, ActorRef<RCCommand> rcRef, DatasetMetadata metadata) {
-        return Behaviors.setup(ctx -> new CandidateManagerActor_(ctx, lhsOwnerCol, rcRef, metadata));
+        LhsState(int lhsCol, int totalCols) {
+            this.lhsCol = lhsCol;
+            this.violationCountByRhs = new int[totalCols];
+            this.latestVoSequenceByBucket = new int[UserConfig.VALUE_OWNER_BUCKETS];
+            Arrays.fill(latestVoSequenceByBucket, -1);
+        }
     }
 
-    private CandidateManagerActor_(ActorContext<CMCommand> context, int lhsOwnerCol, ActorRef<RCCommand> rcRef,
+    public static Behavior<CMCommand> create(int partitionId, ActorRef<RCCommand> rcRef, DatasetMetadata metadata) {
+        return Behaviors.setup(ctx -> new CandidateManagerActor_(ctx, partitionId, rcRef, metadata));
+    }
+
+    private CandidateManagerActor_(ActorContext<CMCommand> context, int partitionId, ActorRef<RCCommand> rcRef,
             DatasetMetadata metadata) {
         super(context);
-        this.lhsOwnerCol = lhsOwnerCol;
+        this.partitionId = partitionId;
         this.rcRef = rcRef;
         this.metadata = metadata;
-        this.violationCountByRhs = new int[metadata.totalCols()];
-        Arrays.fill(violationCountByRhs, 0);
-        this.latestVoSequenceByBucket = new int[UserConfig.VALUE_OWNER_BUCKETS];
-        Arrays.fill(latestVoSequenceByBucket, -1);
-
-        var column = metadata.column(lhsOwnerCol);
         getContext().getLog().info(
-                "[PLACEMENT] type=CM col={} tableId={} table={} localCol={} columnName={} qualifiedName={} dataType={} node={}",
-                lhsOwnerCol, column.tableId(), token(column.tableName()), column.localColumnId(),
-                token(column.columnName()), token(column.qualifiedName()), column.type(),
+                "[PLACEMENT] type=CM partition={} node={}", partitionId,
                 Cluster.get(context.getSystem()).selfMember().address());
-    }
-
-    private static String token(String value) {
-        return value.replaceAll("\\s+", "_");
     }
 
     @Override
     public Receive<CMCommand> createReceive() {
         return newReceiveBuilder()
                 .onMessage(CMCommand.ValueOwnerCandidateStatusUpdate.class, this::onCandidateStatusUpdate)
-                .onMessage(CMCommand.ValueOwnerDrained.class, this::onValueOwnerDrained)
                 .onMessage(CMCommand.DrainReadyProbe.class, this::onDrainReadyProbe)
                 .onMessage(CMCommand.OwnersDrained.class, this::onOwnersDrained)
                 .onMessage(CMCommand.NoMoreCandidates.class, this::onNoMoreCandidates)
@@ -87,111 +87,124 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
+        LhsState state = stateFor(msg.lhsCol());
         int bucketId = msg.bucketId();
-        if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length)
+        if (bucketId < 0 || bucketId >= state.latestVoSequenceByBucket.length)
             return this;
-        if (msg.voSequence() <= latestVoSequenceByBucket[bucketId])
+        if (msg.voSequence() <= state.latestVoSequenceByBucket[bucketId])
             return this;
-        latestVoSequenceByBucket[bucketId] = msg.voSequence();
+        state.latestVoSequenceByBucket[bucketId] = msg.voSequence();
 
         for (CandidateLocalStatus status : msg.statuses()) {
             int rhsCol = status.rhsCol();
-            if (rhsCol < 0 || rhsCol >= violationCountByRhs.length)
+            if (rhsCol < 0 || rhsCol >= state.violationCountByRhs.length)
                 continue;
 
             if (status.valid()) {
-                if (violationCountByRhs[rhsCol] == 0) {
+                if (state.violationCountByRhs[rhsCol] == 0) {
                     getContext().getLog().warn("Unexpected valid transition: rhs={} bucket={} sequence={}",
                             rhsCol, bucketId, msg.voSequence());
                     continue;
                 }
-                violationCountByRhs[rhsCol]--;
+                state.violationCountByRhs[rhsCol]--;
             } else
-                violationCountByRhs[rhsCol]++;
+                state.violationCountByRhs[rhsCol]++;
         }
         return this;
     }
 
     private Behavior<CMCommand> onNoMoreCandidates(CMCommand.NoMoreCandidates msg) {
-        finalRound = Math.max(finalRound, msg.finalRound());
+        for (LhsState state : states.values())
+            state.finalRound = Math.max(state.finalRound, msg.finalRound());
         return this;
     }
 
-    private Behavior<CMCommand> onValueOwnerDrained(CMCommand.ValueOwnerDrained msg) {
-        if (finalRound >= 0 && msg.finalRound() != finalRound) {
+    private void onValueOwnerDrained(int lhsCol, CMCommand.ValueOwnerDrained msg) {
+        LhsState state = stateFor(lhsCol);
+        if (state.finalRound >= 0 && msg.finalRound() != state.finalRound) {
             getContext().getLog().warn("Ignoring stale VO drain round={} currentFinalRound={} bucket={}",
-                    msg.finalRound(), finalRound, msg.bucketId());
-            return this;
+                    msg.finalRound(), state.finalRound, msg.bucketId());
+            return;
         }
-        finalRound = msg.finalRound();
-        expectedValueOwnerDrains = msg.expectedBuckets();
-        if (!drainedValueOwners.contains(msg.bucketId())) {
-            candidateEvaluationsWithoutPruning = Math.addExact(candidateEvaluationsWithoutPruning,
+        state.finalRound = msg.finalRound();
+        state.expectedValueOwnerDrains = msg.expectedBuckets();
+        if (!state.drainedValueOwners.contains(msg.bucketId())) {
+            state.candidateEvaluationsWithoutPruning = Math.addExact(state.candidateEvaluationsWithoutPruning,
                     msg.candidateEvaluationsWithoutPruning());
-            exactComparisonsWithoutPruning = Math.addExact(exactComparisonsWithoutPruning,
+            state.exactComparisonsWithoutPruning = Math.addExact(state.exactComparisonsWithoutPruning,
                     msg.exactValueProbesWithoutPruning());
-            pruneMetrics = pruneMetrics.plus(msg.pruneMetrics());
-            activeClusterEntriesAcrossBuckets = Math.addExact(
-                    activeClusterEntriesAcrossBuckets, msg.activeClusterSignatures().size());
+            state.pruneMetrics = state.pruneMetrics.plus(msg.pruneMetrics());
+            state.activeClusterEntriesAcrossBuckets = Math.addExact(
+                    state.activeClusterEntriesAcrossBuckets, msg.activeClusterSignatures().size());
             for (long[] words : msg.activeClusterSignatures())
-                distinctActiveClusterSignatures.add(BitSet.valueOf(words));
+                state.distinctActiveClusterSignatures.add(BitSet.valueOf(words));
         }
-        drainedValueOwners.add(msg.bucketId());
-        if (drainedValueOwners.getCardinality() == expectedValueOwnerDrains)
-            reportFinished();
-        return this;
+        state.drainedValueOwners.add(msg.bucketId());
+        if (state.drainedValueOwners.getCardinality() == state.expectedValueOwnerDrains)
+            reportFinished(state);
     }
 
     private Behavior<CMCommand> onDrainReadyProbe(CMCommand.DrainReadyProbe msg) {
+        stateFor(msg.lhsCol());
         msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.CandidateManagerReady(
-                msg.finalRound(), lhsOwnerCol, msg.bucketId()));
+                msg.finalRound(), msg.lhsCol(), msg.bucketId()));
         return this;
     }
 
     private Behavior<CMCommand> onOwnersDrained(CMCommand.OwnersDrained message) {
         var batch = message.batch();
+        int acknowledgedLhs = batch.owners().get(0).lhsCol();
         for (var record : batch.owners()) {
-            if (record.lhsCol() != lhsOwnerCol) {
-                getContext().getLog().warn("Ignoring misrouted drain batch={} lhs={} expectedLhs={}",
-                        batch.batchId(), record.lhsCol(), lhsOwnerCol);
+            if (CMCommand.partitionFor(record.lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS) != partitionId) {
+                getContext().getLog().warn("Ignoring misrouted drain batch={} lhs={} partition={}",
+                        batch.batchId(), record.lhsCol(), partitionId);
                 continue;
             }
-            onValueOwnerDrained(new CMCommand.ValueOwnerDrained(record.finalRound(), record.bucketId(),
+            onValueOwnerDrained(record.lhsCol(), new CMCommand.ValueOwnerDrained(record.finalRound(), record.bucketId(),
                     record.expectedBuckets(), record.locallyRejectedRhs(),
                     record.candidateEvaluationsWithoutPruning(), record.exactValueProbesWithoutPruning(),
                     record.pruneMetrics(), record.activeClusterSignatures()));
         }
         batch.replyTo().tell(new disIND.valueBased.protocol.DrainProtocol.BatchAcknowledged(
-                batch.batchId(), lhsOwnerCol));
+                batch.batchId(), acknowledgedLhs));
         return this;
     }
 
-    private void reportFinished() {
-        if (finishedReported)
+    private void reportFinished(LhsState state) {
+        if (state.finishedReported)
             return;
-        finishedReported = true;
+        state.finishedReported = true;
 
         List<UnaryPair> clean = new ArrayList<>();
-        for (int rhsCol = 0; rhsCol < violationCountByRhs.length; rhsCol++) {
-            if (rhsCol != lhsOwnerCol && testCompatibility(metadata.typeOf(lhsOwnerCol), metadata.typeOf(rhsCol))
-                    && violationCountByRhs[rhsCol] == 0) {
-                clean.add(new UnaryPair(lhsOwnerCol, rhsCol));
+        for (int rhsCol = 0; rhsCol < state.violationCountByRhs.length; rhsCol++) {
+            if (rhsCol != state.lhsCol && testCompatibility(metadata.typeOf(state.lhsCol), metadata.typeOf(rhsCol))
+                    && state.violationCountByRhs[rhsCol] == 0) {
+                clean.add(new UnaryPair(state.lhsCol, rhsCol));
             }
         }
 
-        rcRef.tell(new RCCommand.CmDiscoveryComplete(lhsOwnerCol, finalRound,
+        rcRef.tell(new RCCommand.CmDiscoveryComplete(state.lhsCol, state.finalRound,
                 List.copyOf(clean), List.<NaryPair>of(),
-                candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning, pruneMetrics,
-                activeClusterEntriesAcrossBuckets,
-                distinctActiveClusterSignatures.stream()
+                state.candidateEvaluationsWithoutPruning, state.exactComparisonsWithoutPruning, state.pruneMetrics,
+                state.activeClusterEntriesAcrossBuckets,
+                state.distinctActiveClusterSignatures.stream()
                         .map(BitSet::toLongArray)
                         .toList()));
 
         if (Debug.INTERNAL) {
-            getContext().getLog().info("[CM-DRAINED] lhs={} finalRound={} valueOwners={}/{} cleanCandidates={}",
-                    lhsOwnerCol, finalRound, drainedValueOwners.getCardinality(),
-                    expectedValueOwnerDrains, clean.size());
+            getContext().getLog().info(
+                    "[CM-DRAINED] partition={} lhs={} finalRound={} valueOwners={}/{} cleanCandidates={}",
+                    partitionId, state.lhsCol, state.finalRound, state.drainedValueOwners.getCardinality(),
+                    state.expectedValueOwnerDrains, clean.size());
         }
+    }
+
+    private LhsState stateFor(int lhsCol) {
+        int expectedPartition = CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS);
+        if (expectedPartition != partitionId)
+            throw new IllegalArgumentException("LHS " + lhsCol + " belongs to partition " + expectedPartition
+                    + ", not " + partitionId);
+        return states.computeIfAbsent(lhsCol, lhs -> new LhsState(lhs, metadata.totalCols()));
     }
 
 }

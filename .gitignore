@@ -36,3 +36,11 @@ dependency-reduced-pom.xml
 /Report/
 .vscode/
 /diagnostics/
+DatasetGenerator/
+notebooks/
+DatasetGenerator/
+DatasetScript/
+notebooks/
+output/
+src/main/java/disIND/experiment/
+      
