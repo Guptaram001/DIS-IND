@@ -4,10 +4,8 @@ import disIND.valueBased.model.SharedModel.*;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 public final class InferDataAttributes {
 
@@ -18,21 +16,18 @@ public final class InferDataAttributes {
         int booleanCount;
         int stringCount;
         long total;
-        Set<String> distinct = new HashSet<>();
     }
 
     public static ColType inferColType(String columnName, int columnIndex, List<String[]> sampleRows) {
         ColTypeStats stats = new ColTypeStats();
         for (String[] row : sampleRows) {
             if (columnIndex >= row.length) {
-                System.err.printf("Malformed row: expected >= %d columns, got %d%n", columnIndex + 1, row.length);
                 continue;
             }
             String value = clean(row[columnIndex]);
             if (value.isEmpty())
                 continue;
             stats.total++;
-            stats.distinct.add(value);
 
             if (isInteger(value))
                 stats.integerCount++;
@@ -46,22 +41,17 @@ public final class InferDataAttributes {
                 stats.stringCount++;
         }
 
-        String lower = columnName.toLowerCase(Locale.ROOT);
-        if ((lower.contains("key") || lower.endsWith("id")) && stats.total > 0) {
-            double distinctRatio = ((double) stats.distinct.size()) / stats.total;
-
-            if (distinctRatio > 0.95 && stats.integerCount >= stats.total * 0.90) {
-                return ColType.KEY;
-            }
+        if (stats.total == 0) {
+            return ColType.UNKNOWN;
         }
 
-        if (stats.dateCount >= stats.total * 0.90)
+        if (stats.dateCount >= stats.total)
             return ColType.DATE;
-        if (stats.booleanCount >= stats.total * 0.90)
+        if (stats.booleanCount >= stats.total)
             return ColType.BOOLEAN;
-        if (stats.integerCount >= stats.total * 0.90)
+        if (stats.integerCount >= stats.total)
             return ColType.INTEGER;
-        if ((stats.integerCount + stats.decimalCount) >= stats.total * 0.90)
+        if ((stats.integerCount + stats.decimalCount) >= stats.total)
             return ColType.DECIMAL;
         return ColType.STRING;
     }
@@ -80,25 +70,23 @@ public final class InferDataAttributes {
         try {
             Long.parseLong(v);
             return true;
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             return false;
         }
     }
 
     private static boolean isDecimal(String v) {
         try {
-            Double.parseDouble(v);
-            return v.contains(".");
-        }
-        catch (Exception e) {
+            double parsed = Double.parseDouble(v);
+            return Double.isFinite(parsed);
+        } catch (Exception e) {
             return false;
         }
     }
 
     private static boolean isBoolean(String v) {
         String s = v.toLowerCase(Locale.ROOT);
-        return s.equals("true") || s.equals("false") || s.equals("0") || s.equals("1") || s.equals("yes")
+        return s.equals("true") || s.equals("false") || s.equals("yes")
                 || s.equals("no");
     }
 
@@ -113,8 +101,7 @@ public final class InferDataAttributes {
             try {
                 LocalDate.parse(value, f);
                 return true;
-            }
-            catch (Exception ignored) {
+            } catch (Exception ignored) {
             }
         }
         return false;

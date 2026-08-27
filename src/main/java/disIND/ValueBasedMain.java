@@ -23,14 +23,15 @@ public class ValueBasedMain {
         UserConfig.initialize(args);
         String nodeRole = System.getenv().getOrDefault("DIS_IND_NODE_ROLE", "coordinator")
                 .toLowerCase(Locale.ROOT);
-        String inputDir = UserConfig.inputDir;
-        int batchSize = UserConfig.BATCH_SIZE;
+        String inputDir = UserConfig.INPUT_DIR;
+        int chunkSize = UserConfig.CHUNK_SIZE;
         int timeoutSec = 5;
-        String outputFile = UserConfig.outputDir;
+        String outputFile = UserConfig.OUTPUT_DIR;
 
         INDGuardian.Config cfg = DataLoader.discoverConfig(inputDir, UserConfig.DATA_ORIENTATION,
                 UserConfig.CANDIDATE_TRACKING);
-        System.out.println("[Main] Discovered config: " + cfg);
+        System.out.printf("[Main] Discovered %,d tables and %,d columns%n",
+                cfg.metadata().tableNames().size(), cfg.metadata().totalCols());
         ActorSystem<SharedModel.BDCommand> system = ActorSystem.create(INDGuardian.create(cfg), "disIND",
                 ConfigFactory.load());
         System.out.println("[Main] Value Based INDGuardian started as " + nodeRole + ".");
@@ -49,7 +50,7 @@ public class ValueBasedMain {
         }
 
         try {
-            DataLoader.run(system, cfg.metadata(), inputDir, batchSize, timeoutSec, outputFile, cfg.orientation());
+            DataLoader.run(system, cfg.metadata(), inputDir, chunkSize, timeoutSec, outputFile, cfg.orientation());
         } finally {
             System.out.println("[Main] Terminating actor system.");
             system.terminate();

@@ -23,7 +23,7 @@ import java.util.Map;
 
 /** A single dispatcher per worker bounds and retries final drain traffic. */
 public final class DrainDispatcherActor extends AbstractBehavior<Command> {
-    private record InFlight(int lhsCol, List<DrainRecord> records, long sentAtNanos) {
+    private record InFlight(int partitionId, List<DrainRecord> records, long sentAtNanos) {
     }
 
     private final ClusterSharding sharding;
@@ -56,6 +56,7 @@ public final class DrainDispatcherActor extends AbstractBehavior<Command> {
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(DrainProtocol.Enqueue.class, this::onEnqueue)
+                .onMessage(DrainProtocol.EnqueuePartition.class, this::onEnqueuePartition)
                 .onMessage(DrainProtocol.BatchAcknowledged.class, this::onAcknowledged)
                 .onMessageEquals(DrainProtocol.RetryTick.INSTANCE, this::onRetryTick)
                 .build();
@@ -65,7 +66,8 @@ public final class DrainDispatcherActor extends AbstractBehavior<Command> {
         int pendingCount = pending.values().stream().mapToInt(ArrayDeque::size).sum();
         if (pendingCount >= maxPending)
             return this; // backpressure: producer retries until admitted
-        pending.computeIfAbsent(message.record().lhsCol(), ignored -> new ArrayDeque<>())
+        int partitionId = CMCommand.partitionFor(message.record().lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS);
+        pending.computeIfAbsent(partitionId, ignored -> new ArrayDeque<>())
                 .addLast(message.record());
         message.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.DrainQueued(
                 message.record().finalRound(), message.record().lhsCol(), message.record().bucketId()));
@@ -73,9 +75,21 @@ public final class DrainDispatcherActor extends AbstractBehavior<Command> {
         return this;
     }
 
+    private Behavior<Command> onEnqueuePartition(DrainProtocol.EnqueuePartition message) {
+        int pendingCount = pending.values().stream().mapToInt(ArrayDeque::size).sum();
+        if (pendingCount > 0 && pendingCount + message.records().size() > maxPending)
+            return this; // producer retries the complete partition batch
+        pending.computeIfAbsent(message.partitionId(), ignored -> new ArrayDeque<>()).addAll(message.records());
+        DrainRecord first = message.records().get(0);
+        message.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.PartitionDrainQueued(
+                first.finalRound(), message.partitionId(), first.bucketId()));
+        pump(false);
+        return this;
+    }
+
     private Behavior<Command> onAcknowledged(DrainProtocol.BatchAcknowledged message) {
         InFlight delivery = inFlight.get(message.batchId());
-        if (delivery != null && delivery.lhsCol() == message.lhsCol())
+        if (delivery != null && delivery.partitionId() == message.partitionId())
             inFlight.remove(message.batchId());
         pump(false);
         return this;
@@ -86,7 +100,7 @@ public final class DrainDispatcherActor extends AbstractBehavior<Command> {
         new ArrayList<>(inFlight.entrySet()).forEach(entry -> {
             if (now - entry.getValue().sentAtNanos() >= retryNanos) {
                 InFlight old = entry.getValue();
-                InFlight retried = new InFlight(old.lhsCol(), old.records(), now);
+                InFlight retried = new InFlight(old.partitionId(), old.records(), now);
                 inFlight.put(entry.getKey(), retried);
                 send(entry.getKey(), retried);
             }
@@ -97,27 +111,26 @@ public final class DrainDispatcherActor extends AbstractBehavior<Command> {
 
     private void pump(boolean flushPartial) {
         while (inFlight.size() < maxInFlight) {
-            Integer lhs = pending.entrySet().stream()
+            Integer partitionId = pending.entrySet().stream()
                     .filter(e -> e.getValue().size() >= batchSize || (flushPartial && !e.getValue().isEmpty()))
                     .map(Map.Entry::getKey).findFirst().orElse(null);
-            if (lhs == null)
+            if (partitionId == null)
                 return;
-            ArrayDeque<DrainRecord> queue = pending.get(lhs);
+            ArrayDeque<DrainRecord> queue = pending.get(partitionId);
             List<DrainRecord> records = new ArrayList<>(Math.min(batchSize, queue.size()));
             while (records.size() < batchSize && !queue.isEmpty())
                 records.add(queue.removeFirst());
             if (queue.isEmpty())
-                pending.remove(lhs);
+                pending.remove(partitionId);
             long id = nextBatchId++;
-            InFlight delivery = new InFlight(lhs, List.copyOf(records), System.nanoTime());
+            InFlight delivery = new InFlight(partitionId, List.copyOf(records), System.nanoTime());
             inFlight.put(id, delivery);
             send(id, delivery);
         }
     }
 
     private void send(long batchId, InFlight delivery) {
-        int cmPartition = CMCommand.partitionFor(delivery.lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS);
-        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(cmPartition))
+        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(delivery.partitionId()))
                 .tell(new CMCommand.OwnersDrained(new DrainProtocol.OwnersDrained(
                         batchId, delivery.records(), getContext().getSelf())));
     }

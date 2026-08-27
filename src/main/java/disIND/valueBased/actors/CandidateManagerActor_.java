@@ -41,7 +41,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
     private static final class LhsState {
         final int lhsCol;
-        final int[] violationCountByRhs;
+        final short[] violationCountByRhs;
         final int[] latestVoSequenceByBucket;
         final RoaringBitmap drainedValueOwners = new RoaringBitmap();
         int expectedValueOwnerDrains = -1;
@@ -55,7 +55,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         LhsState(int lhsCol, int totalCols) {
             this.lhsCol = lhsCol;
-            this.violationCountByRhs = new int[totalCols];
+            this.violationCountByRhs = new short[totalCols];
             this.latestVoSequenceByBucket = new int[UserConfig.VALUE_OWNER_BUCKETS];
             Arrays.fill(latestVoSequenceByBucket, -1);
         }
@@ -71,9 +71,9 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         this.partitionId = partitionId;
         this.rcRef = rcRef;
         this.metadata = metadata;
-        getContext().getLog().info(
-                "[PLACEMENT] type=CM partition={} node={}", partitionId,
-                Cluster.get(context.getSystem()).selfMember().address());
+        if (Debug.INTERNAL)
+            getContext().getLog().info("[PLACEMENT] type=CM partition={} node={}", partitionId,
+                    Cluster.get(context.getSystem()).selfMember().address());
     }
 
     @Override
@@ -81,7 +81,9 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         return newReceiveBuilder()
                 .onMessage(CMCommand.ValueOwnerCandidateStatusUpdate.class, this::onCandidateStatusUpdate)
                 .onMessage(CMCommand.DrainReadyProbe.class, this::onDrainReadyProbe)
+                .onMessage(CMCommand.PartitionDrainReadyProbe.class, this::onPartitionDrainReadyProbe)
                 .onMessage(CMCommand.OwnersDrained.class, this::onOwnersDrained)
+                .onMessage(CMCommand.EnsurePartitionInitialized.class, this::onEnsurePartitionInitialized)
                 .onMessage(CMCommand.NoMoreCandidates.class, this::onNoMoreCandidates)
                 .build();
     }
@@ -151,9 +153,30 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         return this;
     }
 
+    private Behavior<CMCommand> onPartitionDrainReadyProbe(CMCommand.PartitionDrainReadyProbe msg) {
+        if (msg.partitionId() != partitionId)
+            throw new IllegalArgumentException("Drain Probe partition error");
+        msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerReady(
+                msg.finalRound(), partitionId, msg.bucketId()));
+        return this;
+    }
+
+    private Behavior<CMCommand> onEnsurePartitionInitialized(CMCommand.EnsurePartitionInitialized msg) {
+
+        if (msg.partitionId() != partitionId)
+            throw new IllegalArgumentException("Error for initialization ");
+
+        for (int lhsCol = partitionId; lhsCol < metadata.totalCols(); lhsCol += UserConfig.DEFAULT_CM_PARTITIONS) {
+            LhsState state = stateFor(lhsCol);
+            if (!state.finishedReported) {
+                state.finalRound = Math.max(state.finalRound, msg.finalRound());
+            }
+        }
+        return this;
+    }
+
     private Behavior<CMCommand> onOwnersDrained(CMCommand.OwnersDrained message) {
         var batch = message.batch();
-        int acknowledgedLhs = batch.owners().get(0).lhsCol();
         for (var record : batch.owners()) {
             if (CMCommand.partitionFor(record.lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS) != partitionId) {
                 getContext().getLog().warn("Ignoring misrouted drain batch={} lhs={} partition={}",
@@ -166,7 +189,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                     record.pruneMetrics(), record.activeClusterSignatures()));
         }
         batch.replyTo().tell(new disIND.valueBased.protocol.DrainProtocol.BatchAcknowledged(
-                batch.batchId(), acknowledgedLhs));
+                batch.batchId(), partitionId));
         return this;
     }
 
@@ -177,8 +200,10 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         List<UnaryPair> clean = new ArrayList<>();
         for (int rhsCol = 0; rhsCol < state.violationCountByRhs.length; rhsCol++) {
-            if (rhsCol != state.lhsCol && testCompatibility(metadata.typeOf(state.lhsCol), metadata.typeOf(rhsCol))
-                    && state.violationCountByRhs[rhsCol] == 0) {
+            boolean compatible = !UserConfig.TYPE_COMPATIBILITY_ENABLED || testCompatibility(
+                    metadata.typeOf(state.lhsCol), metadata.typeOf(rhsCol));
+
+            if (rhsCol != state.lhsCol && compatible && state.violationCountByRhs[rhsCol] == 0) {
                 clean.add(new UnaryPair(state.lhsCol, rhsCol));
             }
         }

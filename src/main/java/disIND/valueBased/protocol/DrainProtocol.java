@@ -17,7 +17,7 @@ public final class DrainProtocol {
     }
 
     public sealed interface Command extends AkkaSerializable
-            permits Enqueue, BatchAcknowledged, RetryTick {
+            permits Enqueue, EnqueuePartition, BatchAcknowledged, RetryTick {
     }
 
     public record DrainRecord(int finalRound, int lhsCol, int bucketId, int expectedBuckets,
@@ -42,7 +42,17 @@ public final class DrainProtocol {
         }
     }
 
-    public record BatchAcknowledged(long batchId, int lhsCol) implements Command {
+    public record EnqueuePartition(int partitionId, List<DrainRecord> records,
+            ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements Command {
+        public EnqueuePartition {
+            records = List.copyOf(records);
+            Objects.requireNonNull(replyTo, "replyTo");
+            if (records.isEmpty())
+                throw new IllegalArgumentException("records must not be empty");
+        }
+    }
+
+    public record BatchAcknowledged(long batchId, int partitionId) implements Command {
     }
 
     public enum RetryTick implements Command {

@@ -15,7 +15,8 @@ public final class ValueOwnerProtocol {
     }
 
     public sealed interface Command extends AkkaSerializable
-            permits StoreBatch, FinalizeMembership, CandidateManagerReady, DrainQueued, RetryDrainProbe {
+            permits StoreBatch, FinalizeMembership, CandidateManagerReady, PartitionCandidateManagerReady,
+            DrainQueued, PartitionDrainQueued, RetryDrainProbe {
     }
 
     @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "batchType")
@@ -79,7 +80,13 @@ public final class ValueOwnerProtocol {
     public record CandidateManagerReady(int finalRound, int lhsCol, int bucketId) implements Command {
     }
 
+    public record PartitionCandidateManagerReady(int finalRound, int partitionId, int bucketId) implements Command {
+    }
+
     public record DrainQueued(int finalRound, int lhsCol, int bucketId) implements Command {
+    }
+
+    public record PartitionDrainQueued(int finalRound, int partitionId, int bucketId) implements Command {
     }
 
     public enum RetryDrainProbe implements Command {

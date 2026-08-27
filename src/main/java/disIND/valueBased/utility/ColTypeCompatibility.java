@@ -7,32 +7,30 @@ public final class ColTypeCompatibility {
     private ColTypeCompatibility() {
     }
 
-    private static final boolean[][] COMPATIBLE = new boolean[ColType.values().length][ColType.values().length];
+    private static final int[] COMPATIBLE_MASK = new int[ColType.values().length];;
 
     static {
-        allow(ColType.KEY, ColType.KEY);
-        allow(ColType.KEY, ColType.INTEGER);
-        allow(ColType.INTEGER, ColType.KEY);
-        allow(ColType.INTEGER, ColType.INTEGER);
-
-        allow(ColType.INTEGER, ColType.DECIMAL);
-        allow(ColType.DECIMAL, ColType.INTEGER);
-        allow(ColType.DECIMAL, ColType.DECIMAL);
-
-        allow(ColType.DATE, ColType.DATE);
-        allow(ColType.BOOLEAN, ColType.BOOLEAN);
-        allow(ColType.STRING, ColType.STRING);
-
-        allow(ColType.UNKNOWN, ColType.UNKNOWN);
-        allow(ColType.UNKNOWN, ColType.STRING);
-        allow(ColType.STRING, ColType.UNKNOWN);
+        allow(ColType.INTEGER, ColType.INTEGER, ColType.DECIMAL, ColType.STRING, ColType.UNKNOWN);
+        allow(ColType.DECIMAL, ColType.INTEGER, ColType.DECIMAL, ColType.STRING, ColType.UNKNOWN);
+        allow(ColType.DATE, ColType.DATE, ColType.STRING, ColType.UNKNOWN);
+        allow(ColType.BOOLEAN, ColType.BOOLEAN, ColType.STRING, ColType.UNKNOWN);
+        allow(ColType.STRING, ColType.STRING, ColType.UNKNOWN);
+        allow(ColType.STRING, ColType.values());
+        allow(ColType.UNKNOWN, ColType.values());
     }
 
-    private static void allow(ColType a, ColType b) {
-        COMPATIBLE[a.ordinal()][b.ordinal()] = true;
+    private static void allow(ColType lhs, ColType... rhsTypes) {
+        int mask = 0;
+        for (ColType rhs : rhsTypes) {
+            mask |= 1 << rhs.ordinal();
+        }
+        COMPATIBLE_MASK[lhs.ordinal()] = mask;
     }
 
     public static boolean testCompatibility(ColType lhs, ColType rhs) {
-        return COMPATIBLE[lhs.ordinal()][rhs.ordinal()];
+        if (lhs == null || rhs == null)
+            return true;
+        int rhsBit = 1 << rhs.ordinal();
+        return (COMPATIBLE_MASK[lhs.ordinal()] & rhsBit) != 0;
     }
 }

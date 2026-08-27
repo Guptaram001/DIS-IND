@@ -7,12 +7,19 @@ import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 
 public final class UserConfig {
+    public static boolean inputFileHasHeader;
+    public static String separator = "";
+    public static String fileEnding = "";
+
     private UserConfig() {
     }
 
     public static final String DEFAULT_INPUT_DIR = "data/synthetic";
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
     public static final int DEFAULT_BATCH_SIZE = 2;
+    public static boolean TYPE_COMPATIBILITY_ENABLED = true;
+    public static final int DEFAULT_CHUNK_SIZE = 6_000_000;
+    public static final String DEFAULT_DATASET_NAME = "tpch-1";
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
     public static final int MAX_VALUE_OWNER_WITNESSES = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
@@ -43,9 +50,11 @@ public final class UserConfig {
     public static final String DEFAULT_VALUE_OWNER_DISK_DIR = System.getProperty("java.io.tmpdir")
             + "/dis-ind-value-owners";
 
-    public static String inputDir = DEFAULT_INPUT_DIR;
-    public static String outputDir = DEFAULT_OUTPUT_FILE;
+    public static String INPUT_DIR = DEFAULT_INPUT_DIR;
+    public static String OUTPUT_DIR = DEFAULT_OUTPUT_FILE;
     public static int BATCH_SIZE = DEFAULT_BATCH_SIZE;
+    public static int CHUNK_SIZE = DEFAULT_CHUNK_SIZE;
+    public static String DATASET_NAME = DEFAULT_DATASET_NAME;
     public static int MAX_TRACKED_VIOLATIONS = DEFAULT_MAX_TRACKED_VIOLATIONS;
     public static double KMV_PRUNE_THRESHOLD = DEFAULT_KMV_PRUNE_THRESHOLD;
     public static int CHECKPOINT_INTERVAL = DEFAULT_CHECKPOINT_INTERVAL;
@@ -108,9 +117,11 @@ public final class UserConfig {
     public static void initialize(String[] args) {
         applyCommandLine(args);
 
-        inputDir = stringSetting("DIS_IND_INPUT_DIR", "dis.ind.input-dir", DEFAULT_INPUT_DIR);
-        outputDir = stringSetting("DIS_IND_OUTPUT_FILE", "dis.ind.output-file", DEFAULT_OUTPUT_FILE);
+        INPUT_DIR = stringSetting("DIS_IND_INPUT_DIR", "dis.ind.input-dir", DEFAULT_INPUT_DIR);
+        OUTPUT_DIR = stringSetting("DIS_IND_OUTPUT_FILE", "dis.ind.output-file", DEFAULT_OUTPUT_FILE);
         BATCH_SIZE = positiveIntSetting("DIS_IND_BATCH_SIZE", "dis.ind.batch-size", DEFAULT_BATCH_SIZE);
+        CHUNK_SIZE = positiveIntSetting("DIS_IND_CHUNK_SIZE", "dis.ind.chunk-size", DEFAULT_CHUNK_SIZE);
+        DATASET_NAME = stringSetting("DIS_IND_DATASET_NAME", "dis.ind.dataset-name", DEFAULT_DATASET_NAME);
         MAX_TRACKED_VIOLATIONS = positiveIntSetting("DIS_IND_MAX_TRACKED_VIOLATIONS",
                 "dis.ind.max-tracked-violations", DEFAULT_MAX_TRACKED_VIOLATIONS);
         KMV_PRUNE_THRESHOLD = doubleSetting("DIS_IND_KMV_PRUNE_THRESHOLD",
@@ -299,5 +310,63 @@ public final class UserConfig {
             default -> throw new IllegalArgumentException(
                     settingName(environmentName, propertyName) + " must be count, exact,prune,or witness: " + value);
         };
+    }
+
+    public static void setDatasetDetails(String datasetName) {
+        switch (datasetName) {
+            case "btc" -> {
+                separator = ",";
+                inputFileHasHeader = true;
+                fileEnding = ".csv";
+            }
+            case "census" -> {
+                separator = ";";
+                inputFileHasHeader = true;
+                fileEnding = ".csv";
+            }
+            case "imdb" -> {
+                inputFileHasHeader = true;
+                separator = ";";
+                fileEnding = ".csv";
+            }
+            case "mb" -> {
+                inputFileHasHeader = true;
+                separator = ",";
+                fileEnding = ".csv";
+            }
+            case "t2d" -> {
+                inputFileHasHeader = true;
+                separator = ",";
+                fileEnding = ".csv";
+            }
+            case "tesma" -> {
+                inputFileHasHeader = true;
+                separator = ",";
+                fileEnding = ".csv";
+            }
+            case "tpch-1" -> {
+                separator = "|";
+                inputFileHasHeader = false;
+                fileEnding = ".tbl";
+            }
+            case "tpch-10" -> {
+                separator = "|";
+                inputFileHasHeader = false;
+                fileEnding = ".tbl";
+            }
+            case "uniprot" -> {
+                inputFileHasHeader = true;
+                separator = "\t";
+                fileEnding = ".tsv";
+            }
+            case "wikipedia" -> {
+                separator = ",";
+                inputFileHasHeader = true;
+                fileEnding = ".csv";
+            }
+
+            default -> {
+            }
+        }
     }
 }

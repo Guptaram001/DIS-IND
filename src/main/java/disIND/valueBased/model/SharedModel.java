@@ -19,7 +19,7 @@ public final class SharedModel {
     }
 
     public enum ColType implements AkkaSerializable {
-        INTEGER, DECIMAL, DATE, BOOLEAN, STRING, KEY, UNKNOWN
+        INTEGER, DECIMAL, DATE, BOOLEAN, STRING, UNKNOWN
     }
 
     public enum PairState {
@@ -74,8 +74,17 @@ public final class SharedModel {
             return columns.get(globalId);
         }
 
-        public String qualifiedName(int globalId) {
-            return columns.get(globalId).qualifiedName();
+        // public String qualifiedName(int globalId) {
+        // return columns.get(globalId).qualifiedName();
+        // }
+
+        public String qualifiedName(int globalColumnId) {
+            ColumnInfo column = columns().get(globalColumnId);
+
+            return column.tableName()
+                    + "["
+                    + column.localColumnId()
+                    + "]";
         }
 
         public int tableOf(int globalId) {
@@ -459,8 +468,8 @@ public final class SharedModel {
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
             CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta, CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
             CMCommand.MembershipResult, CMCommand.ValueOwnerCandidateStatusUpdate, CMCommand.ValueOwnerDrained,
-            CMCommand.DrainReadyProbe, CMCommand.OwnersDrained,
-            CMCommand.NoMoreCandidates, CMCommand.ForceFinish {
+            CMCommand.DrainReadyProbe, CMCommand.PartitionDrainReadyProbe, CMCommand.OwnersDrained,
+            CMCommand.NoMoreCandidates, CMCommand.ForceFinish, CMCommand.EnsurePartitionInitialized {
 
         static String entityId(int partitionId) {
             return "cm-part-" + partitionId;
@@ -489,6 +498,9 @@ public final class SharedModel {
         }
 
         record NaryDispatched() implements CMCommand {
+        }
+
+        record EnsurePartitionInitialized(int partitionId, int finalRound) implements CMCommand {
         }
 
         record DistinctDeltaBatch(int colId, long epoch, RoaringBitmap insertedDistinctValues) implements CMCommand {
@@ -526,6 +538,10 @@ public final class SharedModel {
         }
 
         record DrainReadyProbe(int finalRound, int lhsCol, int bucketId,
+                ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
+        }
+
+        record PartitionDrainReadyProbe(int finalRound, int partitionId, int bucketId,
                 ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
         }
 

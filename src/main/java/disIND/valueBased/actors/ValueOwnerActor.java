@@ -26,9 +26,9 @@ import disIND.valueBased.model.SharedModel.ValueUpdates;
 import disIND.valueBased.protocol.ValueOwnerProtocol.Command;
 import disIND.valueBased.protocol.ValueOwnerProtocol.FinalizeMembership;
 import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
-import disIND.valueBased.protocol.ValueOwnerProtocol.CandidateManagerReady;
 import disIND.valueBased.protocol.ValueOwnerProtocol.RetryDrainProbe;
-import disIND.valueBased.protocol.ValueOwnerProtocol.DrainQueued;
+import disIND.valueBased.protocol.ValueOwnerProtocol.PartitionDrainQueued;
+import disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerReady;
 import disIND.valueBased.protocol.DrainProtocol;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.WorkerValueIdStore;
@@ -50,6 +50,7 @@ import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.time.Duration;
 import akka.actor.typed.ActorRef;
@@ -74,8 +75,9 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private final ActorRef<DrainProtocol.Command> drainDispatcher;
     private final TimerScheduler<Command> timers;
     private FinalizeMembership finalization;
-    private int nextDrainLhs;
-    private DrainProtocol.DrainRecord awaitingDrainAdmission;
+    private int nextDrainPartition;
+    private List<DrainProtocol.DrainRecord> awaitingPartitionDrain;
+    private boolean awaitingPartitionReady;
     private final WorkerPhaseMetrics phaseMetrics;
     private final WorkerMetricsFlusher workerMetricsFlusher;
 
@@ -137,8 +139,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 .onMessage(StoreBatch.class, this::onStoreBatch)
                 // .onMessage(GetBucket.class, this::onGetBucket)
                 .onMessage(FinalizeMembership.class, this::onFinalizeMembership)
-                .onMessage(CandidateManagerReady.class, this::onCandidateManagerReady)
-                .onMessage(DrainQueued.class, this::onDrainQueued)
+                .onMessage(PartitionDrainQueued.class, this::onPartitionDrainQueued)
+                .onMessage(PartitionCandidateManagerReady.class, this::onPartitionCandidateManagerReady)
                 .onMessageEquals(RetryDrainProbe.INSTANCE, this::onRetryDrainProbe)
                 .build();
     }
@@ -266,64 +268,87 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                     bucketId, message.finalRound());
         }
         finalization = message;
-        nextDrainLhs = 0;
-        probeNextCandidateManager();
+        nextDrainPartition = 0;
+        prepareNextPartitionDrain();
         return this;
     }
 
-    private Behavior<Command> onCandidateManagerReady(CandidateManagerReady message) {
-        if (finalization == null || message.finalRound() != finalization.finalRound()
-                || message.bucketId() != bucketId || message.lhsCol() != nextDrainLhs)
+    private Behavior<Command> onPartitionDrainQueued(PartitionDrainQueued message) {
+        if (finalization == null || awaitingPartitionDrain == null
+                || message.finalRound() != finalization.finalRound()
+                || message.partitionId() != nextDrainPartition || message.bucketId() != bucketId)
             return this;
         timers.cancel(RetryDrainProbe.INSTANCE);
-        int lhs = nextDrainLhs;
-        awaitingDrainAdmission = new DrainProtocol.DrainRecord(
-                finalization.finalRound(), lhs, bucketId, finalization.expectedBuckets(), new RoaringBitmap(),
-                candidateEvaluator.candidateEvaluationsFor(lhs), candidateEvaluator.exactComparisonsFor(lhs),
-                modeSpecificContext.metricsFor(lhs),
-                lhs == 0 ? modeSpecificContext.activeClusterSignatures() : List.of());
-        enqueueAwaitingDrain();
+        awaitingPartitionDrain = null;
+        awaitingPartitionReady = false;
+        nextDrainPartition++;
+        prepareNextPartitionDrain();
         return this;
     }
 
-    private Behavior<Command> onDrainQueued(DrainQueued message) {
-        if (awaitingDrainAdmission == null || message.finalRound() != awaitingDrainAdmission.finalRound()
-                || message.lhsCol() != awaitingDrainAdmission.lhsCol() || message.bucketId() != bucketId)
+    private Behavior<Command> onPartitionCandidateManagerReady(PartitionCandidateManagerReady message) {
+        if (finalization == null || awaitingPartitionDrain == null || !awaitingPartitionReady
+                || message.finalRound() != finalization.finalRound()
+                || message.partitionId() != nextDrainPartition || message.bucketId() != bucketId)
             return this;
         timers.cancel(RetryDrainProbe.INSTANCE);
-        awaitingDrainAdmission = null;
-        nextDrainLhs++;
-        if (nextDrainLhs < finalization.totalColumns())
-            probeNextCandidateManager();
-        else if (Debug.INTERNAL)
-            getContext().getLog().info(
-                    "[VO] bucket={} finalRound={} queuedCms={} localRejectedCandidates={} finalStatus=ack-only",
-                    bucketId, finalization.finalRound(), finalization.totalColumns(),
-                    modeSpecificContext.locallyRejectedCount());
+        awaitingPartitionReady = false;
+        enqueueAwaitingPartitionDrain();
         return this;
     }
 
-    private Behavior<Command> onRetryDrainProbe() {
-        if (awaitingDrainAdmission == null)
-            probeNextCandidateManager();
-        else
-            enqueueAwaitingDrain();
-        return this;
-    }
-
-    private void probeNextCandidateManager() {
-        if (finalization == null || nextDrainLhs >= finalization.totalColumns())
+    private void prepareNextPartitionDrain() {
+        if (finalization == null)
             return;
-        int cmPartition = CMCommand.partitionFor(nextDrainLhs, UserConfig.DEFAULT_CM_PARTITIONS);
-        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(cmPartition))
-                .tell(new CMCommand.DrainReadyProbe(finalization.finalRound(), nextDrainLhs, bucketId,
+        if (nextDrainPartition >= UserConfig.DEFAULT_CM_PARTITIONS) {
+            if (Debug.INTERNAL)
+                getContext().getLog().info(
+                        "[VO] bucket={} finalRound={} queuedCmPartitions={} localRejectedCandidates={}",
+                        bucketId, finalization.finalRound(), UserConfig.DEFAULT_CM_PARTITIONS,
+                        modeSpecificContext.locallyRejectedCount());
+            return;
+        }
+
+        List<DrainProtocol.DrainRecord> records = new ArrayList<>();
+        for (int lhs = nextDrainPartition; lhs < finalization.totalColumns(); lhs += UserConfig.DEFAULT_CM_PARTITIONS) {
+            records.add(new DrainProtocol.DrainRecord(
+                    finalization.finalRound(), lhs, bucketId, finalization.expectedBuckets(), new RoaringBitmap(),
+                    candidateEvaluator.candidateEvaluationsFor(lhs), candidateEvaluator.exactComparisonsFor(lhs),
+                    modeSpecificContext.metricsFor(lhs),
+                    lhs == 0 ? modeSpecificContext.activeClusterSignatures() : List.of()));
+        }
+
+        if (records.isEmpty()) {
+            nextDrainPartition++;
+            prepareNextPartitionDrain();
+            return;
+        }
+        awaitingPartitionDrain = List.copyOf(records);
+        awaitingPartitionReady = true;
+        probeAwaitingPartition();
+    }
+
+    private void probeAwaitingPartition() {
+        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(nextDrainPartition))
+                .tell(new CMCommand.PartitionDrainReadyProbe(finalization.finalRound(), nextDrainPartition, bucketId,
                         getContext().getSelf()));
         timers.startSingleTimer(RetryDrainProbe.INSTANCE, Duration.ofSeconds(UserConfig.DRAIN_RETRY_SECONDS));
     }
 
-    private void enqueueAwaitingDrain() {
-        drainDispatcher.tell(new DrainProtocol.Enqueue(awaitingDrainAdmission, getContext().getSelf()));
+    private void enqueueAwaitingPartitionDrain() {
+        drainDispatcher.tell(
+                new DrainProtocol.EnqueuePartition(nextDrainPartition, awaitingPartitionDrain, getContext().getSelf()));
         timers.startSingleTimer(RetryDrainProbe.INSTANCE, Duration.ofSeconds(UserConfig.DRAIN_RETRY_SECONDS));
+    }
+
+    private Behavior<Command> onRetryDrainProbe() {
+        if (awaitingPartitionDrain != null) {
+            if (awaitingPartitionReady)
+                probeAwaitingPartition();
+            else
+                enqueueAwaitingPartitionDrain();
+        }
+        return this;
     }
 
     private void acknowledge(StoreBatch message) {

@@ -123,6 +123,18 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
 
     }
 
+    private void initializeAllLhsPartitions(int finalRound) {
+        for (int partitionId = 0; partitionId < UserConfig.DEFAULT_CM_PARTITIONS; partitionId++) {
+
+            sharding.entityRefFor(
+                    CandidateManagerActor_.TYPE_KEY,
+                    CMCommand.entityId(partitionId))
+                    .tell(new CMCommand.EnsurePartitionInitialized(
+                            partitionId,
+                            finalRound));
+        }
+    }
+
     @Override
     public Receive<BDCommand> createReceive() {
         return newReceiveBuilder()
@@ -132,11 +144,17 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                 })
                 .onMessage(BDCommand.FinishDiscovery.class, msg -> {
                     rcRef.tell(new RCCommand.AwaitDiscoveryFinished(msg.finalRound(), msg.replyTo()));
+
+                    // Initialize every LHS exactly once, including empty columns.
+                    initializeAllLhsPartitions(msg.finalRound());
+
+                    // After initialization, start the VO drain/finalization process.
                     for (int ownerId = 0; ownerId < UserConfig.VALUE_OWNER_BUCKETS; ownerId++) {
                         sharding.entityRefFor(ValueOwnerActor.TYPE_KEY, ValueOwnerActor.entityId(ownerId))
                                 .tell(new FinalizeMembership(msg.finalRound(), UserConfig.VALUE_OWNER_BUCKETS,
                                         metadata.totalCols()));
                     }
+
                     return this;
                 })
                 .onMessage(BDCommand.GetResultCollector.class, msg -> {

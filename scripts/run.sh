@@ -74,6 +74,8 @@ COORDINATOR_CPUS="${COORDINATOR_CPUS:-1}"
 INPUT_DIR="${INPUT_DIR:-$PROJECT_DIR/data/tpch-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 DIS_IND_BATCH_SIZE="${DIS_IND_BATCH_SIZE:-}"
+DIS_IND_CHUNK_SIZE="${DIS_IND_CHUNK_SIZE:-}"
+DIS_IND_DATASET_NAME="${DIS_IND_DATASET_NAME:-}"
 DIS_IND_MODE="${DIS_IND_MODE:-columnbased}"
 
 case "${1:-}" in
@@ -155,6 +157,8 @@ export_docker_application_arguments() {
             --input-dir) export DIS_IND_INPUT_DIR="$value" ;;
             --output-file) export DIS_IND_OUTPUT_FILE="$value" ;;
             --batch-size) export DIS_IND_BATCH_SIZE="$value" ;;
+            --chunk-size) export DIS_IND_CHUNK_SIZE="$value" ;;
+            --dataset-name) export DIS_IND_DATASET_NAME="$value" ;;
             --max-tracked-violations) export DIS_IND_MAX_TRACKED_VIOLATIONS="$value" ;;
             --kmv-prune-threshold) export DIS_IND_KMV_PRUNE_THRESHOLD="$value" ;;
             --checkpoint-interval) export DIS_IND_CHECKPOINT_INTERVAL="$value" ;;
@@ -269,7 +273,19 @@ run_distributed_docker() {
     else
         unset DIS_IND_BATCH_SIZE
     fi
+
+    if [[ -n "$DIS_IND_CHUNK_SIZE" ]]; then
+        export DIS_IND_CHUNK_SIZE
+    else
+        unset DIS_IND_CHUNK_SIZE
+    fi
    
+    if [[ -n "$DIS_IND_DATASET_NAME" ]]; then
+        export DIS_IND_DATASET_NAME
+    else
+        unset DIS_IND_DATASET_NAME
+    fi
+
     export JAVA_XMS="${JAVA_XMS:-512m}"
     export JAVA_XMX="${JAVA_XMX:-2g}"
     export COORDINATOR_JAVA_XMX="${COORDINATOR_JAVA_XMX:-2g}"
@@ -307,6 +323,7 @@ run_distributed_docker() {
         echo "input_dir=$input_dir_abs"
         echo "output_dir=$output_dir_abs"
         echo "batch_size=${DIS_IND_BATCH_SIZE:-UserConfig default}"
+        echo "chunk_size=${DIS_IND_CHUNK_SIZE:-UserConfig default}"
         echo "prune_cqf_enabled=${DIS_IND_PRUNE_CQF_ENABLED:-true}"
         echo "prune_partition_counts_enabled=${DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED:-true}"
         echo "prune_count_partitions=${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
@@ -590,6 +607,14 @@ export DIS_IND_VALUE_TO_ROWS_DISK_DIR="${DIS_IND_VALUE_TO_ROWS_DISK_DIR:-$RUN_DI
 export DIS_IND_VALUE_OWNER_DISK_DIR="${DIS_IND_VALUE_OWNER_DISK_DIR:-$RUN_DIR/value-owners}"
 if [[ -n "$DIS_IND_BATCH_SIZE" ]]; then
     export DIS_IND_BATCH_SIZE
+fi
+
+if [[ -n "$DIS_IND_CHUNK_SIZE" ]]; then
+    export DIS_IND_CHUNK_SIZE
+fi
+
+if [[ -n "$DIS_IND_DATASET_NAME" ]]; then
+    export DIS_IND_DATASET_NAME
 fi
 
 for required_command in "$JAVA_BIN" "$JCMD_BIN" "$JSTAT_BIN"; do
