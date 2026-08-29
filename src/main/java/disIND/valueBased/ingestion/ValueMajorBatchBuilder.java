@@ -115,15 +115,23 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
 
         private void appendTo(List<ColumnRows> destination) {
             if (more != null) {
+
                 ObjectIterator<Int2IntMap.Entry> iterator = Int2IntMaps.fastIterator(more);
                 while (iterator.hasNext()) {
                     Int2IntMap.Entry entry = iterator.next();
-                    destination.add(new ColumnRows(entry.getIntKey(), entry.getIntValue()));
+                    int count = entry.getIntValue();
+                    if (count != 0)
+                        destination.add(new ColumnRows(entry.getIntKey(), count));
                 }
                 return;
             }
-            for (int i = 0; i < size; i++)
-                destination.add(new ColumnRows(columnAt(i), countAt(i)));
+
+            for (int i = 0; i < size; i++) {
+                int count = countAt(i);
+                if (count != 0)
+                    destination.add(new ColumnRows(columnAt(i), count));
+
+            }
         }
 
         private void setCount(int index, int count) {
@@ -138,7 +146,7 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
     }
 
     @Override
-    public void add(int columnId, String value, int rowId) {
+    public void add(int columnId, String value, int rowId, int delta) {
         if (built)
             throw new IllegalStateException("Cannot add data after the batch was built");
 
@@ -148,6 +156,9 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
         if (rowId < 0)
             throw new IllegalArgumentException("rowId must not be negative");
 
+        if (delta == 0)
+            throw new IllegalArgumentException("delta must not be zero");
+
         Objects.requireNonNull(value, "value");
 
         SmallColumnCounts counts = countByValue.get(value);
@@ -155,7 +166,7 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
             counts = new SmallColumnCounts();
             countByValue.put(value, counts);
         }
-        counts.addTo(columnId, 1);
+        counts.addTo(columnId, delta);
     }
 
     @Override
@@ -171,7 +182,8 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
             SmallColumnCounts counts = entry.getValue();
             List<ColumnRows> columns = new ArrayList<>(counts.size());
             counts.appendTo(columns);
-            values.add(new ValueData(value, columns));
+            if (!columns.isEmpty())
+                values.add(new ValueData(value, columns));
         }
 
         return new ValueMajorBatch(values);

@@ -212,8 +212,9 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 .tracker().newChanges(bucketId);
         // Find which IND pairs might have been changed.
         long started = System.nanoTime();
-        candidateEvaluator.evaluate(membership.newlyAddedColumnsByValue(),
-                membership.updatedRecordsByValue(), candidateViolationAfterApplyingUpdates);
+        candidateEvaluator.evaluate(membership.previousRecordsByValue(), membership.updatedRecordsByValue(),
+                membership.newlyAddedColumnsByValue(), membership.newlyRemovedColumnsByValue(),
+                candidateViolationAfterApplyingUpdates);
         phaseMetrics.record(Phase.CANDIDATE_EVALUATION, System.nanoTime() - started);
 
         started = System.nanoTime();

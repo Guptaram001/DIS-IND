@@ -16,6 +16,7 @@ import disIND.valueBased.protocol.ValueOwnerProtocol.BatchBody;
 import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
 import disIND.valueBased.utility.InferDataAttributes;
 import disIND.valueBased.utility.UserConfig;
+import disIND.valueBased.model.IngestionMode;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -43,7 +44,7 @@ public final class DataLoader {
     private static final PipelineMetricsWriter pipelineMetricsWriter = new PipelineMetricsWriter();
 
     public interface OrientetationBatchBuilder {
-        void add(int columnId, String value, int rowId);
+        void add(int columnId, String value, int rowId, int delta);
 
         BatchBody build();
     }
@@ -191,6 +192,15 @@ public final class DataLoader {
         long totalCells = 0L;
         int round = 0;
         int[] batchSize = new int[n]; // no. of rows dynamically adjusted
+        long totalDeletedRows = 0L;
+        long totalReinsertedRows = 0L;
+
+        @SuppressWarnings("unchecked")
+        Deque<List<String[]>>[] deletionByTable = new Deque[n];
+
+        for (int tableId = 0; tableId < n; tableId++) {
+            deletionByTable[tableId] = new ArrayDeque<>(2);
+        }
 
         System.out.println("[Loader] Opening files...");
         for (int i = 0; i < n; i++) {
@@ -219,6 +229,7 @@ public final class DataLoader {
                     continue;
                 int rowsRead = 0;
                 Map<Integer, OrientetationBatchBuilder> builders = new HashMap<>(UserConfig.VALUE_OWNER_BUCKETS);
+                List<String[]> currentBatchRows = new ArrayList<>(batchSize[i]);
                 int batchStartRowId = nextRowId[i];
                 int expectedColumns = nCols.get(i);
                 int globalColumnOffset = offsets.get(i);
@@ -229,24 +240,50 @@ public final class DataLoader {
                         break;
                     }
                     CSVRecord record = iterators[i].next();
+                    String[] row = recordToArray(record, tblFlags[i]);
+
+                    if (row.length != expectedColumns)
+                        throw new IllegalArgumentException();
+
                     int rowId = batchStartRowId + rowsRead;
-
-                    try {
-                        addRecordToOwnerBuilders(record, tblFlags[i], expectedColumns, globalColumnOffset, rowId,
-                                orientation, builders);
-                    } catch (IllegalArgumentException exception) {
-                        throw new IllegalArgumentException(files.get(i) + ": " + exception.getMessage());
-                    }
-
+                    addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, rowId, 1, orientation, builders);
+                    currentBatchRows.add(row);
                     rowsRead++;
                     rowCounts[i]++;
                     totalRows++;
                 }
 
-                Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
                 numberOfColsSent += nCols.get(i);
                 if (rowsRead > 0) {
                     int batchId = individualBatchIds[i]++;
+
+                    if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
+
+                        Deque<List<String[]>> deletionQueue = deletionByTable[i];
+                        if (deletionQueue.size() == 2) {
+                            List<String[]> rowsToReinsert = deletionQueue.removeFirst();
+                            addRowsToOwnerBuilders(rowsToReinsert, expectedColumns, globalColumnOffset, 1, orientation,
+                                    builders);
+                            totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToReinsert.size());
+                        }
+
+                        if (!deletionQueue.isEmpty()) {
+                            List<String[]> rowsToDelete = deletionQueue.peekFirst();
+                            addRowsToOwnerBuilders(rowsToDelete, expectedColumns, globalColumnOffset, -1, orientation,
+                                    builders);
+                            totalDeletedRows = Math.addExact(totalDeletedRows, rowsToDelete.size());
+                        }
+
+                        List<String[]> currentDeletionSample = selectDeletionSample(currentBatchRows,
+                                UserConfig.DELETE_PERCENT, UserConfig.DELETE_SEED, i, batchId);
+                        deletionQueue.addLast(currentDeletionSample);
+
+                        if (deletionQueue.size() > 2)
+                            throw new IllegalStateException("Deletion queue exceeded two samples");
+
+                    }
+
+                    Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
                     inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), i, batchStartRowId,
                             ownerBatches, round, batchId, orientation));
                     totalBatches = Math.incrementExact(totalBatches);
@@ -263,7 +300,44 @@ public final class DataLoader {
                         totalRows, totalRows - addedRows, numberOfColsSent);
             }
         }
+        if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
+
+            waitForAll(inFlight);
+            int restorationRound = Math.incrementExact(round);
+
+            for (int tableId = 0; tableId < n; tableId++) {
+
+                Deque<List<String[]>> deletionQueue = deletionByTable[tableId];
+                if (deletionQueue.size() != 2) {
+                    deletionQueue.clear();
+                    continue;
+                }
+                List<String[]> rowsToRestore = deletionQueue.removeFirst();
+                deletionQueue.clear();
+                if (rowsToRestore.isEmpty())
+                    continue;
+
+                Map<Integer, OrientetationBatchBuilder> builders = new HashMap<>(UserConfig.VALUE_OWNER_BUCKETS);
+                addRowsToOwnerBuilders(rowsToRestore, nCols.get(tableId), offsets.get(tableId), 1, orientation,
+                        builders);
+                Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
+                int restorationBatchId = individualBatchIds[tableId]++;
+                inFlight.addLast(sendTableBatch(system, nextEpoch.incrementAndGet(), tableId, nextRowId[tableId],
+                        ownerBatches, restorationRound, restorationBatchId, orientation));
+                totalBatches = Math.incrementExact(totalBatches);
+                totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToRestore.size());
+                latestBatchByTable.put(tableId, restorationBatchId);
+                waitForCredit(inFlight);
+            }
+        }
+
         waitForAll(inFlight);
+        if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
+            System.out.printf("[Loader] Mutation benchmark: %,d deletions, " + "%,d reinsertions%n", totalDeletedRows,
+                    totalReinsertedRows);
+            if (totalDeletedRows != totalReinsertedRows)
+                throw new IllegalStateException("Deletion benchmark did not restore all deleted rows:");
+        }
         int finalRound = round;
         System.out.println("[Loader] Per-file row counts:");
         for (int i = 0; i < n; i++) {
@@ -301,31 +375,51 @@ public final class DataLoader {
         return values;
     }
 
-    private static void addRecordToOwnerBuilders(CSVRecord record, boolean tbl, int expectedColumns,
-            int globalColumnOffset, int rowId, DataOrientation orientation,
-            Map<Integer, OrientetationBatchBuilder> builders) {
+    private static void addRowsToOwnerBuilders(List<String[]> rows, int expectedColumns, int globalColumnOffset,
+            int delta, DataOrientation orientation, Map<Integer, OrientetationBatchBuilder> builders) {
 
-        int actualColumns = record.size();
-        if (tbl && actualColumns > 0 && record.get(actualColumns - 1).isEmpty()) {
-            actualColumns--;
+        for (String[] row : rows) {
+            addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, 0, delta, orientation, builders);
         }
+    }
 
-        if (actualColumns != expectedColumns)
-            throw new IllegalArgumentException("Record has differerent columns");
+    private static void addRowToOwnerBuilders(String[] row, int expectedColumns, int globalColumnOffset, int rowId,
+            int delta, DataOrientation orientation, Map<Integer, OrientetationBatchBuilder> builders) {
+
+        if (row.length != expectedColumns)
+            throw new IllegalArgumentException("Record has different number of columns: expected ");
+
+        if (delta != 1 && delta != -1)
+            throw new IllegalArgumentException("delta must be 1 or -1: " + delta);
 
         for (int localColumn = 0; localColumn < expectedColumns; localColumn++) {
-            String value = normalize(record.get(localColumn));
-
-            // Empty values are not sent to ValueOwners.
-            if (value.isEmpty()) {
+            String value = row[localColumn];
+            if (value.isEmpty())
                 continue;
-            }
-
             int globalColumn = globalColumnOffset + localColumn;
             int ownerId = Math.floorMod(value.hashCode(), UserConfig.VALUE_OWNER_BUCKETS);
             OrientetationBatchBuilder builder = builders.computeIfAbsent(ownerId, ignored -> newBuilder(orientation));
-            builder.add(globalColumn, value, rowId);
+            builder.add(globalColumn, value, rowId, delta);
         }
+    }
+
+    private static List<String[]> selectDeletionSample(List<String[]> currentBatchRows, double deletePercent,
+            long configuredSeed, int tableId, int batchId) {
+
+        if (currentBatchRows.isEmpty() || deletePercent == 0.0)
+            return List.of();
+        int deletionCount = (int) Math.floor(currentBatchRows.size() * deletePercent / 100.0);
+
+        if (deletionCount == 0)
+            return List.of();
+
+        List<String[]> candidates = new ArrayList<>(currentBatchRows);
+        long batchSeed = configuredSeed;
+        batchSeed = 31L * batchSeed + tableId;
+        batchSeed = 31L * batchSeed + batchId;
+        Collections.shuffle(candidates, new Random(batchSeed));
+
+        return List.copyOf(candidates.subList(0, deletionCount));
     }
 
     private static Map<Integer, BatchBody> finishOwnerBatches(Map<Integer, OrientetationBatchBuilder> builders) {

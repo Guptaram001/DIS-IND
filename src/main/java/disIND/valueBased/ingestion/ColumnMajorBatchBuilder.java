@@ -19,7 +19,7 @@ public final class ColumnMajorBatchBuilder implements OrientetationBatchBuilder 
     private boolean built;
 
     @Override
-    public void add(int columnId, String value, int rowId) {
+    public void add(int columnId, String value, int rowId, int delta) {
         if (built)
             throw new IllegalStateException("Cannot add data after the batch was built");
 

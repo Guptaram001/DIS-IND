@@ -27,6 +27,7 @@ public final class CandidateEvaluator {
     private final CandidateSet newlyRejectedThisBatch;
 
     private final ColumnSet afterChangeSet;
+    private final CandidateSet affectedCandidatesForValue;
 
     public CandidateEvaluator(DatasetMetadata metadata, ColumnSetFactory columnSets,
             ModeSpecificContext modeSpecificContext, CandidateDomain candidateDomain) {
@@ -39,9 +40,116 @@ public final class CandidateEvaluator {
         this.evaluatedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
         this.newlyRejectedThisBatch = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
         this.afterChangeSet = columnSets.create();
+        this.affectedCandidatesForValue = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
     }
 
-    public void evaluate(Int2ObjectMap<ColumnSet> addedColumnsByValue, Int2ObjectMap<Int2IntMap> updatedRecordsByValue,
+    public void evaluate(Int2ObjectMap<Int2IntMap> previousRecordsByValue,
+            Int2ObjectMap<Int2IntMap> updatedRecordsByValue, Int2ObjectMap<ColumnSet> addedColumnsByValue,
+            Int2ObjectMap<ColumnSet> removedColumnsByValue, CandidateViolationAfterApplyingUpdates changes) {
+
+        if (removedColumnsByValue.isEmpty()) {
+            evaluateInsertions(addedColumnsByValue, updatedRecordsByValue, changes);
+            return;
+        }
+        evaluateBothChanges(previousRecordsByValue, updatedRecordsByValue, addedColumnsByValue,
+                removedColumnsByValue, changes);
+    }
+
+    private void evaluateBothChanges(Int2ObjectMap<Int2IntMap> previousRecordsByValue,
+            Int2ObjectMap<Int2IntMap> updatedRecordsByValue, Int2ObjectMap<ColumnSet> addedColumnsByValue,
+            Int2ObjectMap<ColumnSet> removedColumnsByValue, CandidateViolationAfterApplyingUpdates changes) {
+
+        evaluatedCandidates.clear();
+        newlyRejectedThisBatch.clear();
+
+        ObjectIterator<Int2ObjectMap.Entry<ColumnSet>> removedIterator = Int2ObjectMaps.fastIterator(
+                removedColumnsByValue);
+
+        while (removedIterator.hasNext()) {
+            Int2ObjectMap.Entry<ColumnSet> entry = removedIterator.next();
+            int valueId = entry.getIntKey();
+            evaluateValueTransitions(valueId, previousRecordsByValue, updatedRecordsByValue,
+                    addedColumnsByValue.get(valueId), entry.getValue(), changes);
+        }
+
+        ObjectIterator<Int2ObjectMap.Entry<ColumnSet>> addedIterator = Int2ObjectMaps.fastIterator(
+                addedColumnsByValue);
+        while (addedIterator.hasNext()) {
+            Int2ObjectMap.Entry<ColumnSet> entry = addedIterator.next();
+            int valueId = entry.getIntKey();
+
+            if (removedColumnsByValue.containsKey(valueId))
+                continue;
+
+            evaluateValueTransitions(valueId, previousRecordsByValue, updatedRecordsByValue, entry.getValue(), null,
+                    changes);
+        }
+    }
+
+    private void evaluateValueTransitions(int valueId, Int2ObjectMap<Int2IntMap> previousRecordsByValue,
+            Int2ObjectMap<Int2IntMap> updatedRecordsByValue, ColumnSet addedColumns, ColumnSet removedColumns,
+            CandidateViolationAfterApplyingUpdates changes) {
+
+        Int2IntMap before = previousRecordsByValue.get(valueId);
+        Int2IntMap after = updatedRecordsByValue.get(valueId);
+
+        if (before == null || after == null)
+            throw new IllegalStateException("Missing before/after membership for value ");
+
+        affectedCandidatesForValue.clear();
+        if (addedColumns != null)
+            evaluateChangedColumns(valueId, addedColumns, before, after, changes);
+
+        if (removedColumns != null)
+            evaluateChangedColumns(valueId, removedColumns, before, after, changes);
+
+    }
+
+    private void evaluateChangedColumns(int valueId, ColumnSet changedColumns, Int2IntMap before, Int2IntMap after,
+            CandidateViolationAfterApplyingUpdates changes) {
+
+        for (int changedColumn = changedColumns.nextSetBit(0); changedColumn >= 0; changedColumn = changedColumns
+                .nextSetBit(changedColumn + 1)) {
+
+            for (int rhsCol = candidateDomain.firstCompatibleRhs(changedColumn); rhsCol >= 0; rhsCol = candidateDomain
+                    .nextCompatibleRhs(changedColumn, rhsCol)) {
+                evaluateCandidateOnce(valueId, changedColumn, rhsCol, before, after, changes);
+            }
+
+            for (int lhsCol = 0; lhsCol < totalColumns; lhsCol++) {
+                if (!before.containsKey(lhsCol) && !after.containsKey(lhsCol))
+                    continue;
+
+                if (!candidateDomain.isCompatible(lhsCol, changedColumn))
+                    continue;
+                evaluateCandidateOnce(valueId, lhsCol, changedColumn, before, after, changes);
+            }
+        }
+    }
+
+    private void evaluateCandidateOnce(int valueId, int lhsCol, int rhsCol, Int2IntMap before, Int2IntMap after,
+            CandidateViolationAfterApplyingUpdates changes) {
+
+        int index = candidateIndex.index(lhsCol, rhsCol);
+
+        if (!affectedCandidatesForValue.add(index))
+            return;
+
+        boolean violatedBefore = before.containsKey(lhsCol) && !before.containsKey(rhsCol);
+        boolean violatedAfter = after.containsKey(lhsCol) && !after.containsKey(rhsCol);
+
+        if (violatedBefore == violatedAfter)
+            return;
+
+        countComparison(lhsCol, index);
+        if (violatedAfter)
+            changes.violationCreated(lhsCol, rhsCol, valueId);
+        else
+            changes.violationRepaired(lhsCol, rhsCol, valueId);
+    }
+
+    public void evaluateInsertions(Int2ObjectMap<ColumnSet> addedColumnsByValue,
+            Int2ObjectMap<Int2IntMap> updatedRecordsByValue,
             CandidateViolationAfterApplyingUpdates changes) {
 
         evaluatedCandidates.clear();
