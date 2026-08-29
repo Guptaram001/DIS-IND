@@ -258,7 +258,7 @@ public final class DataLoader {
                     anyActive = true;
                 }
             }
-            if (round % 100 == 0) {
+            if (round % 10 == 0) {
                 System.out.printf("[Loader] Round %d: %d rows added: %d rows  with %d cols ingested %n", round,
                         totalRows, totalRows - addedRows, numberOfColsSent);
             }

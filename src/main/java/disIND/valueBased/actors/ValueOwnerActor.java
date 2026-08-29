@@ -30,6 +30,7 @@ import disIND.valueBased.protocol.ValueOwnerProtocol.RetryDrainProbe;
 import disIND.valueBased.protocol.ValueOwnerProtocol.PartitionDrainQueued;
 import disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerReady;
 import disIND.valueBased.protocol.DrainProtocol;
+import disIND.valueBased.protocol.MembershipWriteProtocol;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.WorkerValueIdStore;
 import disIND.valueBased.tracking.CandidateViolationAfterApplyingUpdates;
@@ -73,6 +74,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private final BatchProcessor batchProcessor;
     private int statusSequence;
     private final ActorRef<DrainProtocol.Command> drainDispatcher;
+    private final ActorRef<MembershipWriteProtocol.Command> membershipWriter;
     private final TimerScheduler<Command> timers;
     private FinalizeMembership finalization;
     private int nextDrainPartition;
@@ -89,17 +91,20 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             String entityId, ClusterSharding sharding, DatasetMetadata metadata,
             ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore, DataOrientation orientation,
             CandidateTrackingMode candidateTracking, ActorRef<DrainProtocol.Command> drainDispatcher,
+            ActorRef<MembershipWriteProtocol.Command> membershipWriter,
             CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
             WorkerMetricsFlusher workerMetricsFlusher) {
         return Behaviors.withTimers(timers -> Behaviors.setup(ctx -> new ValueOwnerActor(
                 ctx, entityId, sharding, metadata, membershipStore, valueIdStore, orientation,
-                candidateTracking, drainDispatcher, timers, candidateDomain, phaseMetrics, workerMetricsFlusher)));
+                candidateTracking, drainDispatcher, membershipWriter, timers, candidateDomain, phaseMetrics,
+                workerMetricsFlusher)));
     }
 
     private ValueOwnerActor(ActorContext<Command> context, String entityId, ClusterSharding sharding,
             DatasetMetadata metadata, ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore,
             DataOrientation orientation, CandidateTrackingMode candidateTrackingMode,
-            ActorRef<DrainProtocol.Command> drainDispatcher, TimerScheduler<Command> timers,
+            ActorRef<DrainProtocol.Command> drainDispatcher,
+            ActorRef<MembershipWriteProtocol.Command> membershipWriter, TimerScheduler<Command> timers,
             CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
             WorkerMetricsFlusher workerMetricsFlusher) {
         super(context);
@@ -109,6 +114,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.membershipStore = membershipStore;
         this.valueIdStore = valueIdStore;
         this.drainDispatcher = Objects.requireNonNull(drainDispatcher, "drainDispatcher");
+        this.membershipWriter = Objects.requireNonNull(membershipWriter, "membershipWriter");
         this.timers = timers;
         this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
         this.orientation = orientation;
@@ -216,8 +222,9 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         phaseMetrics.record(Phase.TRACKER_RESOLUTION, System.nanoTime() - started);
 
         started = System.nanoTime();
-        membershipStore.writeBatch(bucketId, membership.updatedRecordsByValue(), trackingResult.changedStates());
+        membershipStore.stage(bucketId, membership.updatedRecordsByValue(), trackingResult.changedStates());
         phaseMetrics.record(Phase.ROCKSDB_WRITE, System.nanoTime() - started);
+        membershipWriter.tell(new MembershipWriteProtocol.StagedWrite(bucketId));
 
         modeSpecificContext.candidateStatesChanged(trackingResult.changedStates());
 

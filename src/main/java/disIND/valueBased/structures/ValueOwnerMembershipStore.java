@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
 
 import disIND.valueBased.membership.AdaptiveColumnCounts;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
@@ -55,6 +56,15 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private final RocksDB db;
     private final BucketMembershipCache[] bucketCaches;
     private final WorkerMembershipMetrics metrics;
+
+    // Write overlay: staged but not-yet-flushed-to-RocksDB deltas. Populated
+    // synchronously by VO actors via stage(); drained by the dedicated writer
+    // actor via flushOverlay(). Every read path that can fall through to raw
+    // RocksDB bytes (loadBatch, loadCandidates, findWitnesses) must consult
+    // this first, since a bucketCache/candidateStateCache eviction can happen
+    // before an entry is durably flushed.
+    private final ConcurrentHashMap<Long, Int2IntMap> pendingRecords = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<CandidateKey, CandidateState> pendingCandidates = new ConcurrentHashMap<>();
 
     private static final byte CANDIDATE_PREFIX = 0x43;
     private static final byte COUNT_STATE_TYPE = 1;
@@ -374,6 +384,18 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return key;
     }
 
+    private static long overlayKey(int bucketId, int valueId) {
+        return ((long) bucketId << Integer.SIZE) | (valueId & 0xFFFFFFFFL);
+    }
+
+    private static int overlayKeyBucket(long overlayKey) {
+        return (int) (overlayKey >>> Integer.SIZE);
+    }
+
+    private static int overlayKeyValueId(long overlayKey) {
+        return (int) overlayKey;
+    }
+
     public Map<CandidateKey, CandidateState> loadCandidates(Set<CandidateKey> keys,
             CandidateTrackingMode trackingMode) {
         Objects.requireNonNull(trackingMode, "trackingMode"); // Throws NPE
@@ -387,10 +409,20 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             if (cached != null) {
                 requireTrackingMode(key, cached, trackingMode);
                 result.put(key, cached);
-            } else {
-                misses.add(key);
-                missKeys.add(candidateKey(key));
+                continue;
             }
+            // Not yet in the read cache - it may still be sitting unflushed in the
+            // write overlay (evicted from cache before the writer persisted it).
+            CandidateState overlayState = pendingCandidates.get(key);
+            if (overlayState != null) {
+                requireTrackingMode(key, overlayState, trackingMode);
+                result.put(key, overlayState);
+                if (overlayState.rejected())
+                    candidateStateCache.put(key, overlayState);
+                continue;
+            }
+            misses.add(key);
+            missKeys.add(candidateKey(key));
         }
 
         if (missKeys.isEmpty())
@@ -474,14 +506,22 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
         for (int valueId : valueIds) {
             Int2IntMap cached = bucketCache(bucketId).get(valueId);
-            if (cached == null) {
-                metrics.cacheMiss();
-                misses.add(valueId);
-                missKeys.add(key(bucketId, valueId));
-            } else {
+            if (cached != null) {
                 metrics.cacheHit();
                 result.put(valueId, cached);
+                continue;
             }
+            // Not yet in the read cache - it may still be sitting unflushed in the write
+            // overlay
+            Int2IntMap overlayRecord = pendingRecords.get(overlayKey(bucketId, valueId));
+            if (overlayRecord != null) {
+                metrics.cacheHit();
+                result.put(valueId, new AdaptiveColumnCounts(overlayRecord));
+                continue;
+            }
+            metrics.cacheMiss();
+            misses.add(valueId);
+            missKeys.add(key(bucketId, valueId));
         }
 
         if (!missKeys.isEmpty()) {
@@ -505,25 +545,57 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return result;
     }
 
-    public void writeBatch(int bucketId, Int2ObjectMap<Int2IntMap> changedRecords,
+    public void stage(int bucketId, Int2ObjectMap<Int2IntMap> changedRecords,
             Map<CandidateKey, CandidateState> changedCandidates) {
+
+        ObjectIterator<Int2ObjectMap.Entry<Int2IntMap>> iterator = Int2ObjectMaps.fastIterator(changedRecords);
+        while (iterator.hasNext()) {
+            Int2ObjectMap.Entry<Int2IntMap> entry = iterator.next();
+            int valueId = entry.getIntKey();
+            Int2IntMap record = entry.getValue();
+            bucketCache(bucketId).putOwned(valueId, record);
+            pendingRecords.put(overlayKey(bucketId, valueId), record);
+        }
+
+        for (Map.Entry<CandidateKey, CandidateState> entry : changedCandidates.entrySet()) {
+            CandidateKey key = entry.getKey();
+            CandidateState state = entry.getValue();
+            if (state.rejected())
+                candidateStateCache.put(key, state);
+            else
+                candidateStateCache.invalidate(key);
+            pendingCandidates.put(key, state);
+        }
+    }
+
+    public int pendingOverlaySize() {
+        return pendingRecords.size() + pendingCandidates.size();
+    }
+
+    public void flushOverlay() {
+        if (pendingRecords.isEmpty() && pendingCandidates.isEmpty())
+            return;
+
+        Map<Long, Int2IntMap> recordSnapshot = new HashMap<>(pendingRecords);
+        Map<CandidateKey, CandidateState> candidateSnapshot = new HashMap<>(pendingCandidates);
+        if (recordSnapshot.isEmpty() && candidateSnapshot.isEmpty())
+            return;
+
         long logicalBytes = 0L;
         long membershipWrites = 0L;
         long candidateWrites = 0L;
         long candidateDeletes = 0L;
-        long writeStarted;
 
         try (WriteBatch batch = new WriteBatch()) {
-            // Membership updates
-            for (Int2ObjectMap.Entry<Int2IntMap> entry : changedRecords.int2ObjectEntrySet()) {
-                byte[] encodedKey = key(bucketId, entry.getIntKey());
+            for (Map.Entry<Long, Int2IntMap> entry : recordSnapshot.entrySet()) {
+                long overlayKey = entry.getKey();
+                byte[] encodedKey = key(overlayKeyBucket(overlayKey), overlayKeyValueId(overlayKey));
                 byte[] encodedValue = encode(entry.getValue());
                 batch.put(encodedKey, encodedValue);
                 logicalBytes = Math.addExact(logicalBytes, encodedKey.length + encodedValue.length);
                 membershipWrites = Math.incrementExact(membershipWrites);
             }
-            // Candidate updates
-            for (var entry : changedCandidates.entrySet()) {
+            for (Map.Entry<CandidateKey, CandidateState> entry : candidateSnapshot.entrySet()) {
                 CandidateKey key = entry.getKey();
                 CandidateState state = entry.getValue();
                 byte[] encodedKey = candidateKey(key);
@@ -537,31 +609,20 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                     logicalBytes = Math.addExact(logicalBytes, encodedKey.length);
                     candidateDeletes = Math.incrementExact(candidateDeletes);
                 }
-
             }
-            writeStarted = System.nanoTime();
+
+            long writeStarted = System.nanoTime();
             db.write(writeOptions, batch);
             long writeNanos = System.nanoTime() - writeStarted;
             metrics.rocksWrite(writeNanos, logicalBytes, membershipWrites, candidateWrites, candidateDeletes);
-
         } catch (RocksDBException exception) {
-            throw new IllegalStateException("Unable to persist VO batch", exception);
+            throw new IllegalStateException("Unable to flush VO write overlay", exception);
         }
 
-        ObjectIterator<Int2ObjectMap.Entry<Int2IntMap>> iterator = Int2ObjectMaps.fastIterator(changedRecords);
-        while (iterator.hasNext()) {
-            Int2ObjectMap.Entry<Int2IntMap> entry = iterator.next();
-            bucketCache(bucketId).putOwned(entry.getIntKey(), entry.getValue());
-        }
-
-        for (Map.Entry<CandidateKey, CandidateState> entry : changedCandidates.entrySet()) {
-            CandidateKey key = entry.getKey();
-            CandidateState state = entry.getValue();
-            if (state.rejected())
-                candidateStateCache.put(key, state);
-            else
-                candidateStateCache.invalidate(key);
-        }
+        for (Map.Entry<Long, Int2IntMap> entry : recordSnapshot.entrySet())
+            pendingRecords.remove(entry.getKey(), entry.getValue());
+        for (Map.Entry<CandidateKey, CandidateState> entry : candidateSnapshot.entrySet())
+            pendingCandidates.remove(entry.getKey(), entry.getValue());
     }
 
     public int[] findWitnesses(int bucketId, int lhsCol, int rhsCol, int limit,
@@ -571,7 +632,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         IntArrayList witnesses = new IntArrayList(limit);
-        IntSet seenUpdatedValues = new IntOpenHashSet();
+        IntSet seenValues = new IntOpenHashSet();
         byte[] prefix = bucketPrefix(bucketId);
 
         try (RocksIterator iterator = db.newIterator()) {
@@ -588,9 +649,11 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 // int valueId = ByteBuffer.wrap(storedKey).getInt(Integer.BYTES);
                 int valueId = readInt(storedKey, Integer.BYTES);
                 Int2IntMap membership = updatedRecords.get(valueId);
+                if (membership == null)
+                    membership = pendingRecords.get(overlayKey(bucketId, valueId));
                 boolean violation;
                 if (membership != null) {
-                    seenUpdatedValues.add(valueId);
+                    seenValues.add(valueId);
                     violation = isViolation(membership, lhsCol, rhsCol);
                 } else
                     violation = isEncodedViolation(iterator.value(), lhsCol, rhsCol);
@@ -613,10 +676,26 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             while (iterator.hasNext()) {
                 Int2ObjectMap.Entry<Int2IntMap> entry = iterator.next();
                 int valueId = entry.getIntKey();
-                if (seenUpdatedValues.contains(valueId))
+                if (!seenValues.add(valueId))
                     continue;
                 Int2IntMap membership = entry.getValue();
                 if (isViolation(membership, lhsCol, rhsCol)) {
+                    witnesses.add(valueId);
+                    if (witnesses.size() == limit)
+                        break;
+                }
+            }
+        }
+
+        if (witnesses.size() < limit && !pendingRecords.isEmpty()) {
+            for (Map.Entry<Long, Int2IntMap> entry : pendingRecords.entrySet()) {
+                long compositeKey = entry.getKey();
+                if (overlayKeyBucket(compositeKey) != bucketId)
+                    continue;
+                int valueId = overlayKeyValueId(compositeKey);
+                if (!seenValues.add(valueId))
+                    continue;
+                if (isViolation(entry.getValue(), lhsCol, rhsCol)) {
                     witnesses.add(valueId);
                     if (witnesses.size() == limit)
                         break;
@@ -719,6 +798,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
     @Override
     public void close() {
+        flushOverlay();
         candidateStateCache.invalidateAll();
 
         for (BucketMembershipCache cache : bucketCaches) {

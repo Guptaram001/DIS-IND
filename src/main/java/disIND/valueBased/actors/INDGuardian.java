@@ -16,6 +16,7 @@ import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.model.SharedModel.*;
 import disIND.valueBased.protocol.ValueOwnerProtocol.FinalizeMembership;
 import disIND.valueBased.protocol.DrainProtocol;
+import disIND.valueBased.protocol.MembershipWriteProtocol;
 import disIND.valueBased.structures.*;
 import disIND.valueBased.utility.Debug;
 import java.util.concurrent.atomic.AtomicLong;
@@ -33,7 +34,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     // private static final String DISPATCHER_INTERNAL =
     // "akka.actor.internal-dispatcher";
     private static final String DISPATCHER_VO = "akka.actor.vo-work-dispatcher";
-    // private static final String DISPATCHER_IO = "akka.actor.io-dispatcher";
+    private static final String DISPATCHER_IO = "akka.actor.io-dispatcher";
     private static final String DISPATCHER_CPU_INTENSIVE = "akka.actor.cpu-intensive-dispatcher";
 
     public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold, DatasetMetadata metadata,
@@ -51,6 +52,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private final AtomicLong totalRows = new AtomicLong(0L);
     private final ValueOwnerMembershipStore valueOwnerMembershipStore;
     private final ActorRef<DrainProtocol.Command> drainDispatcher;
+    private final ActorRef<MembershipWriteProtocol.Command> membershipWriter;
     private final WorkerValueIdStore workerValueIdStore;
     private final WorkerMetricsWriter metricsWriter;
     private final WorkerPhaseMetrics workerPhaseMetrics;
@@ -85,6 +87,9 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                 UserConfig.VALUE_OWNER_HOT_ENTRIES, cfg.candidateTracking,
                 UserConfig.VALUE_OWNER_BUCKETS, membershipMetrics);
 
+        this.membershipWriter = ctx.spawn(MembershipWriterActor.create(valueOwnerMembershipStore),
+                "membership-writer", Props.empty().withDispatcherFromConfig(DISPATCHER_IO));
+
         this.workerValueIdStore = new WorkerValueIdStore(Path.of(UserConfig.VALUE_ID_DISK_DIR, nodeId),
                 UserConfig.VALUE_ID_HOT_ENTRIES, UserConfig.VALUE_OWNER_BUCKETS, valueIdMetrics);
 
@@ -99,7 +104,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY, entityCtx -> {
             return ValueOwnerActor.create(entityCtx.getEntityId(),
                     sharding, metadata, valueOwnerMembershipStore, workerValueIdStore, cfg.orientation(),
-                    cfg.candidateTracking(), drainDispatcher, candidateDomain, workerPhaseMetrics,
+                    cfg.candidateTracking(), drainDispatcher, membershipWriter, candidateDomain, workerPhaseMetrics,
                     workerMetricsFlusher);
         }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_VO)));
 

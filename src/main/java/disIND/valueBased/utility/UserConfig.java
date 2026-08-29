@@ -25,6 +25,8 @@ public final class UserConfig {
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
     public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 100;
+    public static final int DEFAULT_VO_WRITE_OVERLAY_FLUSH_THRESHOLD = 5_000;
+    public static final int DEFAULT_VO_WRITE_OVERLAY_FLUSH_INTERVAL_MS = 200;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 2;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
