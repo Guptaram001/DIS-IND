@@ -129,7 +129,6 @@ public final class WitnessCandidateTracker implements CandidateTracker {
     private WitnessState updateState(CandidateKey key, WitnessState before, WitnessDelta delta,
             Int2ObjectMap<Int2IntMap> updatedMembership, ValueOwnerMembershipStore store) {
 
-        int[] beforeWitnesses = before.witnesses();
         boolean removesStoredWitness = false;
         for (int valueId : before.witnesses()) {
             if (delta.repaired.contains(valueId)) {

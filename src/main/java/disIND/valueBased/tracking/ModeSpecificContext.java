@@ -32,7 +32,10 @@ public sealed interface ModeSpecificContext
     default void membershipAdded(int columnId, int valueId) {
     }
 
-    default void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns) {
+    default void membershipRemoved(int columnId, int valueId) {
+    }
+
+    default void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns, ColumnSet removedColumns) {
     }
 
     default boolean locallyRejected(int candidateIndex) {
@@ -65,6 +68,13 @@ public sealed interface ModeSpecificContext
 
     default int locallyRejectedCount() {
         return 0;
+    }
+
+    private static void loadSignature(Int2IntMap membership, BitSet destination) {
+        destination.clear();
+        IntIterator iterator = membership.keySet().iterator();
+        while (iterator.hasNext())
+            destination.set(iterator.nextInt());
     }
 
     static ModeSpecificContext create(CandidateTrackingMode mode, int bucketId, int totalColumns) {
@@ -104,16 +114,21 @@ public sealed interface ModeSpecificContext
         }
 
         @Override
-        public void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns) {
-
-            afterSignature.clear();
-            IntIterator iterator = membershipAfter.keySet().iterator();
-            while (iterator.hasNext())
-                afterSignature.set(iterator.nextInt());
+        public void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns, ColumnSet removedColumns) {
+            loadSignature(membershipAfter, afterSignature);
             beforeSignature.clear();
             beforeSignature.or(afterSignature);
-            for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns.nextSetBit(column + 1)) {
-                beforeSignature.clear(column);
+            if (addedColumns != null) {
+                for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns
+                        .nextSetBit(column + 1)) {
+                    beforeSignature.clear(column);
+                }
+            }
+            if (removedColumns != null) {
+                for (int column = removedColumns.nextSetBit(0); column >= 0; column = removedColumns
+                        .nextSetBit(column + 1)) {
+                    beforeSignature.set(column);
+                }
             }
             clusters.moveMembership(beforeSignature, afterSignature);
         }
@@ -182,17 +197,46 @@ public sealed interface ModeSpecificContext
         }
 
         @Override
-        public void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns) {
-            afterSignature.clear();
-            IntIterator membershipIterator = membershipAfter.keySet().iterator();
-            while (membershipIterator.hasNext())
-                afterSignature.set(membershipIterator.nextInt());
+        public void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns, ColumnSet removedColumns) {
+            loadSignature(membershipAfter, afterSignature);
             beforeSignature.clear();
             beforeSignature.or(afterSignature);
-            for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns.nextSetBit(column + 1)) {
-                beforeSignature.clear(column);
+            if (addedColumns != null) {
+                for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns
+                        .nextSetBit(column + 1)) {
+                    beforeSignature.clear(column);
+                }
+            }
+            if (removedColumns != null) {
+                for (int column = removedColumns.nextSetBit(0); column >= 0; column = removedColumns
+                        .nextSetBit(column + 1)) {
+                    beforeSignature.set(column);
+                }
             }
             clusters.moveMembership(beforeSignature, afterSignature);
+        }
+
+        @Override
+        public void membershipRemoved(int columnId, int valueId) {
+            int previousDistinctCount = localDistinctCounts[columnId];
+
+            if (previousDistinctCount <= 0)
+                throw new IllegalStateException("Cannot remove missing distinct membership:"
+                        + " columnId=" + columnId + ", valueId=" + valueId);
+
+            localDistinctCounts[columnId] = previousDistinctCount - 1;
+            if (localDistinctCountsByPartition != null) {
+                int partition = countPartition(valueId, localDistinctCountsByPartition[columnId].length);
+                int previousPartitionCount = localDistinctCountsByPartition[columnId][partition];
+                if (previousPartitionCount <= 0) {
+                    throw new IllegalStateException("Cannot remove missing partition membership:"
+                            + " columnId=" + columnId + ", valueId=" + valueId + ", partition=" + partition);
+                }
+                localDistinctCountsByPartition[columnId][partition] = previousPartitionCount - 1;
+            }
+            if (cqf != null)
+                cqf.removeMembership(columnId, valueId);
+
         }
 
         @Override

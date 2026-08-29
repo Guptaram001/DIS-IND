@@ -43,21 +43,19 @@ public final class CandidateEvaluator {
         this.affectedCandidatesForValue = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
     }
 
-    public void evaluate(Int2ObjectMap<Int2IntMap> previousRecordsByValue,
-            Int2ObjectMap<Int2IntMap> updatedRecordsByValue, Int2ObjectMap<ColumnSet> addedColumnsByValue,
+    public void evaluate(Int2ObjectMap<Int2IntMap> updatedRecordsByValue, Int2ObjectMap<ColumnSet> addedColumnsByValue,
             Int2ObjectMap<ColumnSet> removedColumnsByValue, CandidateViolationAfterApplyingUpdates changes) {
 
         if (removedColumnsByValue.isEmpty()) {
             evaluateInsertions(addedColumnsByValue, updatedRecordsByValue, changes);
             return;
         }
-        evaluateBothChanges(previousRecordsByValue, updatedRecordsByValue, addedColumnsByValue,
-                removedColumnsByValue, changes);
+        evaluateMembershipTransitions(updatedRecordsByValue, addedColumnsByValue, removedColumnsByValue, changes);
     }
 
-    private void evaluateBothChanges(Int2ObjectMap<Int2IntMap> previousRecordsByValue,
-            Int2ObjectMap<Int2IntMap> updatedRecordsByValue, Int2ObjectMap<ColumnSet> addedColumnsByValue,
-            Int2ObjectMap<ColumnSet> removedColumnsByValue, CandidateViolationAfterApplyingUpdates changes) {
+    private void evaluateMembershipTransitions(Int2ObjectMap<Int2IntMap> updatedRecordsByValue,
+            Int2ObjectMap<ColumnSet> addedColumnsByValue, Int2ObjectMap<ColumnSet> removedColumnsByValue,
+            CandidateViolationAfterApplyingUpdates changes) {
 
         evaluatedCandidates.clear();
         newlyRejectedThisBatch.clear();
@@ -68,8 +66,12 @@ public final class CandidateEvaluator {
         while (removedIterator.hasNext()) {
             Int2ObjectMap.Entry<ColumnSet> entry = removedIterator.next();
             int valueId = entry.getIntKey();
-            evaluateValueTransitions(valueId, previousRecordsByValue, updatedRecordsByValue,
-                    addedColumnsByValue.get(valueId), entry.getValue(), changes);
+            Int2IntMap membershipAfter = updatedRecordsByValue.get(valueId);
+            if (membershipAfter == null)
+                throw new IllegalStateException("No updated membership for value " + valueId);
+
+            evaluateValueTransitions(valueId, membershipAfter, addedColumnsByValue.get(valueId), entry.getValue(),
+                    changes);
         }
 
         ObjectIterator<Int2ObjectMap.Entry<ColumnSet>> addedIterator = Int2ObjectMaps.fastIterator(
@@ -77,67 +79,76 @@ public final class CandidateEvaluator {
         while (addedIterator.hasNext()) {
             Int2ObjectMap.Entry<ColumnSet> entry = addedIterator.next();
             int valueId = entry.getIntKey();
-
             if (removedColumnsByValue.containsKey(valueId))
                 continue;
 
-            evaluateValueTransitions(valueId, previousRecordsByValue, updatedRecordsByValue, entry.getValue(), null,
-                    changes);
+            Int2IntMap membershipAfter = updatedRecordsByValue.get(valueId);
+            if (membershipAfter == null)
+                throw new IllegalStateException("No updated membership for value " + valueId);
+            evaluateValueTransitions(valueId, membershipAfter, entry.getValue(), null, changes);
         }
     }
 
-    private void evaluateValueTransitions(int valueId, Int2ObjectMap<Int2IntMap> previousRecordsByValue,
-            Int2ObjectMap<Int2IntMap> updatedRecordsByValue, ColumnSet addedColumns, ColumnSet removedColumns,
-            CandidateViolationAfterApplyingUpdates changes) {
+    private static boolean containedBefore(int columnId, Int2IntMap membershipAfter, ColumnSet addedColumns,
+            ColumnSet removedColumns) {
 
-        Int2IntMap before = previousRecordsByValue.get(valueId);
-        Int2IntMap after = updatedRecordsByValue.get(valueId);
+        if (removedColumns != null && removedColumns.contains(columnId))
+            return true;
+        if (addedColumns != null && addedColumns.contains(columnId))
+            return false;
+        return membershipAfter.containsKey(columnId);
+    }
 
-        if (before == null || after == null)
-            throw new IllegalStateException("Missing before/after membership for value ");
+    private void evaluateValueTransitions(int valueId, Int2IntMap membershipAfter, ColumnSet addedColumns,
+            ColumnSet removedColumns, CandidateViolationAfterApplyingUpdates changes) {
 
         affectedCandidatesForValue.clear();
         if (addedColumns != null)
-            evaluateChangedColumns(valueId, addedColumns, before, after, changes);
+            evaluateChangedColumns(valueId, membershipAfter, addedColumns, addedColumns, removedColumns, changes);
 
         if (removedColumns != null)
-            evaluateChangedColumns(valueId, removedColumns, before, after, changes);
+            evaluateChangedColumns(valueId, membershipAfter, removedColumns, addedColumns, removedColumns, changes);
 
     }
 
-    private void evaluateChangedColumns(int valueId, ColumnSet changedColumns, Int2IntMap before, Int2IntMap after,
-            CandidateViolationAfterApplyingUpdates changes) {
+    private void evaluateChangedColumns(int valueId, Int2IntMap membershipAfter, ColumnSet changedColumns,
+            ColumnSet addedColumns, ColumnSet removedColumns, CandidateViolationAfterApplyingUpdates changes) {
 
         for (int changedColumn = changedColumns.nextSetBit(0); changedColumn >= 0; changedColumn = changedColumns
                 .nextSetBit(changedColumn + 1)) {
 
             for (int rhsCol = candidateDomain.firstCompatibleRhs(changedColumn); rhsCol >= 0; rhsCol = candidateDomain
                     .nextCompatibleRhs(changedColumn, rhsCol)) {
-                evaluateCandidateOnce(valueId, changedColumn, rhsCol, before, after, changes);
+                evaluateCandidateOnce(valueId, changedColumn, rhsCol, membershipAfter, addedColumns, removedColumns,
+                        changes);
             }
 
             for (int lhsCol = 0; lhsCol < totalColumns; lhsCol++) {
-                if (!before.containsKey(lhsCol) && !after.containsKey(lhsCol))
+                boolean lhsAfter = membershipAfter.containsKey(lhsCol);
+                boolean lhsBefore = containedBefore(lhsCol, membershipAfter, addedColumns, removedColumns);
+                if (!lhsBefore && !lhsAfter)
                     continue;
 
                 if (!candidateDomain.isCompatible(lhsCol, changedColumn))
                     continue;
-                evaluateCandidateOnce(valueId, lhsCol, changedColumn, before, after, changes);
+                evaluateCandidateOnce(valueId, lhsCol, changedColumn, membershipAfter, addedColumns, removedColumns,
+                        changes);
             }
         }
     }
 
-    private void evaluateCandidateOnce(int valueId, int lhsCol, int rhsCol, Int2IntMap before, Int2IntMap after,
-            CandidateViolationAfterApplyingUpdates changes) {
+    private void evaluateCandidateOnce(int valueId, int lhsCol, int rhsCol, Int2IntMap membershipAfter,
+            ColumnSet addedColumns, ColumnSet removedColumns, CandidateViolationAfterApplyingUpdates changes) {
 
         int index = candidateIndex.index(lhsCol, rhsCol);
 
         if (!affectedCandidatesForValue.add(index))
             return;
 
-        boolean violatedBefore = before.containsKey(lhsCol) && !before.containsKey(rhsCol);
-        boolean violatedAfter = after.containsKey(lhsCol) && !after.containsKey(rhsCol);
-
+        boolean lhsBefore = containedBefore(lhsCol, membershipAfter, addedColumns, removedColumns);
+        boolean rhsBefore = containedBefore(rhsCol, membershipAfter, addedColumns, removedColumns);
+        boolean violatedBefore = lhsBefore && !rhsBefore;
+        boolean violatedAfter = membershipAfter.containsKey(lhsCol) && !membershipAfter.containsKey(rhsCol);
         if (violatedBefore == violatedAfter)
             return;
 

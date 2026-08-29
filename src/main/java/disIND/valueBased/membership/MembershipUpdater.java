@@ -34,7 +34,6 @@ public final class MembershipUpdater {
         started = System.nanoTime();
         Int2ObjectMap<ColumnSet> addedColumnsByValue = new Int2ObjectOpenHashMap<>();
         Int2ObjectMap<ColumnSet> removedColumnsByValue = new Int2ObjectOpenHashMap<>();
-        Int2ObjectMap<Int2IntMap> previousRecordsByValue = new Int2ObjectOpenHashMap<>();
 
         for (Int2ObjectMap.Entry<Int2IntMap> valueEntry : updatesByValue.int2ObjectEntrySet()) {
 
@@ -43,7 +42,6 @@ public final class MembershipUpdater {
             Int2IntMap record = records.get(valueId);
             if (record == null)
                 throw new IllegalStateException("No membership record loaded for value ");
-            previousRecordsByValue.put(valueId, new AdaptiveColumnCounts(record));
 
             // Allocate only if a new membership is discovered.
             ColumnSet addedColumns = null;
@@ -90,14 +88,21 @@ public final class MembershipUpdater {
                         .nextSetBit(columnId + 1)) {
                     modeSpecificContext.membershipAdded(columnId, valueId);
                 }
-                modeSpecificContext.membershipChanged(record, addedColumns);
             }
 
-            if (removedColumns != null)
+            if (removedColumns != null) {
                 removedColumnsByValue.put(valueId, removedColumns);
+                for (int columnId = removedColumns.nextSetBit(0); columnId >= 0; columnId = removedColumns
+                        .nextSetBit(columnId + 1))
+                    modeSpecificContext.membershipRemoved(columnId, valueId);
+            }
+            if (addedColumns != null || removedColumns != null) {
+                modeSpecificContext.membershipChanged(record, addedColumns, removedColumns);
+            }
         }
+
         phaseMetrics.record(Phase.MEMBERSHIP_UPDATE, System.nanoTime() - started);
 
-        return new MembershipBatchResult(previousRecordsByValue, records, addedColumnsByValue, removedColumnsByValue);
+        return new MembershipBatchResult(records, addedColumnsByValue, removedColumnsByValue);
     }
 }

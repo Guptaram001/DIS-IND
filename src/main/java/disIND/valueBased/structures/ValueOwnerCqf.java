@@ -30,7 +30,6 @@ public final class ValueOwnerCqf {
     private long proposedViolations;
     private long resizeCount;
 
-
     public ValueOwnerCqf(int bucketId, int totalColumns) {
         if (bucketId < 0)
             throw new IllegalArgumentException("bucketId must not be negative");
@@ -42,7 +41,7 @@ public final class ValueOwnerCqf {
 
     }
 
-    public ValueOwnerCqf(int bucketId, int totalColumns,Map<Integer, Map<Integer, Integer>> membershipSnapshot) {
+    public ValueOwnerCqf(int bucketId, int totalColumns, Map<Integer, Map<Integer, Integer>> membershipSnapshot) {
         this(bucketId, totalColumns);
         Objects.requireNonNull(membershipSnapshot, "membershipSnapshot")
                 .forEach((valueId, membership) -> membership.keySet()
@@ -113,6 +112,79 @@ public final class ValueOwnerCqf {
         }
         proposedViolations = Math.addExact(proposedViolations, proposals.size());
         return Map.copyOf(proposals);
+    }
+
+    public void removeMembership(int columnId, int valueId) {
+
+        validateColumn(columnId);
+        if (valueId < 0)
+            throw new IllegalArgumentException("valueId must not be negative");
+
+        IntArrayList values = valueIdsByColumn[columnId];
+        if (values == null)
+            throw new IllegalStateException("CQF membership does not exist:" + " columnId=" + columnId
+                    + ", valueId=" + valueId);
+
+        int valueIndex = values.indexOf(valueId);
+        if (valueIndex < 0)
+            throw new IllegalStateException(
+                    "CQF membership does not exist:" + " columnId=" + columnId + ", valueId=" + valueId);
+
+        values.removeInt(valueIndex);
+        if (values.isEmpty())
+            valueIdsByColumn[columnId] = null;
+
+        removeFingerprint(fingerprint(columnId, valueId));
+    }
+
+    private void removeFingerprint(int fingerprint) {
+
+        int slot = quotient(fingerprint);
+        while (counts[slot] != 0) {
+            if (fingerprints[slot] == fingerprint) {
+                if (counts[slot] > 1) {
+                    counts[slot]--;
+                    return;
+                }
+                removeSlotAndRepairCluster(slot);
+                return;
+            }
+            slot = (slot + 1) & (fingerprints.length - 1);
+        }
+        throw new IllegalStateException("CQF fingerprint does not exist");
+    }
+
+    private void removeSlotAndRepairCluster(int removedSlot) {
+
+        fingerprints[removedSlot] = 0;
+        counts[removedSlot] = 0;
+        distinctFingerprints--;
+        int slot = (removedSlot + 1) & (fingerprints.length - 1);
+
+        while (counts[slot] != 0) {
+            int fingerprintToMove = fingerprints[slot];
+            int countToMove = counts[slot];
+            fingerprints[slot] = 0;
+            counts[slot] = 0;
+            distinctFingerprints--;
+            insertWithoutResize(fingerprintToMove, countToMove);
+            slot = (slot + 1) & (fingerprints.length - 1);
+        }
+    }
+
+    private void insertWithoutResize(int fingerprint, int count) {
+
+        int slot = quotient(fingerprint);
+        while (counts[slot] != 0) {
+            if (fingerprints[slot] == fingerprint) {
+                counts[slot] = Math.addExact(counts[slot], count);
+                return;
+            }
+            slot = (slot + 1) & (fingerprints.length - 1);
+        }
+        fingerprints[slot] = fingerprint;
+        counts[slot] = count;
+        distinctFingerprints++;
     }
 
     public boolean mightContain(int columnId, int valueId) {
