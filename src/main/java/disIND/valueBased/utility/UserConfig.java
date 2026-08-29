@@ -5,6 +5,7 @@ import java.util.Map;
 
 import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
+import disIND.valueBased.model.IngestionMode;
 
 public final class UserConfig {
     public static boolean inputFileHasHeader;
@@ -16,6 +17,9 @@ public final class UserConfig {
 
     public static final String DEFAULT_INPUT_DIR = "data/synthetic";
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
+    public static final IngestionMode DEFAULT_INGESTION_MODE = IngestionMode.INSERT_ONLY;
+    public static final double DEFAULT_DELETE_PERCENT = 0.0;
+    public static final long DEFAULT_DELETE_SEED = 12345L; // For reproducibility
     public static final int DEFAULT_BATCH_SIZE = 2;
     public static boolean TYPE_COMPATIBILITY_ENABLED = true;
     public static final int DEFAULT_CHUNK_SIZE = 6_000_000;
@@ -56,6 +60,9 @@ public final class UserConfig {
     public static String OUTPUT_DIR = DEFAULT_OUTPUT_FILE;
     public static int BATCH_SIZE = DEFAULT_BATCH_SIZE;
     public static int CHUNK_SIZE = DEFAULT_CHUNK_SIZE;
+    public static IngestionMode INGESTION_MODE = DEFAULT_INGESTION_MODE;
+    public static double DELETE_PERCENT = DEFAULT_DELETE_PERCENT;
+    public static long DELETE_SEED = DEFAULT_DELETE_SEED;
     public static String DATASET_NAME = DEFAULT_DATASET_NAME;
     public static int MAX_TRACKED_VIOLATIONS = DEFAULT_MAX_TRACKED_VIOLATIONS;
     public static double KMV_PRUNE_THRESHOLD = DEFAULT_KMV_PRUNE_THRESHOLD;
@@ -86,6 +93,9 @@ public final class UserConfig {
         CLI_PROPERTIES.put("input-dir", "dis.ind.input-dir");
         CLI_PROPERTIES.put("output-file", "dis.ind.output-file");
         CLI_PROPERTIES.put("batch-size", "dis.ind.batch-size");
+        CLI_PROPERTIES.put("ingestion-mode", "dis.ind.ingestion-mode");
+        CLI_PROPERTIES.put("delete-percent", "dis.ind.delete-percent");
+        CLI_PROPERTIES.put("delete-seed", "dis.ind.delete-seed");
         CLI_PROPERTIES.put("max-tracked-violations", "dis.ind.max-tracked-violations");
         CLI_PROPERTIES.put("kmv-prune-threshold", "dis.ind.kmv-prune-threshold");
         CLI_PROPERTIES.put("checkpoint-interval", "dis.ind.checkpoint-interval");
@@ -123,6 +133,12 @@ public final class UserConfig {
         OUTPUT_DIR = stringSetting("DIS_IND_OUTPUT_FILE", "dis.ind.output-file", DEFAULT_OUTPUT_FILE);
         BATCH_SIZE = positiveIntSetting("DIS_IND_BATCH_SIZE", "dis.ind.batch-size", DEFAULT_BATCH_SIZE);
         CHUNK_SIZE = positiveIntSetting("DIS_IND_CHUNK_SIZE", "dis.ind.chunk-size", DEFAULT_CHUNK_SIZE);
+        INGESTION_MODE = ingestionModeSetting("DIS_IND_INGESTION_MODE",
+                "dis.ind.ingestion-mode", DEFAULT_INGESTION_MODE);
+        DELETE_PERCENT = percentSetting("DIS_IND_DELETE_PERCENT",
+                "dis.ind.delete-percent", DEFAULT_DELETE_PERCENT);
+        DELETE_SEED = longSetting("DIS_IND_DELETE_SEED",
+                "dis.ind.delete-seed", DEFAULT_DELETE_SEED);
         DATASET_NAME = stringSetting("DIS_IND_DATASET_NAME", "dis.ind.dataset-name", DEFAULT_DATASET_NAME);
         MAX_TRACKED_VIOLATIONS = positiveIntSetting("DIS_IND_MAX_TRACKED_VIOLATIONS",
                 "dis.ind.max-tracked-violations", DEFAULT_MAX_TRACKED_VIOLATIONS);
@@ -312,6 +328,57 @@ public final class UserConfig {
             default -> throw new IllegalArgumentException(
                     settingName(environmentName, propertyName) + " must be count, exact,prune,or witness: " + value);
         };
+    }
+
+    private static IngestionMode ingestionModeSetting(String environmentName, String propertyName,
+            IngestionMode fallback) {
+
+        String value = stringSetting(environmentName, propertyName, null);
+        if (value == null)
+            return fallback;
+
+        return switch (value.trim().toLowerCase()) {
+            case "insert" -> IngestionMode.INSERT_ONLY;
+            case "delete" -> IngestionMode.INSERT_WITH_DELETE;
+            default -> throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be insert or delete: ");
+        };
+    }
+
+    private static double percentSetting(String environmentName, String propertyName, double fallback) {
+
+        String value = stringSetting(environmentName, propertyName, null);
+        if (value == null)
+            return fallback;
+
+        final double parsed;
+        try {
+            parsed = Double.parseDouble(value);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be a number: ");
+        }
+
+        if (!Double.isFinite(parsed) || parsed < 0.0 || parsed > 100.0) {
+            throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be between 0 and 100 inclusive: ");
+        }
+
+        return parsed;
+    }
+
+    private static long longSetting(String environmentName, String propertyName, long fallback) {
+
+        String value = stringSetting(environmentName, propertyName, null);
+        if (value == null)
+            return fallback;
+
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be a long integer: ");
+        }
     }
 
     public static void setDatasetDetails(String datasetName) {

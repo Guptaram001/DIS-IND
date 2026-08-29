@@ -75,6 +75,9 @@ INPUT_DIR="${INPUT_DIR:-$PROJECT_DIR/data/tpch-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/output}"
 DIS_IND_BATCH_SIZE="${DIS_IND_BATCH_SIZE:-}"
 DIS_IND_CHUNK_SIZE="${DIS_IND_CHUNK_SIZE:-}"
+DIS_IND_INGESTION_MODE="${DIS_IND_INGESTION_MODE:-}"
+DIS_IND_DELETE_PERCENT="${DIS_IND_DELETE_PERCENT:-}"
+DIS_IND_DELETE_SEED="${DIS_IND_DELETE_SEED:-}"
 DIS_IND_DATASET_NAME="${DIS_IND_DATASET_NAME:-}"
 DIS_IND_MODE="${DIS_IND_MODE:-columnbased}"
 
@@ -152,6 +155,9 @@ export_docker_application_arguments() {
             --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
             --candidate-tracking) export DIS_IND_CANDIDATE_TRACKING="$value" ;;
             --prune-cqf-enabled) export DIS_IND_PRUNE_CQF_ENABLED="$value" ;;
+            --ingestion-mode) export DIS_IND_INGESTION_MODE="$value" ;;
+            --delete-percent) export DIS_IND_DELETE_PERCENT="$value" ;;
+            --delete-seed) export DIS_IND_DELETE_SEED="$value" ;;
             --prune-partition-counts-enabled) export DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED="$value" ;;
             --prune-count-partitions) export DIS_IND_PRUNE_COUNT_PARTITIONS="$value" ;;
             --input-dir) export DIS_IND_INPUT_DIR="$value" ;;
