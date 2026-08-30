@@ -38,11 +38,11 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private final DatasetMetadata metadata;
     private final ActorRef<RCCommand> rcRef;
     private final Map<Integer, LhsState> states = new HashMap<>();
+    private final int[] latestVoSequenceByBucket = new int[UserConfig.VALUE_OWNER_BUCKETS];
 
     private static final class LhsState {
         final int lhsCol;
         final short[] violationCountByRhs;
-        final int[] latestVoSequenceByBucket;
         final RoaringBitmap drainedValueOwners = new RoaringBitmap();
         int expectedValueOwnerDrains = -1;
         int finalRound = -1;
@@ -56,8 +56,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         LhsState(int lhsCol, int totalCols) {
             this.lhsCol = lhsCol;
             this.violationCountByRhs = new short[totalCols];
-            this.latestVoSequenceByBucket = new int[UserConfig.VALUE_OWNER_BUCKETS];
-            Arrays.fill(latestVoSequenceByBucket, -1);
         }
     }
 
@@ -91,11 +89,15 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
         LhsState state = stateFor(msg.lhsCol());
         int bucketId = msg.bucketId();
-        if (bucketId < 0 || bucketId >= state.latestVoSequenceByBucket.length)
+        if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length)
             return this;
-        if (msg.voSequence() <= state.latestVoSequenceByBucket[bucketId])
+        if (msg.voSequence() < latestVoSequenceByBucket[bucketId])
             return this;
-        state.latestVoSequenceByBucket[bucketId] = msg.voSequence();
+        int processedSequence = latestVoSequenceByBucket[bucketId];
+        int expectedSequence = Math.incrementExact(processedSequence);
+        if (msg.voSequence() != expectedSequence) {
+            throw new IllegalStateException("Missing VO status update: partition=");
+        }
 
         for (CandidateLocalStatus status : msg.statuses()) {
             int rhsCol = status.rhsCol();
@@ -112,6 +114,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             } else
                 state.violationCountByRhs[rhsCol]++;
         }
+        latestVoSequenceByBucket[bucketId] = msg.voSequence();
         return this;
     }
 
@@ -156,8 +159,14 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     private Behavior<CMCommand> onPartitionDrainReadyProbe(CMCommand.PartitionDrainReadyProbe msg) {
         if (msg.partitionId() != partitionId)
             throw new IllegalArgumentException("Drain Probe partition error");
-        msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerReady(
-                msg.finalRound(), partitionId, msg.bucketId()));
+        int bucketId = msg.bucketId();
+        if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length) {
+            throw new IllegalArgumentException("Invalid bucket ID: " + bucketId);
+        }
+        int processedSequence = latestVoSequenceByBucket[bucketId];
+        if (processedSequence >= msg.requiredSequence())
+            msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerReady(
+                    msg.finalRound(), partitionId, msg.bucketId()));
         return this;
     }
 

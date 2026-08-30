@@ -541,7 +541,7 @@ public final class SharedModel {
                 ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
         }
 
-        record PartitionDrainReadyProbe(int finalRound, int partitionId, int bucketId,
+        record PartitionDrainReadyProbe(int finalRound, int partitionId, int bucketId, int requiredSequence,
                 ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
         }
 

@@ -72,7 +72,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private final Long2BooleanLinkedOpenHashMap resolvedBatches;
     private final DataOrientation orientation;
     private final BatchProcessor batchProcessor;
-    private int statusSequence;
+    private final int[] statusSequenceByPartition = new int[UserConfig.DEFAULT_CM_PARTITIONS];
     private final ActorRef<DrainProtocol.Command> drainDispatcher;
     private final ActorRef<MembershipWriteProtocol.Command> membershipWriter;
     private final TimerScheduler<Command> timers;
@@ -82,6 +82,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private boolean awaitingPartitionReady;
     private final WorkerPhaseMetrics phaseMetrics;
     private final WorkerMetricsFlusher workerMetricsFlusher;
+    private int awaitingPartitionFinalSequence = -1;
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
@@ -180,9 +181,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         long started = System.nanoTime();
         MembershipUpdates updates = batchProcessor.process(bucketId, message.body(), valueIdStore);
         phaseMetrics.record(Phase.BATCH_PREPARATION, System.nanoTime() - started);
-        statusSequence = Math.incrementExact(statusSequence);
 
-        applyUpdates(message, updates, statusSequence);
+        applyUpdates(message, updates);
         resolvedBatches.putAndMoveToLast(batchKey, true);
         if (resolvedBatches.size() > recentBatchLimit) {
             resolvedBatches.removeFirstBoolean();
@@ -191,9 +191,9 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         return this;
     }
 
-    private void applyUpdates(StoreBatch message, MembershipUpdates updates, int voSequence) {
+    private void applyUpdates(StoreBatch message, MembershipUpdates updates) {
         if (updates instanceof ValueUpdates valueUpdates) {
-            applyValueUpdates(message, valueUpdates.byValue(), voSequence);
+            applyValueUpdates(message, valueUpdates.byValue());
             return;
         }
 
@@ -201,8 +201,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 "Unsupported membership update type: " + updates.getClass().getName());
     }
 
-    private void applyValueUpdates(StoreBatch message, Int2ObjectMap<Int2IntMap> updates,
-            int voSequence) {
+    private void applyValueUpdates(StoreBatch message, Int2ObjectMap<Int2IntMap> updates) {
         // Applies the updates to the store and obtains the final changes merging to
         // previous records with added/removed columns
         MembershipBatchResult membership = membershipUpdater.apply(updates);
@@ -229,11 +228,11 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
         modeSpecificContext.candidateStatesChanged(trackingResult.changedStates());
 
-        sendCandidateStatusTransitions(message, voSequence, trackingResult.transitionsByLhs(),
+        sendCandidateStatusTransitions(message, trackingResult.transitionsByLhs(),
                 trackingResult.changedStates().size());
     }
 
-    private void sendCandidateStatusTransitions(StoreBatch batch, int voSequence,
+    private void sendCandidateStatusTransitions(StoreBatch batch,
             Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs,
             int affectedCandidateCount) {
 
@@ -254,14 +253,16 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 affectedCms++;
             }
             int cmPartition = CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS);
+            int partitionSequence = Math.incrementExact(statusSequenceByPartition[cmPartition]);
+            statusSequenceByPartition[cmPartition] = partitionSequence;
             sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(cmPartition))
                     .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(
-                            lhsCol, batch.epoch(), voSequence, batch.round(), bucketId, transitions));
+                            lhsCol, batch.epoch(), partitionSequence, batch.round(), bucketId, transitions));
         }
         if (Debug.INTERNAL) {
             getContext().getLog().info(
-                    "[VO] round={} bucket={} epoch={} voSequence={} affectedCandidates={} transitions={} affectedCms={}",
-                    batch.round(), bucketId, batch.epoch(), voSequence, affectedCandidateCount,
+                    "[VO] round={} bucket={} epoch={} affectedCandidates={} transitions={} affectedCms={}",
+                    batch.round(), bucketId, batch.epoch(), affectedCandidateCount,
                     transitionCount, affectedCms);
         }
     }
@@ -289,6 +290,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         timers.cancel(RetryDrainProbe.INSTANCE);
         awaitingPartitionDrain = null;
         awaitingPartitionReady = false;
+        awaitingPartitionFinalSequence = -1;
         nextDrainPartition++;
         prepareNextPartitionDrain();
         return this;
@@ -317,6 +319,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             return;
         }
 
+        awaitingPartitionFinalSequence = statusSequenceByPartition[nextDrainPartition];
         List<DrainProtocol.DrainRecord> records = new ArrayList<>();
         for (int lhs = nextDrainPartition; lhs < finalization.totalColumns(); lhs += UserConfig.DEFAULT_CM_PARTITIONS) {
             records.add(new DrainProtocol.DrainRecord(
@@ -339,7 +342,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private void probeAwaitingPartition() {
         sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(nextDrainPartition))
                 .tell(new CMCommand.PartitionDrainReadyProbe(finalization.finalRound(), nextDrainPartition, bucketId,
-                        getContext().getSelf()));
+                        awaitingPartitionFinalSequence, getContext().getSelf()));
         timers.startSingleTimer(RetryDrainProbe.INSTANCE, Duration.ofSeconds(UserConfig.DRAIN_RETRY_SECONDS));
     }
 
