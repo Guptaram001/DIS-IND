@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.nio.charset.StandardCharsets;
+
 import disIND.valueBased.monitor.PipelineMetricsWriter;
 
 import org.apache.commons.csv.CSVFormat;
@@ -229,7 +230,20 @@ public final class DataLoader {
                     continue;
                 int rowsRead = 0;
                 Map<Integer, OrientetationBatchBuilder> builders = new HashMap<>(UserConfig.VALUE_OWNER_BUCKETS);
-                List<String[]> currentBatchRows = new ArrayList<>(batchSize[i]);
+                boolean deleteMode = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
+                int deletionCapacityPerBatch = deleteMode
+                        ? (int) Math.floor(batchSize[i] * UserConfig.DELETE_PERCENT / 100)
+                        : 0;
+                String[][] deletionStore = deletionCapacityPerBatch > 0 ? new String[deletionCapacityPerBatch][] : null;
+                Random deletionRandom = null;
+                if (deletionStore != null) {
+                    // Obtain random deletes for each different table and batches.
+                    long batchSeed = UserConfig.DEFAULT_DELETE_SEED;
+                    batchSeed = 31L * batchSeed + i;
+                    batchSeed = 31L * batchSeed + individualBatchIds[i];
+                    deletionRandom = new Random(batchSeed);
+
+                }
                 int batchStartRowId = nextRowId[i];
                 int expectedColumns = nCols.get(i);
                 int globalColumnOffset = offsets.get(i);
@@ -247,7 +261,17 @@ public final class DataLoader {
 
                     int rowId = batchStartRowId + rowsRead;
                     addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, rowId, 1, orientation, builders);
-                    currentBatchRows.add(row);
+                    if (deletionStore != null) {
+                        // Added the rows to deletionStore randomly using Algorithm R.
+                        if (rowsRead < deletionCapacityPerBatch) {
+                            deletionStore[rowsRead] = row;
+                        } else {
+                            int j = deletionRandom.nextInt(rowsRead + 1);
+                            if (j < deletionCapacityPerBatch) {
+                                deletionStore[j] = row;
+                            }
+                        }
+                    }
                     rowsRead++;
                     rowCounts[i]++;
                     totalRows++;
@@ -274,8 +298,16 @@ public final class DataLoader {
                             totalDeletedRows = Math.addExact(totalDeletedRows, rowsToDelete.size());
                         }
 
-                        List<String[]> currentDeletionSample = selectDeletionSample(currentBatchRows,
-                                UserConfig.DELETE_PERCENT, UserConfig.DELETE_SEED, i, batchId);
+                        List<String[]> currentDeletionSample = (active[i] && deletionStore != null)
+                                ? List.copyOf(Arrays.asList(deletionStore))
+                                : List.of();
+
+                        // List<String[]> currentDeletionSample = active[i] ?
+                        // buildDeletionSample(deletionStore,
+                        // deletionCapacityPerBatch, rowsRead, UserConfig.DELETE_PERCENT,
+                        // deletionRandom)
+                        // : List.of();
+
                         deletionQueue.addLast(currentDeletionSample);
 
                         if (deletionQueue.size() > 2)
@@ -403,24 +435,26 @@ public final class DataLoader {
         }
     }
 
-    private static List<String[]> selectDeletionSample(List<String[]> currentBatchRows, double deletePercent,
-            long configuredSeed, int tableId, int batchId) {
+    // private static List<String[]> buildDeletionSample(String[][] deletionStore,
+    // int capacity, int rowsRead,
+    // double deletePercent, Random random) {
 
-        if (currentBatchRows.isEmpty() || deletePercent == 0.0)
-            return List.of();
-        int deletionCount = (int) Math.floor(currentBatchRows.size() * deletePercent / 100.0);
+    // if (deletionStore == null || rowsRead == 0)
+    // return List.of();
 
-        if (deletionCount == 0)
-            return List.of();
+    // int actualCount = (int) Math.floor(rowsRead * deletePercent / 100.0);
+    // if (actualCount == 0)
+    // return List.of();
 
-        List<String[]> candidates = new ArrayList<>(currentBatchRows);
-        long batchSeed = configuredSeed;
-        batchSeed = 31L * batchSeed + tableId;
-        batchSeed = 31L * batchSeed + batchId;
-        Collections.shuffle(candidates, new Random(batchSeed));
-
-        return List.copyOf(candidates.subList(0, deletionCount));
-    }
+    // int filled = Math.min(rowsRead, capacity);
+    // if (rowsRead <= capacity) {
+    // List<String[]> sample = new
+    // ArrayList<>(Arrays.asList(deletionStore).subList(0, filled));
+    // Collections.shuffle(sample, random);
+    // return List.copyOf(sample.subList(0, actualCount));
+    // }
+    // return List.copyOf(Arrays.asList(deletionStore).subList(0, actualCount));
+    // }
 
     private static Map<Integer, BatchBody> finishOwnerBatches(Map<Integer, OrientetationBatchBuilder> builders) {
         Map<Integer, BatchBody> ownerBatches = new HashMap<>(builders.size());
