@@ -40,9 +40,18 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2IntMaps;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
+import it.unimi.dsi.fastutil.ints.IntArrayFIFOQueue;
+import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import disIND.valueBased.monitor.WorkerMembershipMetrics;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 
 /**
  * Worker-local, disk-backed membership state shared by all ValueOwner
@@ -78,7 +87,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private final Cache<CandidateKey, CandidateState> candidateStateCache;
-    private final Map<CandidateKey, CandidateWriteBackEntry>[] candidateWriteBackByBucket;
+    private final CandidateWriteBackCache[] candidateWriteBackByBucket;
 
     public sealed interface CandidateState permits CountState, WitnessState, PruneState, ExactState {
         boolean rejected();
@@ -193,6 +202,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         private Int2IntMap membership;
         private boolean dirty;
         private boolean inFlight;
+        private boolean queued;
 
         private MembershipCacheEntry(Int2IntMap membership, boolean dirty, boolean inFlight) {
             this.membership = membership;
@@ -200,12 +210,12 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             this.inFlight = inFlight;
         }
 
-        private boolean authoritative() {
+        private boolean mutated() {
             return dirty || inFlight;
         }
 
-        private boolean evictable() {
-            return !authoritative();
+        private boolean removeable() {
+            return !mutated();
         }
     }
 
@@ -213,14 +223,27 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         private CandidateState state;
         private boolean dirty = true;
         private boolean inFlight;
+        private boolean queued;
 
         private CandidateWriteBackEntry(CandidateState state) {
             this.state = state;
         }
     }
 
-    public record InFlightWrite(long batchId, int[] membershipValueIds,
-            CandidateKey[] candidateKeys, long encodedBytes) {
+    private static final class CandidateWriteBackCache {
+
+        private final Long2ObjectOpenHashMap<CandidateWriteBackEntry> entries = new Long2ObjectOpenHashMap<>();
+        private final LongArrayFIFOQueue dirtyKeys = new LongArrayFIFOQueue();
+
+        private void enqueueDirty(long pairKey, CandidateWriteBackEntry entry) {
+            if (entry.queued)
+                return;
+            entry.queued = true;
+            dirtyKeys.enqueue(pairKey);
+        }
+    }
+
+    public record InFlightWrite(long batchId, int[] membershipValueIds, long[] candidateKeys, long encodedBytes) {
     }
 
     public record PreparedWriteBatch(EncodedWriteBatch message, InFlightWrite cleanup) {
@@ -237,6 +260,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
         private final Int2ObjectLinkedOpenHashMap<MembershipCacheEntry> entries = new Int2ObjectLinkedOpenHashMap<>();
         private final IntOpenHashSet overlayValueIds = new IntOpenHashSet();
+        private final IntArrayFIFOQueue dirtyValueIds = new IntArrayFIFOQueue();
         private final long maxWeight;
         private long currentWeight;
 
@@ -244,10 +268,27 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             this.maxWeight = maxWeight;
         }
 
-        Int2IntMap get(int valueId) {
-            MembershipCacheEntry cached = entries.getAndMoveToLast(valueId);
+        Int2IntMap takeForUpdate(int valueId) {
+            // MembershipCacheEntry cached = entries.getAndMoveToLast(valueId);
             // Return a mutable copy because MembershipUpdater modifies it.
-            return cached == null ? null : new AdaptiveColumnCounts(cached.membership);
+            // return cached == null ? null : new AdaptiveColumnCounts(cached.membership);
+            MembershipCacheEntry entry = entries.get(valueId);
+
+            if (entry == null)
+                return null;
+
+            // dirty or inflight entries must be back into the cache after membershipupdate
+            // hence move to last and copy it instead
+            if (entry.mutated()) {
+                entries.getAndMoveToLast(valueId);
+                return new AdaptiveColumnCounts(entry.membership);
+            }
+
+            // Clean entry removed for update without creating copy.
+            entries.remove(valueId);
+            currentWeight -= weight(entry.membership);
+
+            return entry.membership;
         }
 
         MembershipCacheEntry peek(int valueId) {
@@ -261,25 +302,38 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         void clear() {
             entries.clear();
             overlayValueIds.clear();
+            dirtyValueIds.clear();
             currentWeight = 0;
         }
 
         void putOwned(int valueId, Int2IntMap membership) {
-            MembershipCacheEntry previous = entries.remove(valueId);
-            long previousWeight = previous == null ? 0L : weight(previous.membership);
-            if (previous != null)
+            MembershipCacheEntry entry = entries.remove(valueId);
+            long previousWeight = entry == null ? 0L : weight(entry.membership);
+            if (entry != null)
                 currentWeight -= previousWeight;
 
             // No map copy. The caller must never mutate membership again.
-            boolean wasAuthoritative = previous != null && previous.authoritative();
-            boolean inFlight = previous != null && previous.inFlight;
-            MembershipCacheEntry updated = new MembershipCacheEntry(membership, true, inFlight);
-            entries.putAndMoveToLast(valueId, updated);
+            boolean wasmutated = entry != null && entry.mutated();
+            if (entry == null)
+                entry = new MembershipCacheEntry(membership, true, false);
+            else {
+                entry.membership = membership;
+                entry.dirty = true;
+            }
+            entries.putAndMoveToLast(valueId, entry);
             long updatedWeight = weight(membership);
             currentWeight += updatedWeight;
             overlayValueIds.add(valueId);
-            pinnedEstimatedBytes.addAndGet(wasAuthoritative ? updatedWeight - previousWeight : updatedWeight);
+            pinnedEstimatedBytes.addAndGet(wasmutated ? updatedWeight - previousWeight : updatedWeight);
+            enqueueDirty(valueId, entry);
             evictCleanEntriesIfNecessary();
+        }
+
+        private void enqueueDirty(int valueId, MembershipCacheEntry entry) {
+            if (entry.queued)
+                return;
+            entry.queued = true;
+            dirtyValueIds.enqueue(valueId);
         }
 
         private void evictCleanEntriesIfNecessary() {
@@ -289,12 +343,11 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         private boolean evictOneCleanEntry() {
-            ObjectIterator<Int2ObjectMap.Entry<MembershipCacheEntry>> iterator =
-                    Int2ObjectMaps.fastIterator(entries);
+            ObjectIterator<Int2ObjectMap.Entry<MembershipCacheEntry>> iterator = Int2ObjectMaps.fastIterator(entries);
             while (iterator.hasNext()) {
                 Int2ObjectMap.Entry<MembershipCacheEntry> mapEntry = iterator.next();
                 MembershipCacheEntry entry = mapEntry.getValue();
-                if (!entry.evictable())
+                if (!entry.removeable())
                     continue;
                 currentWeight -= weight(entry.membership);
                 iterator.remove();
@@ -314,7 +367,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         try {
             Files.createDirectories(directory);
             this.bucketCaches = new BucketMembershipCache[bucketCount];
-            this.candidateWriteBackByBucket = new Map[bucketCount];
+            this.candidateWriteBackByBucket = new CandidateWriteBackCache[bucketCount];
             this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
                     .setFilterPolicy(bloomFilter)
@@ -349,20 +402,16 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private static byte[] candidateKey(CandidateKey key) {
-        return ByteBuffer.allocate(1 + Integer.BYTES * 3)
-                .put(CANDIDATE_PREFIX)
-                .putInt(key.bucketId())
-                .putInt(key.lhsCol())
-                .putInt(key.rhsCol())
-                .array();
+        return candidateKey(key.bucketId(), key.lhsCol(), key.rhsCol());
     }
 
     private static byte[] encodeCandidateState(CandidateState state) {
         if (state instanceof CountState countState) {
-            return ByteBuffer.allocate(CANDIDATE_STATE_HEADER_BYTES + Integer.BYTES)
-                    .put(COUNT_STATE_TYPE)
-                    .putInt(countState.violationCount())
-                    .array();
+            byte[] encoded = new byte[CANDIDATE_STATE_HEADER_BYTES + Integer.BYTES];
+            encoded[0] = COUNT_STATE_TYPE;
+            putInt(encoded, CANDIDATE_STATE_HEADER_BYTES, countState.violationCount());
+
+            return encoded;
         }
 
         if (state instanceof PruneState pruneState)
@@ -458,26 +507,28 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return key;
     }
 
-    private Map<CandidateKey, CandidateWriteBackEntry> candidateWriteBack(int bucketId) {
+    private CandidateWriteBackCache candidateWriteBack(int bucketId) {
+
         bucketCache(bucketId);
-        Map<CandidateKey, CandidateWriteBackEntry> entries = candidateWriteBackByBucket[bucketId];
-        if (entries == null) {
-            entries = new HashMap<>();
-            candidateWriteBackByBucket[bucketId] = entries;
+        CandidateWriteBackCache cache = candidateWriteBackByBucket[bucketId];
+        if (cache == null) {
+            cache = new CandidateWriteBackCache();
+            candidateWriteBackByBucket[bucketId] = cache;
         }
-        return entries;
+        return cache;
     }
 
     public Map<CandidateKey, CandidateState> loadCandidates(Set<CandidateKey> keys,
             CandidateTrackingMode trackingMode) {
-        Objects.requireNonNull(trackingMode, "trackingMode"); // Throws NPE
+        Objects.requireNonNull(trackingMode, "trackingMode");
 
         Map<CandidateKey, CandidateState> result = new HashMap<>(keys.size());
-        List<CandidateKey> misses = new ArrayList<>();
-        List<byte[]> missKeys = new ArrayList<>();
+        List<CandidateKey> misses = new ArrayList<>(keys.size());
+        List<byte[]> missKeys = new ArrayList<>(keys.size());
 
         for (CandidateKey key : keys) {
-            CandidateWriteBackEntry writeBack = candidateWriteBack(key.bucketId()).get(key);
+            CandidateWriteBackEntry writeBack = candidateWriteBack(key.bucketId()).entries
+                    .get(candidatePairKey(key));
             if (writeBack != null) {
                 requireTrackingMode(key, writeBack.state, trackingMode);
                 result.put(key, writeBack.state);
@@ -490,7 +541,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 continue;
             }
             misses.add(key);
-            missKeys.add(candidateKey(key));
+            missKeys.add(candidateKey(key.bucketId(), key.lhsCol(), key.rhsCol()));
         }
 
         if (missKeys.isEmpty())
@@ -542,11 +593,11 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private static byte[] encodePruneState(PruneState state) {
-        return ByteBuffer.allocate(
-                CANDIDATE_STATE_HEADER_BYTES + Integer.BYTES)
-                .put(PRUNE_STATE_TYPE)
-                .putInt(state.witnessValueId())
-                .array();
+        byte[] encoded = new byte[CANDIDATE_STATE_HEADER_BYTES + Integer.BYTES];
+        encoded[0] = PRUNE_STATE_TYPE;
+        putInt(encoded, CANDIDATE_STATE_HEADER_BYTES, state.witnessValueId());
+
+        return encoded;
     }
 
     private static void requireTrackingMode(CandidateKey key, CandidateState state, CandidateTrackingMode expected) {
@@ -573,7 +624,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         List<byte[]> missKeys = new ArrayList<>();
 
         for (int valueId : valueIds) {
-            Int2IntMap cached = bucketCache(bucketId).get(valueId);
+            Int2IntMap cached = bucketCache(bucketId).takeForUpdate(valueId);
             if (cached != null) {
                 metrics.cacheHit();
                 result.put(valueId, cached);
@@ -608,31 +659,35 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     public void stage(int bucketId, Int2ObjectMap<Int2IntMap> changedRecords,
             Map<CandidateKey, CandidateState> changedCandidates) {
 
-        ObjectIterator<Int2ObjectMap.Entry<Int2IntMap>> iterator = Int2ObjectMaps.fastIterator(changedRecords);
-        while (iterator.hasNext()) {
-            Int2ObjectMap.Entry<Int2IntMap> entry = iterator.next();
-            int valueId = entry.getIntKey();
-            Int2IntMap record = entry.getValue();
-            bucketCache(bucketId).putOwned(valueId, record);
+        ObjectIterator<Int2ObjectMap.Entry<Int2IntMap>> membershipIterator = Int2ObjectMaps
+                .fastIterator(changedRecords);
+        while (membershipIterator.hasNext()) {
+            Int2ObjectMap.Entry<Int2IntMap> entry = membershipIterator.next();
+            bucketCache(bucketId).putOwned(entry.getIntKey(), entry.getValue());
         }
 
-        for (Map.Entry<CandidateKey, CandidateState> entry : changedCandidates.entrySet()) {
-            CandidateKey key = entry.getKey();
-            CandidateState state = entry.getValue();
+        CandidateWriteBackCache writeBack = candidateWriteBack(bucketId);
+        for (Map.Entry<CandidateKey, CandidateState> changed : changedCandidates.entrySet()) {
+            CandidateKey key = changed.getKey();
+            CandidateState state = changed.getValue();
+
             if (key.bucketId() != bucketId)
-                throw new IllegalArgumentException("Candidate belongs to a different bucket: " + key);
-            Map<CandidateKey, CandidateWriteBackEntry> writeBack = candidateWriteBack(bucketId);
-            CandidateWriteBackEntry pending = writeBack.get(key);
+                throw new IllegalArgumentException("Candidate belongs to a different bucket: ");
+
+            long pairKey = candidatePairKey(key);
+            CandidateWriteBackEntry pending = writeBack.entries.get(pairKey);
             long newWeight = candidatePinnedWeight(state);
             if (pending == null) {
-                writeBack.put(key, new CandidateWriteBackEntry(state));
+                pending = new CandidateWriteBackEntry(state);
+                writeBack.entries.put(pairKey, pending);
                 pinnedEstimatedBytes.addAndGet(newWeight);
             } else {
-                long oldWeight = candidatePinnedWeight(pending.state);
+                long previousWeight = candidatePinnedWeight(pending.state);
                 pending.state = state;
                 pending.dirty = true;
-                pinnedEstimatedBytes.addAndGet(newWeight - oldWeight);
+                pinnedEstimatedBytes.addAndGet(newWeight - previousWeight);
             }
+            writeBack.enqueueDirty(pairKey, pending);
         }
     }
 
@@ -650,42 +705,67 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             throw new IllegalArgumentException("Write-batch limits must be positive");
 
         BucketMembershipCache cache = bucketCache(bucketId);
-        IntArrayList membershipIds = new IntArrayList();
-        List<byte[]> membershipValues = new ArrayList<>();
-        List<CandidateKey> candidateKeys = new ArrayList<>();
-        List<CandidateWrite> candidateWrites = new ArrayList<>();
+        int initialCapacity = Math.min(maximumEntries, 1_024);
+        IntArrayList membershipIds = new IntArrayList(initialCapacity);
+        List<byte[]> membershipValues = new ArrayList<>(initialCapacity);
+        LongArrayList candidateKeys = new LongArrayList(initialCapacity);
+        List<CandidateWrite> candidateWrites = new ArrayList<>(initialCapacity);
         long encodedBytes = 0L;
 
-        ObjectIterator<Int2ObjectMap.Entry<MembershipCacheEntry>> membershipIterator =
-                Int2ObjectMaps.fastIterator(cache.entries);
-        while (membershipIterator.hasNext() && membershipIds.size() + candidateKeys.size() < maximumEntries) {
-            Int2ObjectMap.Entry<MembershipCacheEntry> mapEntry = membershipIterator.next();
-            MembershipCacheEntry entry = mapEntry.getValue();
-            if (!entry.dirty || entry.inFlight)
+        int membershipsToInspect = cache.dirtyValueIds.size();
+        while (membershipsToInspect-- > 0 && membershipIds.size() + candidateKeys.size() < maximumEntries
+                && !cache.dirtyValueIds.isEmpty()) {
+            int valueId = cache.dirtyValueIds.dequeueInt();
+            MembershipCacheEntry entry = cache.peek(valueId);
+            if (entry == null)
                 continue;
+            entry.queued = false;
+            if (!entry.dirty)
+                continue;
+            if (entry.inFlight) {
+                cache.enqueueDirty(valueId, entry);
+                continue;
+            }
             byte[] encoded = encode(entry.membership);
             long writeBytes = Integer.BYTES * 2L + encoded.length;
-            if (encodedBytes > 0 && encodedBytes + writeBytes > maximumBytes)
+            if (encodedBytes > 0 && encodedBytes + writeBytes > maximumBytes) {
+                cache.enqueueDirty(valueId, entry);
                 break;
-            membershipIds.add(mapEntry.getIntKey());
+            }
+            membershipIds.add(valueId);
             membershipValues.add(encoded);
             encodedBytes += writeBytes;
             entry.dirty = false;
             entry.inFlight = true;
         }
 
-        for (Map.Entry<CandidateKey, CandidateWriteBackEntry> mapEntry : candidateWriteBack(bucketId).entrySet()) {
-            if (membershipIds.size() + candidateKeys.size() >= maximumEntries)
-                break;
-            CandidateWriteBackEntry entry = mapEntry.getValue();
-            if (!entry.dirty || entry.inFlight)
+        CandidateWriteBackCache candidateCache = candidateWriteBack(bucketId);
+        int candidatesToInspect = candidateCache.dirtyKeys.size();
+        while (candidatesToInspect-- > 0 && membershipIds.size() + candidateKeys.size() < maximumEntries
+                && !candidateCache.dirtyKeys.isEmpty()) {
+            long pairKey = candidateCache.dirtyKeys.dequeueLong();
+            CandidateWriteBackEntry entry = candidateCache.entries.get(pairKey);
+            if (entry == null)
                 continue;
-            byte[] encodedKey = candidateKey(mapEntry.getKey());
+            entry.queued = false;
+            if (!entry.dirty)
+                continue;
+            if (entry.inFlight) {
+                candidateCache.enqueueDirty(pairKey, entry);
+                continue;
+            }
+
+            int lhsCol = candidateLhs(pairKey);
+            int rhsCol = candidateRhs(pairKey);
+            byte[] encodedKey = candidateKey(bucketId, lhsCol, rhsCol);
             byte[] encodedValue = entry.state.rejected() ? encodeCandidateState(entry.state) : null;
+
             long writeBytes = encodedKey.length + (encodedValue == null ? 0L : encodedValue.length);
-            if (encodedBytes > 0 && encodedBytes + writeBytes > maximumBytes)
+            if (encodedBytes > 0 && encodedBytes + writeBytes > maximumBytes) {
+                candidateCache.enqueueDirty(pairKey, entry);
                 break;
-            candidateKeys.add(mapEntry.getKey());
+            }
+            candidateKeys.add(pairKey);
             candidateWrites.add(new CandidateWrite(encodedKey, encodedValue, encodedValue == null));
             encodedBytes += writeBytes;
             entry.dirty = false;
@@ -696,7 +776,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             return PreparedWriteBatch.empty();
 
         int[] ids = membershipIds.toIntArray();
-        CandidateKey[] keys = candidateKeys.toArray(CandidateKey[]::new);
+        long[] keys = candidateKeys.toLongArray();
         EncodedWriteBatch message = new EncodedWriteBatch(bucketId, batchId, ids,
                 membershipValues.toArray(byte[][]::new), candidateWrites.toArray(CandidateWrite[]::new),
                 encodedBytes, replyTo);
@@ -710,25 +790,30 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             if (entry == null || !entry.inFlight)
                 continue;
             entry.inFlight = false;
-            if (!entry.dirty) {
+            if (entry.dirty)
+                cache.enqueueDirty(valueId, entry);
+            else {
                 cache.overlayValueIds.remove(valueId);
                 pinnedEstimatedBytes.addAndGet(-BucketMembershipCache.weight(entry.membership));
             }
         }
-        Map<CandidateKey, CandidateWriteBackEntry> candidates = candidateWriteBack(bucketId);
-        for (CandidateKey key : write.candidateKeys()) {
-            CandidateWriteBackEntry entry = candidates.get(key);
+        CandidateWriteBackCache candidates = candidateWriteBack(bucketId);
+        for (long pairKey : write.candidateKeys()) {
+            CandidateWriteBackEntry entry = candidates.entries.get(pairKey);
             if (entry == null || !entry.inFlight)
                 continue;
             entry.inFlight = false;
-            if (entry.dirty)
+            if (entry.dirty) {
+                candidates.enqueueDirty(pairKey, entry);
                 continue;
+            }
             pinnedEstimatedBytes.addAndGet(-candidatePinnedWeight(entry.state));
+            CandidateKey key = candidateKeyObject(bucketId, pairKey);
             if (entry.state.rejected())
                 candidateStateCache.put(key, entry.state);
             else
                 candidateStateCache.invalidate(key);
-            candidates.remove(key);
+            candidates.entries.remove(pairKey);
         }
         cache.evictCleanEntriesIfNecessary();
     }
@@ -741,14 +826,16 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 entry.inFlight = false;
                 entry.dirty = true;
                 cache.overlayValueIds.add(valueId);
+                cache.enqueueDirty(valueId, entry);
             }
         }
-        Map<CandidateKey, CandidateWriteBackEntry> candidates = candidateWriteBack(bucketId);
-        for (CandidateKey key : write.candidateKeys()) {
-            CandidateWriteBackEntry entry = candidates.get(key);
+        CandidateWriteBackCache candidates = candidateWriteBack(bucketId);
+        for (long pairKey : write.candidateKeys()) {
+            CandidateWriteBackEntry entry = candidates.entries.get(pairKey);
             if (entry != null && entry.inFlight) {
                 entry.inFlight = false;
                 entry.dirty = true;
+                candidates.enqueueDirty(pairKey, entry);
             }
         }
     }
@@ -779,23 +866,31 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
     }
 
-    public int[] findWitnesses(int bucketId, int lhsCol, int rhsCol, int limit,
+    public Long2ObjectMap<int[]> findWitnessesBatch(int bucketId, LongSet candidateKeys, int limit,
             Int2ObjectMap<Int2IntMap> updatedRecords) {
         if (limit <= 0 || limit > MAX_WITNESSES) {
             throw new IllegalArgumentException("Witness limit must be between 1 and " + MAX_WITNESSES);
         }
 
-        IntArrayList witnesses = new IntArrayList(limit);
+        Objects.requireNonNull(candidateKeys, "candidateKeys");
+        Objects.requireNonNull(updatedRecords, "updatedRecords");
+
+        Long2ObjectOpenHashMap<IntArrayList> collected = new Long2ObjectOpenHashMap<>(candidateKeys.size());
+        LongOpenHashSet unfinished = new LongOpenHashSet(candidateKeys);
+        for (long candidateKey : candidateKeys)
+            collected.put(candidateKey, new IntArrayList(limit));
+
+        if (unfinished.isEmpty())
+            return new Long2ObjectOpenHashMap<>();
+
         IntSet seenValues = new IntOpenHashSet();
         byte[] prefix = bucketPrefix(bucketId);
         BucketMembershipCache cache = bucketCache(bucketId);
 
         try (RocksIterator iterator = db.newIterator()) {
             iterator.seek(prefix);
-            while (iterator.isValid() && hasPrefix(iterator.key(), prefix)) {
+            while (!unfinished.isEmpty() && iterator.isValid() && hasPrefix(iterator.key(), prefix)) {
                 byte[] storedKey = iterator.key();
-                if (!hasPrefix(storedKey, prefix))
-                    break;
                 if (storedKey.length != Integer.BYTES * 2) {
                     iterator.next();
                     continue;
@@ -806,57 +901,65 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 seenValues.add(valueId);
                 Int2IntMap membership = updatedRecords.get(valueId);
                 MembershipCacheEntry cached = cache.peek(valueId);
-                if (membership == null && cached != null && cached.authoritative())
+                if (membership == null && cached != null && cached.mutated())
                     membership = cached.membership;
-                boolean violation;
-                if (membership != null) {
-                    violation = isViolation(membership, lhsCol, rhsCol);
-                } else
-                    violation = isEncodedViolation(iterator.value(), lhsCol, rhsCol);
+                if (membership == null)
+                    membership = decode(iterator.value());
 
-                if (violation) {
-                    witnesses.add(valueId);
-                    if (witnesses.size() == limit)
-                        break;
-                }
+                collectWitnesses(valueId, membership, unfinished, collected, limit);
                 iterator.next();
             }
             iterator.status();
         } catch (RocksDBException exception) {
             throw new IllegalStateException(
-                    "Unable to find witnesses for bucket=" + bucketId + " candidate=" + lhsCol + "⊆" + rhsCol,
+                    "Unable to find witnesses for bucket=" + bucketId,
                     exception);
         }
-        if (witnesses.size() < limit) {
+
+        if (!unfinished.isEmpty()) {
             ObjectIterator<Int2ObjectMap.Entry<Int2IntMap>> iterator = Int2ObjectMaps.fastIterator(updatedRecords);
-            while (iterator.hasNext()) {
+            while (!unfinished.isEmpty() && iterator.hasNext()) {
                 Int2ObjectMap.Entry<Int2IntMap> entry = iterator.next();
                 int valueId = entry.getIntKey();
                 if (!seenValues.add(valueId))
                     continue;
-                Int2IntMap membership = entry.getValue();
-                if (isViolation(membership, lhsCol, rhsCol)) {
-                    witnesses.add(valueId);
-                    if (witnesses.size() == limit)
-                        break;
-                }
+                collectWitnesses(valueId, entry.getValue(), unfinished, collected, limit);
             }
         }
 
-        if (witnesses.size() < limit) {
+        if (!unfinished.isEmpty()) {
             for (int valueId : cache.overlayValueIds) {
                 if (!seenValues.add(valueId))
                     continue;
                 MembershipCacheEntry entry = cache.peek(valueId);
-                if (entry != null && entry.authoritative()
-                        && isViolation(entry.membership, lhsCol, rhsCol)) {
-                    witnesses.add(valueId);
-                    if (witnesses.size() == limit)
-                        break;
-                }
+                if (entry != null && entry.mutated())
+                    collectWitnesses(valueId, entry.membership, unfinished, collected, limit);
+                if (unfinished.isEmpty())
+                    break;
             }
         }
-        return witnesses.toIntArray();
+
+        Long2ObjectOpenHashMap<int[]> result = new Long2ObjectOpenHashMap<>(collected.size());
+        ObjectIterator<Long2ObjectMap.Entry<IntArrayList>> iterator = Long2ObjectMaps.fastIterator(collected);
+        while (iterator.hasNext()) {
+            Long2ObjectMap.Entry<IntArrayList> entry = iterator.next();
+            result.put(entry.getLongKey(), entry.getValue().toIntArray());
+        }
+        return result;
+    }
+
+    private static void collectWitnesses(int valueId, Int2IntMap membership, LongSet unfinished,
+            Long2ObjectMap<IntArrayList> collected, int limit) {
+        LongIterator iterator = unfinished.iterator();
+        while (iterator.hasNext()) {
+            long candidateKey = iterator.nextLong();
+            if (!isViolation(membership, candidateLhs(candidateKey), candidateRhs(candidateKey)))
+                continue;
+            IntArrayList witnesses = collected.get(candidateKey);
+            witnesses.add(valueId);
+            if (witnesses.size() == limit)
+                iterator.remove();
+        }
     }
 
     private static int readInt(byte[] bytes, int offset) {
@@ -866,34 +969,10 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 | (bytes[offset + 3] & 0xff);
     }
 
-    private static boolean isEncodedViolation(byte[] encoded, int lhsCol, int rhsCol) {
-
-        if (encoded.length < Integer.BYTES)
-            throw new IllegalStateException("Truncated membership record");
-
-        int size = readInt(encoded, 0);
-        long expectedLength = Integer.BYTES + (long) size * 2 * Integer.BYTES;
-
-        if (size < 0 || expectedLength != encoded.length)
-            throw new IllegalStateException("Invalid membership record size");
-
-        boolean lhsPresent = false;
-        int offset = Integer.BYTES;
-
-        for (int index = 0; index < size; index++) {
-            int column = readInt(encoded, offset);
-            offset += 2 * Integer.BYTES;
-            if (column == rhsCol)
-                return false;
-            if (column == lhsCol)
-                lhsPresent = true;
-        }
-
-        return lhsPresent;
-    }
-
     private static byte[] bucketPrefix(int bucketId) {
-        return ByteBuffer.allocate(Integer.BYTES).putInt(bucketId).array();
+        byte[] prefix = new byte[Integer.BYTES];
+        putInt(prefix, 0, bucketId);
+        return prefix;
     }
 
     private static boolean hasPrefix(byte[] key, byte[] prefix) {
@@ -910,27 +989,25 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return membership.containsKey(lhsCol) && !membership.containsKey(rhsCol);
     }
 
-    // Removed Sorted one
     private static byte[] encode(Int2IntMap columns) {
-        ByteBuffer buffer = ByteBuffer.allocate(
-                Math.addExact(
-                        Integer.BYTES,
-                        Math.multiplyExact(
-                                columns.size(),
-                                2 * Integer.BYTES)));
-
-        buffer.putInt(columns.size());
+        int size = columns.size();
+        int encodedLength = Math.addExact(Integer.BYTES, Math.multiplyExact(size, 2 * Integer.BYTES));
+        byte[] encoded = new byte[encodedLength];
+        putInt(encoded, 0, size);
+        int offset = Integer.BYTES;
 
         ObjectIterator<Int2IntMap.Entry> iterator = Int2IntMaps.fastIterator(columns);
-
         while (iterator.hasNext()) {
             Int2IntMap.Entry entry = iterator.next();
 
-            buffer.putInt(entry.getIntKey());
-            buffer.putInt(entry.getIntValue());
+            putInt(encoded, offset, entry.getIntKey());
+            offset += Integer.BYTES;
+
+            putInt(encoded, offset, entry.getIntValue());
+            offset += Integer.BYTES;
         }
 
-        return buffer.array();
+        return encoded;
     }
 
     private static Int2IntMap decode(byte[] encoded) {
@@ -948,6 +1025,35 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             columns.put(buffer.getInt(), buffer.getInt());
 
         return columns;
+    }
+
+    private static long candidatePairKey(int lhsCol, int rhsCol) {
+        return ((long) lhsCol << Integer.SIZE) | (rhsCol & 0xffffffffL);
+    }
+
+    private static long candidatePairKey(CandidateKey key) {
+        return candidatePairKey(key.lhsCol(), key.rhsCol());
+    }
+
+    private static int candidateLhs(long pairKey) {
+        return (int) (pairKey >>> Integer.SIZE);
+    }
+
+    private static int candidateRhs(long pairKey) {
+        return (int) pairKey;
+    }
+
+    private static CandidateKey candidateKeyObject(int bucketId, long pairKey) {
+        return new CandidateKey(bucketId, candidateLhs(pairKey), candidateRhs(pairKey));
+    }
+
+    private static byte[] candidateKey(int bucketId, int lhsCol, int rhsCol) {
+        byte[] encoded = new byte[1 + Integer.BYTES * 3];
+        encoded[0] = CANDIDATE_PREFIX;
+        putInt(encoded, 1, bucketId);
+        putInt(encoded, 1 + Integer.BYTES, lhsCol);
+        putInt(encoded, 1 + Integer.BYTES * 2, rhsCol);
+        return encoded;
     }
 
     @Override

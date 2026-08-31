@@ -21,6 +21,8 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntIterator;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 
@@ -98,6 +100,8 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         Map<CandidateKey, CandidateState> changedStates = new HashMap<>(keys.size());
 
         Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
+        Long2ObjectOpenHashMap<WitnessState> preliminaryStates = new Long2ObjectOpenHashMap<>(keys.size());
+        LongSet needsRecovery = new LongOpenHashSet();
         iterator = Long2ObjectMaps.fastIterator(witnessChanges.deltas);
 
         while (iterator.hasNext()) {
@@ -108,7 +112,24 @@ public final class WitnessCandidateTracker implements CandidateTracker {
             if (before == null)
                 throw new IllegalStateException("No previous witness state for " + key);
 
-            WitnessState after = updateState(key, before, entry.getValue(), updatedMembership, store);
+            WitnessState preliminary = updateKnownWitnesses(before, entry.getValue());
+            preliminaryStates.put(compactKey, preliminary);
+            if (preliminary.witnesses().length == 0 && before.rejected())
+                needsRecovery.add(compactKey);
+        }
+
+        Long2ObjectMap<int[]> recovered = store.findWitnessesBatch(
+                witnessChanges.bucketId, needsRecovery, witnessLimit, updatedMembership);
+
+        iterator = Long2ObjectMaps.fastIterator(witnessChanges.deltas);
+        while (iterator.hasNext()) {
+            Long2ObjectMap.Entry<WitnessDelta> entry = iterator.next();
+            long compactKey = entry.getLongKey();
+            CandidateKey key = new CandidateKey(witnessChanges.bucketId, lhsColumn(compactKey), rhsColumn(compactKey));
+            WitnessState before = (WitnessState) previousStates.get(key);
+            WitnessState after = needsRecovery.contains(compactKey)
+                    ? new WitnessState(recovered.get(compactKey))
+                    : preliminaryStates.get(compactKey);
 
             if (!after.equals(before))
                 changedStates.put(key, after);
@@ -126,8 +147,7 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         return new TrackingResult(changedStates, transitionsByLhs);
     }
 
-    private WitnessState updateState(CandidateKey key, WitnessState before, WitnessDelta delta,
-            Int2ObjectMap<Int2IntMap> updatedMembership, ValueOwnerMembershipStore store) {
+    private WitnessState updateKnownWitnesses(WitnessState before, WitnessDelta delta) {
 
         boolean removesStoredWitness = false;
         for (int valueId : before.witnesses()) {
@@ -151,10 +171,6 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         while (createdIterator.hasNext() && witnesses.size() < witnessLimit) {
             witnesses.add(createdIterator.nextInt());
         }
-
-        if (witnesses.isEmpty() && before.rejected())
-            return new WitnessState(store.findWitnesses(key.bucketId(), key.lhsCol(), key.rhsCol(),
-                    witnessLimit, updatedMembership));
 
         return new WitnessState(witnesses.toIntArray());
     }

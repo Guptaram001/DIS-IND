@@ -92,12 +92,12 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private int awaitingPartitionFinalSequence = -1;
     private long nextMembershipBatchId;
     private InFlightWrite inFlightWrite;
+
     static final class DelayedInputAcknowledgments {
         private record InputBatchKey(long epoch, int tableId, int batchId) {
         }
 
-        private final Map<InputBatchKey, ActorRef<DirectBatchAggregatorActor.Command>> acknowledgments =
-                new LinkedHashMap<>();
+        private final Map<InputBatchKey, ActorRef<DirectBatchAggregatorActor.Command>> acknowledgments = new LinkedHashMap<>();
 
         boolean isEmpty() {
             return acknowledgments.isEmpty();
@@ -449,7 +449,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
     private void releaseDelayedInputAcknowledgmentIfPossible() {
         if (delayedInputAcknowledgments.isEmpty()
-                || membershipStore.pinnedEstimatedBytes() > UserConfig.DEFAULT_VO_PINNED_LOW_WATERMARK_BYTES)
+                || membershipStore.pinnedEstimatedBytes() > UserConfig.DEFAULT_VO_PINNED_LOW_BYTES)
             return;
         delayedInputAcknowledgments.release(bucketId);
     }
@@ -458,7 +458,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         if (message.ackTo() == null)
             return;
         if (!delayedInputAcknowledgments.isEmpty()
-                || membershipStore.pinnedEstimatedBytes() >= UserConfig.DEFAULT_VO_PINNED_HIGH_WATERMARK_BYTES) {
+                || membershipStore.pinnedEstimatedBytes() >= UserConfig.DEFAULT_VO_PINNED_HIGH_BYTES) {
             delayedInputAcknowledgments.add(message);
             timers.startSingleTimer(RetryMembershipWrite.INSTANCE,
                     Duration.ofMillis(UserConfig.DEFAULT_VO_WRITE_RETRY_DELAY_MS));

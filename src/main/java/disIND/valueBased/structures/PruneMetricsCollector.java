@@ -14,11 +14,12 @@ public final class PruneMetricsCollector {
     private static final int EXACT_TESTED = 8;
     private static final int EXACT_REJECTED = 9;
     private static final int EXACT_VALIDATED = 10;
+    private static final int METRIC_COUNT = 11;
 
-    private final long[][] countsByLhs;
+    private final long[] counts;
 
     public PruneMetricsCollector(int totalColumns) {
-        countsByLhs = new long[totalColumns][11];
+        counts = new long[Math.multiplyExact(totalColumns, METRIC_COUNT)];
     }
 
     public void invalidLhsSkipped(int lhs) {
@@ -66,14 +67,15 @@ public final class PruneMetricsCollector {
     }
 
     public PruneMetrics snapshot(int lhs) {
-        long[] counts = countsByLhs[lhs];
-        return new PruneMetrics(counts[INVALID_LHS], counts[VALID_RHS], counts[SAME_BATCH],
-                counts[DIRECT_LHS], counts[WHOLE_COUNT], counts[PARTITION_COUNT], counts[CQF],
-                counts[TRANSITIVELY_VALIDATED],
-                counts[EXACT_TESTED], counts[EXACT_REJECTED], counts[EXACT_VALIDATED]);
+        int base = lhs * METRIC_COUNT;
+
+        return new PruneMetrics(counts[base + INVALID_LHS], counts[base + VALID_RHS], counts[base + SAME_BATCH],
+                counts[base + DIRECT_LHS], counts[base + WHOLE_COUNT], counts[base + PARTITION_COUNT],
+                counts[base + CQF], counts[base + TRANSITIVELY_VALIDATED], counts[base + EXACT_TESTED],
+                counts[base + EXACT_REJECTED], counts[base + EXACT_VALIDATED]);
     }
 
     private void increment(int lhs, int metric) {
-        countsByLhs[lhs][metric] = Math.addExact(countsByLhs[lhs][metric], 1L);
+        counts[lhs * METRIC_COUNT + metric]++;
     }
 }

@@ -30,24 +30,12 @@ public final class Debug {
         return "CM";
     }
 
-    public static String bd() {
-        return "BD";
-    }
-
-    public static String app() {
-        return "APP";
-    }
-
     public static String guardian() {
         return "GUARDIAN";
     }
 
     public static String loader() {
         return "LOADER";
-    }
-
-    public static String attr() {
-        return "ATTR";
     }
 
     public static String rc() {
@@ -70,12 +58,7 @@ public final class Debug {
             String msg,
             Object... args) {
         String prefix = String.format(
-                "[%s][%s][%d][%s][%s] ",
-                type,
-                actorName,
-                colId,
-                pair,
-                currentState);
+                "[%s][%s][%d][%s][%s] ", type, actorName, colId, pair, currentState);
         log.info(prefix + msg, args);
     }
 

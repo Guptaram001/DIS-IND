@@ -28,68 +28,12 @@ public final class ValueOwnerClusterIndex {
     private long totalScanNanos;
     private long maxScanNanos;
 
-    private ResolutionMetrics lastResolutionMetrics = ResolutionMetrics.empty();
-
-    public record ResolutionMetrics(int candidates, int lhsGroups, long signatureVisits, int violations) {
-
-        private static ResolutionMetrics empty() {
-            return new ResolutionMetrics(0, 0, 0L, 0);
-        }
-    }
-
-    public ClusterMetrics metrics() {
-        return new ClusterMetrics(bucketId, valueCountsBySignature.size(), peakActiveClusters, activeValues,
-                membershipMoves, clusterCreations, clusterRemovals, scanCalls, candidatesScanned, lhsGroupsScanned,
-                totalSignatureVisits, violationsFound, totalScanNanos, maxScanNanos);
-    }
-
     public record ClusterMetrics(int bucketId, int activeClusters, int peakActiveClusters, long activeValues,
             long membershipMoves, long clusterCreations, long clusterRemovals, long scanCalls, long candidatesScanned,
             long lhsGroupsScanned, long signatureVisits, long violationsFound, long totalScanNanos, long maxScanNanos) {
 
-        public static ClusterMetrics empty() {
-            return new ClusterMetrics(-1, 0, 0, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
-        }
-
-        public ClusterMetrics plus(ClusterMetrics other) {
-
-            Objects.requireNonNull(other, "other");
-
-            return new ClusterMetrics(-1,
-
-                    Math.addExact(activeClusters, other.activeClusters),
-                    Math.max(peakActiveClusters, other.peakActiveClusters),
-                    Math.addExact(activeValues, other.activeValues),
-                    Math.addExact(membershipMoves, other.membershipMoves),
-                    Math.addExact(clusterCreations, other.clusterCreations),
-                    Math.addExact(clusterRemovals, other.clusterRemovals),
-                    Math.addExact(scanCalls, other.scanCalls),
-                    Math.addExact(candidatesScanned, other.candidatesScanned),
-                    Math.addExact(lhsGroupsScanned, other.lhsGroupsScanned),
-                    Math.addExact(signatureVisits, other.signatureVisits),
-                    Math.addExact(violationsFound, other.violationsFound),
-                    Math.addExact(totalScanNanos, other.totalScanNanos),
-                    Math.max(maxScanNanos, other.maxScanNanos));
-        }
-
-        public double totalScanMillis() {
-            return totalScanNanos / 1_000_000.0;
-        }
-
-        public double averageScanMillis() {
-            return scanCalls == 0L ? 0.0 : totalScanMillis() / scanCalls;
-        }
-
         public double maxScanMillis() {
             return maxScanNanos / 1_000_000.0;
-        }
-
-        public double signaturesPerCandidate() {
-            return candidatesScanned == 0L ? 0.0 : (double) signatureVisits / candidatesScanned;
-        }
-
-        public double signaturesPerLhsGroup() {
-            return lhsGroupsScanned == 0L ? 0.0 : (double) signatureVisits / lhsGroupsScanned;
         }
     }
 
@@ -132,14 +76,6 @@ public final class ValueOwnerClusterIndex {
         return List.copyOf(signatures);
     }
 
-    public ResolutionMetrics lastResolutionMetrics() {
-        return lastResolutionMetrics;
-    }
-
-    int valueCount(BitSet signature) {
-        return valueCountsBySignature.getInt(signature);
-    }
-
     private void increment(BitSet signature) {
         int previous = valueCountsBySignature.getInt(signature);
         if (previous == 0) {
@@ -178,7 +114,7 @@ public final class ValueOwnerClusterIndex {
         Objects.requireNonNull(candidates, "candidates");
 
         if (candidates.isEmpty()) {
-            lastResolutionMetrics = ResolutionMetrics.empty();
+            // lastResolutionMetrics = ResolutionMetrics.empty();
             return new LongOpenHashSet();
         }
 
@@ -210,56 +146,36 @@ public final class ValueOwnerClusterIndex {
                 continue;
 
             BitSet survivingRhs = (BitSet) rhsCandidates.clone();
-
             boolean lhsSeen = false;
-
             for (BitSet signature : valueCountsBySignature.keySet()) {
-
                 signatureVisits = Math.incrementExact(signatureVisits);
-
-                if (!signature.get(lhs)) {
+                if (!signature.get(lhs))
                     continue;
-                }
 
                 lhsSeen = true;
                 survivingRhs.and(signature);
-
-                if (survivingRhs.isEmpty()) {
+                if (survivingRhs.isEmpty())
                     break;
-                }
-            }
 
-            /*
-             * No local value contains this LHS.
-             * This owner has no local evidence against its candidates.
-             */
-            if (!lhsSeen) {
-                continue;
             }
+            if (!lhsSeen)
+                continue;
 
             BitSet invalidRhs = (BitSet) rhsCandidates.clone();
-
             invalidRhs.andNot(survivingRhs);
             for (int rhs = invalidRhs.nextSetBit(0); rhs >= 0; rhs = invalidRhs.nextSetBit(rhs + 1)) {
                 violations.add(candidateKey(lhs, rhs));
             }
         }
 
-        lastResolutionMetrics = new ResolutionMetrics(candidates.size(), lhsGroups, signatureVisits, violations.size());
-
         long elapsedNanos = System.nanoTime() - scanStarted;
-
         recordScan(candidates.size(), lhsGroups, signatureVisits, violations.size(), elapsedNanos);
 
         return violations;
     }
 
-    private static long candidateKey(
-            int lhs,
-            int rhs) {
-
-        return ((long) lhs << Integer.SIZE)
-                | (rhs & 0xffffffffL);
+    private static long candidateKey(int lhs, int rhs) {
+        return ((long) lhs << Integer.SIZE) | (rhs & 0xffffffffL);
     }
 
     private static int lhsColumn(long key) {
@@ -270,37 +186,15 @@ public final class ValueOwnerClusterIndex {
         return (int) key;
     }
 
-    private void recordScan(
-            long candidateCount,
-            long lhsGroups,
-            long signatureVisits,
-            long violationCount,
+    private void recordScan(long candidateCount, long lhsGroups, long signatureVisits, long violationCount,
             long elapsedNanos) {
 
         scanCalls = Math.incrementExact(scanCalls);
-
-        candidatesScanned = Math.addExact(
-                candidatesScanned,
-                candidateCount);
-
-        lhsGroupsScanned = Math.addExact(
-                lhsGroupsScanned,
-                lhsGroups);
-
-        totalSignatureVisits = Math.addExact(
-                totalSignatureVisits,
-                signatureVisits);
-
-        violationsFound = Math.addExact(
-                violationsFound,
-                violationCount);
-
-        totalScanNanos = Math.addExact(
-                totalScanNanos,
-                elapsedNanos);
-
-        maxScanNanos = Math.max(
-                maxScanNanos,
-                elapsedNanos);
+        candidatesScanned = Math.addExact(candidatesScanned, candidateCount);
+        lhsGroupsScanned = Math.addExact(lhsGroupsScanned, lhsGroups);
+        totalSignatureVisits = Math.addExact(totalSignatureVisits, signatureVisits);
+        violationsFound = Math.addExact(violationsFound, violationCount);
+        totalScanNanos = Math.addExact(totalScanNanos, elapsedNanos);
+        maxScanNanos = Math.max(maxScanNanos, elapsedNanos);
     }
 }

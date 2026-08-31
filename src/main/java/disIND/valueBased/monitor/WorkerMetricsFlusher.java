@@ -32,7 +32,7 @@ public final class WorkerMetricsFlusher {
         return true;
     }
 
-    public boolean isWritten() {
-        return written.get();
-    }
+    // public boolean isWritten() {
+    // return written.get();
+    // }
 }

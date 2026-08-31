@@ -58,10 +58,6 @@ public sealed interface ModeSpecificContext
         return PruneMetrics.empty();
     }
 
-    default ValueOwnerClusterIndex.ClusterMetrics clusterMetrics() {
-        return ValueOwnerClusterIndex.ClusterMetrics.empty();
-    }
-
     default List<long[]> activeClusterSignatures() {
         return List.of();
     }
@@ -131,11 +127,6 @@ public sealed interface ModeSpecificContext
                 }
             }
             clusters.moveMembership(beforeSignature, afterSignature);
-        }
-
-        @Override
-        public ValueOwnerClusterIndex.ClusterMetrics clusterMetrics() {
-            return clusters.metrics();
         }
 
         @Override
@@ -255,11 +246,6 @@ public sealed interface ModeSpecificContext
                 else
                     locallyRejectedCandidates.remove(candidadateIndex);
             }
-        }
-
-        @Override
-        public ValueOwnerClusterIndex.ClusterMetrics clusterMetrics() {
-            return clusters.metrics();
         }
 
         @Override

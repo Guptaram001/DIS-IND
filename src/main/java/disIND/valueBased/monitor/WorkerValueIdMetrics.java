@@ -57,9 +57,5 @@ public final class WorkerValueIdMetrics {
         public double rocksReadMillis() {
             return rocksReadNanos / 1_000_000.0;
         }
-
-        public double averageRocksReadMicrosPerKey() {
-            return rocksReadKeys == 0L ? 0.0 : (rocksReadNanos / 1_000.0) / rocksReadKeys;
-        }
     }
 }

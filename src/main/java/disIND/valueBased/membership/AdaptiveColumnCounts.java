@@ -36,14 +36,6 @@ public final class AdaptiveColumnCounts extends AbstractInt2IntMap {
         return delegate.put(column, count);
     }
 
-    public int addTo(int column, int delta) {
-        promoteIfNecessary(column);
-        int previous = delegate.get(column);
-        int updated = Math.addExact(previous, delta);
-        delegate.put(column, updated);
-        return previous;
-    }
-
     @Override
     public int get(int column) {
         return delegate.get(column);

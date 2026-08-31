@@ -229,7 +229,7 @@ public final class DataLoader {
                 if (!active[i])
                     continue;
                 int rowsRead = 0;
-                Map<Integer, OrientetationBatchBuilder> builders = new HashMap<>(UserConfig.VALUE_OWNER_BUCKETS);
+                OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
                 boolean deleteMode = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
                 int deletionCapacityPerBatch = deleteMode
                         ? (int) Math.floor(batchSize[i] * UserConfig.DELETE_PERCENT / 100)
@@ -260,7 +260,8 @@ public final class DataLoader {
                         throw new IllegalArgumentException();
 
                     int rowId = batchStartRowId + rowsRead;
-                    addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, rowId, 1, orientation, builders);
+                    addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, rowId, 1, orientation,
+                            builders);
                     if (deletionStore != null) {
                         // Added the rows to deletionStore randomly using Algorithm R.
                         if (rowsRead < deletionCapacityPerBatch) {
@@ -286,14 +287,16 @@ public final class DataLoader {
                         Deque<List<String[]>> deletionQueue = deletionByTable[i];
                         if (deletionQueue.size() == 2) {
                             List<String[]> rowsToReinsert = deletionQueue.removeFirst();
-                            addRowsToOwnerBuilders(rowsToReinsert, expectedColumns, globalColumnOffset, 1, orientation,
+                            addRowsToOwnerBuilders(rowsToReinsert, expectedColumns, globalColumnOffset, 1,
+                                    orientation,
                                     builders);
                             totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToReinsert.size());
                         }
 
                         if (!deletionQueue.isEmpty()) {
                             List<String[]> rowsToDelete = deletionQueue.peekFirst();
-                            addRowsToOwnerBuilders(rowsToDelete, expectedColumns, globalColumnOffset, -1, orientation,
+                            addRowsToOwnerBuilders(rowsToDelete, expectedColumns, globalColumnOffset, -1,
+                                    orientation,
                                     builders);
                             totalDeletedRows = Math.addExact(totalDeletedRows, rowsToDelete.size());
                         }
@@ -301,12 +304,6 @@ public final class DataLoader {
                         List<String[]> currentDeletionSample = (active[i] && deletionStore != null)
                                 ? List.copyOf(Arrays.asList(deletionStore))
                                 : List.of();
-
-                        // List<String[]> currentDeletionSample = active[i] ?
-                        // buildDeletionSample(deletionStore,
-                        // deletionCapacityPerBatch, rowsRead, UserConfig.DELETE_PERCENT,
-                        // deletionRandom)
-                        // : List.of();
 
                         deletionQueue.addLast(currentDeletionSample);
 
@@ -349,7 +346,7 @@ public final class DataLoader {
                 if (rowsToRestore.isEmpty())
                     continue;
 
-                Map<Integer, OrientetationBatchBuilder> builders = new HashMap<>(UserConfig.VALUE_OWNER_BUCKETS);
+                OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
                 addRowsToOwnerBuilders(rowsToRestore, nCols.get(tableId), offsets.get(tableId), 1, orientation,
                         builders);
                 Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
@@ -408,7 +405,7 @@ public final class DataLoader {
     }
 
     private static void addRowsToOwnerBuilders(List<String[]> rows, int expectedColumns, int globalColumnOffset,
-            int delta, DataOrientation orientation, Map<Integer, OrientetationBatchBuilder> builders) {
+            int delta, DataOrientation orientation, OrientetationBatchBuilder[] builders) {
 
         for (String[] row : rows) {
             addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, 0, delta, orientation, builders);
@@ -416,7 +413,7 @@ public final class DataLoader {
     }
 
     private static void addRowToOwnerBuilders(String[] row, int expectedColumns, int globalColumnOffset, int rowId,
-            int delta, DataOrientation orientation, Map<Integer, OrientetationBatchBuilder> builders) {
+            int delta, DataOrientation orientation, OrientetationBatchBuilder[] builders) {
 
         if (row.length != expectedColumns)
             throw new IllegalArgumentException("Record has different number of columns: expected ");
@@ -430,35 +427,24 @@ public final class DataLoader {
                 continue;
             int globalColumn = globalColumnOffset + localColumn;
             int ownerId = Math.floorMod(value.hashCode(), UserConfig.VALUE_OWNER_BUCKETS);
-            OrientetationBatchBuilder builder = builders.computeIfAbsent(ownerId, ignored -> newBuilder(orientation));
+            OrientetationBatchBuilder builder = builders[ownerId];
+
+            if (builder == null) {
+                builder = newBuilder(orientation);
+                builders[ownerId] = builder;
+            }
+
             builder.add(globalColumn, value, rowId, delta);
         }
     }
 
-    // private static List<String[]> buildDeletionSample(String[][] deletionStore,
-    // int capacity, int rowsRead,
-    // double deletePercent, Random random) {
-
-    // if (deletionStore == null || rowsRead == 0)
-    // return List.of();
-
-    // int actualCount = (int) Math.floor(rowsRead * deletePercent / 100.0);
-    // if (actualCount == 0)
-    // return List.of();
-
-    // int filled = Math.min(rowsRead, capacity);
-    // if (rowsRead <= capacity) {
-    // List<String[]> sample = new
-    // ArrayList<>(Arrays.asList(deletionStore).subList(0, filled));
-    // Collections.shuffle(sample, random);
-    // return List.copyOf(sample.subList(0, actualCount));
-    // }
-    // return List.copyOf(Arrays.asList(deletionStore).subList(0, actualCount));
-    // }
-
-    private static Map<Integer, BatchBody> finishOwnerBatches(Map<Integer, OrientetationBatchBuilder> builders) {
-        Map<Integer, BatchBody> ownerBatches = new HashMap<>(builders.size());
-        builders.forEach((ownerId, builder) -> ownerBatches.put(ownerId, builder.build()));
+    private static Map<Integer, BatchBody> finishOwnerBatches(OrientetationBatchBuilder[] builders) {
+        Map<Integer, BatchBody> ownerBatches = new HashMap<>();
+        for (int ownerId = 0; ownerId < builders.length; ownerId++) {
+            OrientetationBatchBuilder builder = builders[ownerId];
+            if (builder != null)
+                ownerBatches.put(ownerId, builder.build());
+        }
         return ownerBatches;
     }
 
@@ -516,10 +502,7 @@ public final class DataLoader {
             return paths.filter(p -> {
                 String s = p.toString().toLowerCase(Locale.ROOT);
                 return s.endsWith(".csv") || s.endsWith(".tbl") || s.endsWith(".tsv");
-            })
-                    .map(Path::toString)
-                    .sorted()
-                    .toList();
+            }).map(Path::toString).sorted().toList();
         }
     }
 
@@ -564,10 +547,8 @@ public final class DataLoader {
                     .sorted(
                             Comparator.comparingInt(SharedModel.UnaryPair::lhsCol)
                                     .thenComparingInt(SharedModel.UnaryPair::rhsCol))
-                    .forEach(p -> sb.append(String.format(
-                            "IND(%s, %s)%n",
-                            name(names, p.lhsCol()),
-                            name(names, p.rhsCol()))));
+                    .forEach(p -> sb
+                            .append(String.format("IND(%s, %s)%n", name(names, p.lhsCol()), name(names, p.rhsCol()))));
         }
 
         List<SharedModel.NaryPair> nary = report.confirmedNary();
@@ -582,21 +563,13 @@ public final class DataLoader {
                     .sorted(
                             Comparator.comparingInt(SharedModel.NaryPair::arity)
                                     .thenComparing(p -> p.lhsCols().toString()))
-                    .forEach(p -> sb.append(String.format(
-                            "  arity=%-2d  %-45s  ⊆  %s%n",
-                            p.arity(),
-                            tuple(names, p.lhsCols()),
-                            tuple(names, p.rhsCols()))));
+                    .forEach(p -> sb.append(String.format("  arity=%-2d  %-45s  ⊆  %s%n", p.arity(),
+                            tuple(names, p.lhsCols()), tuple(names, p.rhsCols()))));
         }
 
         sb.append("\n").append("=".repeat(72)).append("\n");
-        sb.append("  TOTAL: ")
-                .append(unary.size())
-                .append(" unary + ")
-                .append(nary.size())
-                .append(" n-ary = ")
-                .append(unary.size() + nary.size())
-                .append(" INDs confirmed\n");
+        sb.append("  TOTAL: ").append(unary.size()).append(" unary + ").append(nary.size()).append(" n-ary = ")
+                .append(unary.size() + nary.size()).append(" INDs confirmed\n");
         sb.append("=".repeat(72)).append("\n");
 
         System.out.printf("[Loader] Discovery complete: %d unary, %d n-ary INDs%n",
@@ -610,10 +583,6 @@ public final class DataLoader {
             System.out.println("[Loader] Report written to: " + outputFile);
         }
     }
-
-    // private static String name(Map<Integer, String> names, int col) {
-    // return names.getOrDefault(col, "col" + col);
-    // }
 
     private static String name(Map<Integer, String> names, int colId) {
         String n = names.get(colId);

@@ -9,14 +9,12 @@ import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.Arrays;
 import disIND.valueBased.protocol.ValueOwnerProtocol.ValueData;
 import disIND.valueBased.utility.UserConfig;
@@ -82,11 +80,10 @@ public final class WorkerValueIdStore implements AutoCloseable {
         this.ownerCaches = new OwnerCache[ownerCount];
         this.metrics = metrics;
         for (int ownerId = 0; ownerId < ownerCount; ownerId++) {
-            nextIdKeys[ownerId] = ByteBuffer
-                    .allocate(1 + Integer.BYTES)
-                    .put(NEXT_ID_PREFIX)
-                    .putInt(ownerId)
-                    .array();
+            byte[] nextIdKey = new byte[1 + Integer.BYTES];
+            nextIdKey[0] = NEXT_ID_PREFIX;
+            putInt(nextIdKey, 1, ownerId);
+            nextIdKeys[ownerId] = nextIdKey;
         }
         try {
             Files.createDirectories(databasePath);
@@ -270,18 +267,35 @@ public final class WorkerValueIdStore implements AutoCloseable {
 
     private static byte[] valueKey(int ownerId, String value) {
         byte[] text = value.getBytes(StandardCharsets.UTF_8);
-        return ByteBuffer.allocate(1 + Integer.BYTES + text.length)
-                .put(VALUE_PREFIX).putInt(ownerId).put(text).array();
+        byte[] key = new byte[1 + Integer.BYTES + text.length];
+        key[0] = VALUE_PREFIX;
+        putInt(key, 1, ownerId);
+        System.arraycopy(text, 0, key, 1 + Integer.BYTES, text.length);
+        return key;
     }
 
     private static byte[] encodeId(int id) {
-        return ByteBuffer.allocate(Integer.BYTES).putInt(id).array();
+        byte[] encoded = new byte[Integer.BYTES];
+        putInt(encoded, 0, id);
+        return encoded;
     }
 
     private static int decodeId(byte[] bytes) {
         if (bytes.length != Integer.BYTES)
             throw new IllegalStateException("Invalid value-ID record length: " + bytes.length);
-        return ByteBuffer.wrap(bytes).getInt();
+        return readInt(bytes, 0);
+    }
+
+    private static void putInt(byte[] target, int offset, int value) {
+        target[offset] = (byte) (value >>> 24);
+        target[offset + 1] = (byte) (value >>> 16);
+        target[offset + 2] = (byte) (value >>> 8);
+        target[offset + 3] = (byte) value;
+    }
+
+    private static int readInt(byte[] source, int offset) {
+        return ((source[offset] & 0xff) << 24) | ((source[offset + 1] & 0xff) << 16)
+                | ((source[offset + 2] & 0xff) << 8) | (source[offset + 3] & 0xff);
     }
 
     private void ensureOpen() {

@@ -54,32 +54,26 @@ public final class MembershipUpdater {
                     continue;
 
                 int previousCount = record.getOrDefault(columnId, 0);
-                MembershipCountUpdate.Result countResult = MembershipCountUpdate.apply(valueId, columnId, previousCount,
-                        delta);
-                int updatedCount = countResult.updatedCount();
+                int updatedCount = Math.addExact(previousCount, delta);
+                if (updatedCount < 0)
+                    throw new IllegalStateException(
+                            "Membership count became negative");
 
-                switch (countResult.transition()) {
-                    case ADDED:
-                        record.put(columnId, updatedCount);
-                        if (addedColumns == null)
-                            addedColumns = columnSets.create();
-                        addedColumns.add(columnId);
-                        break;
-
-                    case REMOVED:
+                if (previousCount == 0 && updatedCount > 0) {
+                    record.put(columnId, updatedCount);
+                    if (addedColumns == null)
+                        addedColumns = columnSets.create();
+                    addedColumns.add(columnId);
+                } else if (previousCount > 0 && updatedCount == 0) {
+                    record.remove(columnId);
+                    if (removedColumns == null)
+                        removedColumns = columnSets.create();
+                    removedColumns.add(columnId);
+                } else {
+                    if (updatedCount == 0)
                         record.remove(columnId);
-                        if (removedColumns == null)
-                            removedColumns = columnSets.create();
-                        removedColumns.add(columnId);
-                        break;
-
-                    case NONE:
-                        if (updatedCount == 0)
-                            record.remove(columnId);
-                        else
-                            record.put(columnId, updatedCount);
-
-                        break;
+                    else
+                        record.put(columnId, updatedCount);
                 }
             }
             if (addedColumns != null) {
