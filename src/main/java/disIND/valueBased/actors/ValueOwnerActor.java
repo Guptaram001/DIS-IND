@@ -29,9 +29,14 @@ import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
 import disIND.valueBased.protocol.ValueOwnerProtocol.RetryDrainProbe;
 import disIND.valueBased.protocol.ValueOwnerProtocol.PartitionDrainQueued;
 import disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerReady;
+import disIND.valueBased.protocol.ValueOwnerProtocol.MembershipWriteAcknowledged;
+import disIND.valueBased.protocol.ValueOwnerProtocol.MembershipWriteFailed;
+import disIND.valueBased.protocol.ValueOwnerProtocol.RetryMembershipWrite;
 import disIND.valueBased.protocol.DrainProtocol;
 import disIND.valueBased.protocol.MembershipWriteProtocol;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.ValueOwnerMembershipStore.InFlightWrite;
+import disIND.valueBased.structures.ValueOwnerMembershipStore.PreparedWriteBatch;
 import disIND.valueBased.structures.WorkerValueIdStore;
 import disIND.valueBased.tracking.CandidateViolationAfterApplyingUpdates;
 import disIND.valueBased.tracking.CandidateEvaluator;
@@ -52,6 +57,8 @@ import org.roaringbitmap.RoaringBitmap;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.time.Duration;
 import akka.actor.typed.ActorRef;
@@ -83,6 +90,32 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private final WorkerPhaseMetrics phaseMetrics;
     private final WorkerMetricsFlusher workerMetricsFlusher;
     private int awaitingPartitionFinalSequence = -1;
+    private long nextMembershipBatchId;
+    private InFlightWrite inFlightWrite;
+    static final class DelayedInputAcknowledgments {
+        private record InputBatchKey(long epoch, int tableId, int batchId) {
+        }
+
+        private final Map<InputBatchKey, ActorRef<DirectBatchAggregatorActor.Command>> acknowledgments =
+                new LinkedHashMap<>();
+
+        boolean isEmpty() {
+            return acknowledgments.isEmpty();
+        }
+
+        void add(StoreBatch message) {
+            acknowledgments.putIfAbsent(new InputBatchKey(message.epoch(), message.tableId(), message.batchId()),
+                    message.ackTo());
+        }
+
+        void release(int bucketId) {
+            for (ActorRef<DirectBatchAggregatorActor.Command> acknowledgment : acknowledgments.values())
+                acknowledgment.tell(new DirectBatchAggregatorActor.ValueOwnerPersisted(bucketId));
+            acknowledgments.clear();
+        }
+    }
+
+    private final DelayedInputAcknowledgments delayedInputAcknowledgments = new DelayedInputAcknowledgments();
 
     public static String entityId(int bucketId) {
         return "value-bucket-" + bucketId;
@@ -148,6 +181,9 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 .onMessage(FinalizeMembership.class, this::onFinalizeMembership)
                 .onMessage(PartitionDrainQueued.class, this::onPartitionDrainQueued)
                 .onMessage(PartitionCandidateManagerReady.class, this::onPartitionCandidateManagerReady)
+                .onMessage(MembershipWriteAcknowledged.class, this::onMembershipWriteAcknowledged)
+                .onMessage(MembershipWriteFailed.class, this::onMembershipWriteFailed)
+                .onMessageEquals(RetryMembershipWrite.INSTANCE, this::onRetryMembershipWrite)
                 .onMessageEquals(RetryDrainProbe.INSTANCE, this::onRetryDrainProbe)
                 .build();
     }
@@ -224,7 +260,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         started = System.nanoTime();
         membershipStore.stage(bucketId, membership.updatedRecordsByValue(), trackingResult.changedStates());
         phaseMetrics.record(Phase.ROCKSDB_WRITE, System.nanoTime() - started);
-        membershipWriter.tell(new MembershipWriteProtocol.StagedWrite(bucketId));
+        tryStartMembershipWrite();
 
         modeSpecificContext.candidateStatesChanged(trackingResult.changedStates());
 
@@ -277,6 +313,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                     bucketId, message.finalRound());
         }
         finalization = message;
+        tryStartMembershipWrite();
         nextDrainPartition = 0;
         prepareNextPartitionDrain();
         return this;
@@ -362,9 +399,72 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         return this;
     }
 
+    private void tryStartMembershipWrite() {
+        if (inFlightWrite != null)
+            return;
+        long batchId = ++nextMembershipBatchId;
+        PreparedWriteBatch batch = membershipStore.prepareWriteBatch(bucketId, batchId,
+                UserConfig.DEFAULT_VO_WRITE_BATCH_MAX_ENTRIES,
+                UserConfig.DEFAULT_VO_WRITE_BATCH_MAX_BYTES, getContext().getSelf());
+        if (batch.isEmpty())
+            return;
+        inFlightWrite = batch.cleanup();
+        membershipWriter.tell(batch.message());
+    }
+
+    private Behavior<Command> onMembershipWriteAcknowledged(MembershipWriteAcknowledged message) {
+        if (!matchesInFlight(message.bucketId(), message.batchId()))
+            return this;
+        membershipStore.acknowledgeWrite(bucketId, inFlightWrite);
+        inFlightWrite = null;
+        releaseDelayedInputAcknowledgmentIfPossible();
+        tryStartMembershipWrite();
+        return this;
+    }
+
+    private Behavior<Command> onMembershipWriteFailed(MembershipWriteFailed message) {
+        if (!matchesInFlight(message.bucketId(), message.batchId()))
+            return this;
+        getContext().getLog().warn("VO membership write failed; retrying bucket={} batchId={} reason={}",
+                bucketId, message.batchId(), message.reason());
+        membershipStore.failWrite(bucketId, inFlightWrite);
+        inFlightWrite = null;
+        timers.startSingleTimer(RetryMembershipWrite.INSTANCE,
+                Duration.ofMillis(UserConfig.DEFAULT_VO_WRITE_RETRY_DELAY_MS));
+        return this;
+    }
+
+    private boolean matchesInFlight(int messageBucketId, long batchId) {
+        return messageBucketId == bucketId && inFlightWrite != null && inFlightWrite.batchId() == batchId;
+    }
+
+    private Behavior<Command> onRetryMembershipWrite() {
+        releaseDelayedInputAcknowledgmentIfPossible();
+        tryStartMembershipWrite();
+        if (!delayedInputAcknowledgments.isEmpty())
+            timers.startSingleTimer(RetryMembershipWrite.INSTANCE,
+                    Duration.ofMillis(UserConfig.DEFAULT_VO_WRITE_RETRY_DELAY_MS));
+        return this;
+    }
+
+    private void releaseDelayedInputAcknowledgmentIfPossible() {
+        if (delayedInputAcknowledgments.isEmpty()
+                || membershipStore.pinnedEstimatedBytes() > UserConfig.DEFAULT_VO_PINNED_LOW_WATERMARK_BYTES)
+            return;
+        delayedInputAcknowledgments.release(bucketId);
+    }
+
     private void acknowledge(StoreBatch message) {
-        if (message.ackTo() != null)
-            message.ackTo().tell(new DirectBatchAggregatorActor.ValueOwnerPersisted(bucketId));
+        if (message.ackTo() == null)
+            return;
+        if (!delayedInputAcknowledgments.isEmpty()
+                || membershipStore.pinnedEstimatedBytes() >= UserConfig.DEFAULT_VO_PINNED_HIGH_WATERMARK_BYTES) {
+            delayedInputAcknowledgments.add(message);
+            timers.startSingleTimer(RetryMembershipWrite.INSTANCE,
+                    Duration.ofMillis(UserConfig.DEFAULT_VO_WRITE_RETRY_DELAY_MS));
+            return;
+        }
+        message.ackTo().tell(new DirectBatchAggregatorActor.ValueOwnerPersisted(bucketId));
     }
 
     private static BatchProcessor newProcessor(DataOrientation orientation) {

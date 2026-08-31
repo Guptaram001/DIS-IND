@@ -29,9 +29,12 @@ public final class UserConfig {
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
     public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 100;
-    public static final int DEFAULT_VO_WRITE_OVERLAY_FLUSH_THRESHOLD = 5_000;
-    public static final int DEFAULT_VO_WRITE_OVERLAY_FLUSH_INTERVAL_MS = 200;
-    public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 2;
+    public static final int DEFAULT_VO_WRITE_BATCH_MAX_ENTRIES = 5_000;
+    public static final long DEFAULT_VO_WRITE_BATCH_MAX_BYTES = 512L * 1024L;
+    public static final long DEFAULT_VO_PINNED_HIGH_BYTES = 64L * 1024L * 1024L;
+    public static final long DEFAULT_VO_PINNED_LOW_BYTES = 32L * 1024L * 1024L;
+    public static final int DEFAULT_VO_WRITE_RETRY_DELAY_MS = 500;
+    public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 3;
     public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_CM_PARTITIONS = 128;

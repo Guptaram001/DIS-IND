@@ -11,6 +11,7 @@ import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
+import akka.actor.typed.ActorRef;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -23,8 +24,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Arrays;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
+import disIND.valueBased.protocol.MembershipWriteProtocol.CandidateWrite;
+import disIND.valueBased.protocol.MembershipWriteProtocol.EncodedWriteBatch;
+import disIND.valueBased.protocol.ValueOwnerProtocol;
 import disIND.valueBased.membership.AdaptiveColumnCounts;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.utility.UserConfig;
@@ -57,14 +61,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private final BucketMembershipCache[] bucketCaches;
     private final WorkerMembershipMetrics metrics;
 
-    // Write overlay: staged but not-yet-flushed-to-RocksDB deltas. Populated
-    // synchronously by VO actors via stage(); drained by the dedicated writer
-    // actor via flushOverlay(). Every read path that can fall through to raw
-    // RocksDB bytes (loadBatch, loadCandidates, findWitnesses) must consult
-    // this first, since a bucketCache/candidateStateCache eviction can happen
-    // before an entry is durably flushed.
-    private final ConcurrentHashMap<Long, Int2IntMap> pendingRecords = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<CandidateKey, CandidateState> pendingCandidates = new ConcurrentHashMap<>();
+    private final AtomicLong pinnedEstimatedBytes = new AtomicLong();
 
     private static final byte CANDIDATE_PREFIX = 0x43;
     private static final byte COUNT_STATE_TYPE = 1;
@@ -81,6 +78,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private final Cache<CandidateKey, CandidateState> candidateStateCache;
+    private final Map<CandidateKey, CandidateWriteBackEntry>[] candidateWriteBackByBucket;
 
     public sealed interface CandidateState permits CountState, WitnessState, PruneState, ExactState {
         boolean rejected();
@@ -191,9 +189,54 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
     }
 
+    private static final class MembershipCacheEntry {
+        private Int2IntMap membership;
+        private boolean dirty;
+        private boolean inFlight;
+
+        private MembershipCacheEntry(Int2IntMap membership, boolean dirty, boolean inFlight) {
+            this.membership = membership;
+            this.dirty = dirty;
+            this.inFlight = inFlight;
+        }
+
+        private boolean authoritative() {
+            return dirty || inFlight;
+        }
+
+        private boolean evictable() {
+            return !authoritative();
+        }
+    }
+
+    private static final class CandidateWriteBackEntry {
+        private CandidateState state;
+        private boolean dirty = true;
+        private boolean inFlight;
+
+        private CandidateWriteBackEntry(CandidateState state) {
+            this.state = state;
+        }
+    }
+
+    public record InFlightWrite(long batchId, int[] membershipValueIds,
+            CandidateKey[] candidateKeys, long encodedBytes) {
+    }
+
+    public record PreparedWriteBatch(EncodedWriteBatch message, InFlightWrite cleanup) {
+        public boolean isEmpty() {
+            return message == null;
+        }
+
+        public static PreparedWriteBatch empty() {
+            return new PreparedWriteBatch(null, null);
+        }
+    }
+
     private final class BucketMembershipCache {
 
-        private final Int2ObjectLinkedOpenHashMap<Int2IntMap> entries = new Int2ObjectLinkedOpenHashMap<>();
+        private final Int2ObjectLinkedOpenHashMap<MembershipCacheEntry> entries = new Int2ObjectLinkedOpenHashMap<>();
+        private final IntOpenHashSet overlayValueIds = new IntOpenHashSet();
         private final long maxWeight;
         private long currentWeight;
 
@@ -202,9 +245,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         Int2IntMap get(int valueId) {
-            Int2IntMap cached = entries.getAndMoveToLast(valueId);
+            MembershipCacheEntry cached = entries.getAndMoveToLast(valueId);
             // Return a mutable copy because MembershipUpdater modifies it.
-            return cached == null ? null : new AdaptiveColumnCounts(cached);
+            return cached == null ? null : new AdaptiveColumnCounts(cached.membership);
+        }
+
+        MembershipCacheEntry peek(int valueId) {
+            return entries.get(valueId);
         }
 
         private static long weight(Int2IntMap membership) {
@@ -213,22 +260,48 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
         void clear() {
             entries.clear();
+            overlayValueIds.clear();
             currentWeight = 0;
         }
 
         void putOwned(int valueId, Int2IntMap membership) {
-            Int2IntMap previous = entries.remove(valueId);
+            MembershipCacheEntry previous = entries.remove(valueId);
+            long previousWeight = previous == null ? 0L : weight(previous.membership);
             if (previous != null)
-                currentWeight -= weight(previous);
+                currentWeight -= previousWeight;
 
             // No map copy. The caller must never mutate membership again.
-            entries.putAndMoveToLast(valueId, membership);
-            currentWeight += weight(membership);
-            while (currentWeight > maxWeight && !entries.isEmpty()) {
-                Int2IntMap evicted = entries.removeFirst();
-                currentWeight -= weight(evicted);
-                metrics.cacheEviction();
+            boolean wasAuthoritative = previous != null && previous.authoritative();
+            boolean inFlight = previous != null && previous.inFlight;
+            MembershipCacheEntry updated = new MembershipCacheEntry(membership, true, inFlight);
+            entries.putAndMoveToLast(valueId, updated);
+            long updatedWeight = weight(membership);
+            currentWeight += updatedWeight;
+            overlayValueIds.add(valueId);
+            pinnedEstimatedBytes.addAndGet(wasAuthoritative ? updatedWeight - previousWeight : updatedWeight);
+            evictCleanEntriesIfNecessary();
+        }
+
+        private void evictCleanEntriesIfNecessary() {
+            while (currentWeight > maxWeight && evictOneCleanEntry()) {
+                // Continue until the soft limit is met or every remaining entry is pinned.
             }
+        }
+
+        private boolean evictOneCleanEntry() {
+            ObjectIterator<Int2ObjectMap.Entry<MembershipCacheEntry>> iterator =
+                    Int2ObjectMaps.fastIterator(entries);
+            while (iterator.hasNext()) {
+                Int2ObjectMap.Entry<MembershipCacheEntry> mapEntry = iterator.next();
+                MembershipCacheEntry entry = mapEntry.getValue();
+                if (!entry.evictable())
+                    continue;
+                currentWeight -= weight(entry.membership);
+                iterator.remove();
+                metrics.cacheEviction();
+                return true;
+            }
+            return false;
         }
     }
 
@@ -241,6 +314,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         try {
             Files.createDirectories(directory);
             this.bucketCaches = new BucketMembershipCache[bucketCount];
+            this.candidateWriteBackByBucket = new Map[bucketCount];
             this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
                     .setFilterPolicy(bloomFilter)
@@ -384,16 +458,14 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return key;
     }
 
-    private static long overlayKey(int bucketId, int valueId) {
-        return ((long) bucketId << Integer.SIZE) | (valueId & 0xFFFFFFFFL);
-    }
-
-    private static int overlayKeyBucket(long overlayKey) {
-        return (int) (overlayKey >>> Integer.SIZE);
-    }
-
-    private static int overlayKeyValueId(long overlayKey) {
-        return (int) overlayKey;
+    private Map<CandidateKey, CandidateWriteBackEntry> candidateWriteBack(int bucketId) {
+        bucketCache(bucketId);
+        Map<CandidateKey, CandidateWriteBackEntry> entries = candidateWriteBackByBucket[bucketId];
+        if (entries == null) {
+            entries = new HashMap<>();
+            candidateWriteBackByBucket[bucketId] = entries;
+        }
+        return entries;
     }
 
     public Map<CandidateKey, CandidateState> loadCandidates(Set<CandidateKey> keys,
@@ -405,20 +477,16 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         List<byte[]> missKeys = new ArrayList<>();
 
         for (CandidateKey key : keys) {
+            CandidateWriteBackEntry writeBack = candidateWriteBack(key.bucketId()).get(key);
+            if (writeBack != null) {
+                requireTrackingMode(key, writeBack.state, trackingMode);
+                result.put(key, writeBack.state);
+                continue;
+            }
             CandidateState cached = candidateStateCache.getIfPresent(key);
             if (cached != null) {
                 requireTrackingMode(key, cached, trackingMode);
                 result.put(key, cached);
-                continue;
-            }
-            // Not yet in the read cache - it may still be sitting unflushed in the
-            // write overlay (evicted from cache before the writer persisted it).
-            CandidateState overlayState = pendingCandidates.get(key);
-            if (overlayState != null) {
-                requireTrackingMode(key, overlayState, trackingMode);
-                result.put(key, overlayState);
-                if (overlayState.rejected())
-                    candidateStateCache.put(key, overlayState);
                 continue;
             }
             misses.add(key);
@@ -511,14 +579,6 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 result.put(valueId, cached);
                 continue;
             }
-            // Not yet in the read cache - it may still be sitting unflushed in the write
-            // overlay
-            Int2IntMap overlayRecord = pendingRecords.get(overlayKey(bucketId, valueId));
-            if (overlayRecord != null) {
-                metrics.cacheHit();
-                result.put(valueId, new AdaptiveColumnCounts(overlayRecord));
-                continue;
-            }
             metrics.cacheMiss();
             misses.add(valueId);
             missKeys.add(key(bucketId, valueId));
@@ -554,75 +614,169 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             int valueId = entry.getIntKey();
             Int2IntMap record = entry.getValue();
             bucketCache(bucketId).putOwned(valueId, record);
-            pendingRecords.put(overlayKey(bucketId, valueId), record);
         }
 
         for (Map.Entry<CandidateKey, CandidateState> entry : changedCandidates.entrySet()) {
             CandidateKey key = entry.getKey();
             CandidateState state = entry.getValue();
-            if (state.rejected())
-                candidateStateCache.put(key, state);
+            if (key.bucketId() != bucketId)
+                throw new IllegalArgumentException("Candidate belongs to a different bucket: " + key);
+            Map<CandidateKey, CandidateWriteBackEntry> writeBack = candidateWriteBack(bucketId);
+            CandidateWriteBackEntry pending = writeBack.get(key);
+            long newWeight = candidatePinnedWeight(state);
+            if (pending == null) {
+                writeBack.put(key, new CandidateWriteBackEntry(state));
+                pinnedEstimatedBytes.addAndGet(newWeight);
+            } else {
+                long oldWeight = candidatePinnedWeight(pending.state);
+                pending.state = state;
+                pending.dirty = true;
+                pinnedEstimatedBytes.addAndGet(newWeight - oldWeight);
+            }
+        }
+    }
+
+    private static long candidatePinnedWeight(CandidateState state) {
+        return 64L + candidateStateWeight(state) * 4L;
+    }
+
+    public long pinnedEstimatedBytes() {
+        return pinnedEstimatedBytes.get();
+    }
+
+    public PreparedWriteBatch prepareWriteBatch(int bucketId, long batchId, int maximumEntries,
+            long maximumBytes, ActorRef<ValueOwnerProtocol.Command> replyTo) {
+        if (maximumEntries <= 0 || maximumBytes <= 0)
+            throw new IllegalArgumentException("Write-batch limits must be positive");
+
+        BucketMembershipCache cache = bucketCache(bucketId);
+        IntArrayList membershipIds = new IntArrayList();
+        List<byte[]> membershipValues = new ArrayList<>();
+        List<CandidateKey> candidateKeys = new ArrayList<>();
+        List<CandidateWrite> candidateWrites = new ArrayList<>();
+        long encodedBytes = 0L;
+
+        ObjectIterator<Int2ObjectMap.Entry<MembershipCacheEntry>> membershipIterator =
+                Int2ObjectMaps.fastIterator(cache.entries);
+        while (membershipIterator.hasNext() && membershipIds.size() + candidateKeys.size() < maximumEntries) {
+            Int2ObjectMap.Entry<MembershipCacheEntry> mapEntry = membershipIterator.next();
+            MembershipCacheEntry entry = mapEntry.getValue();
+            if (!entry.dirty || entry.inFlight)
+                continue;
+            byte[] encoded = encode(entry.membership);
+            long writeBytes = Integer.BYTES * 2L + encoded.length;
+            if (encodedBytes > 0 && encodedBytes + writeBytes > maximumBytes)
+                break;
+            membershipIds.add(mapEntry.getIntKey());
+            membershipValues.add(encoded);
+            encodedBytes += writeBytes;
+            entry.dirty = false;
+            entry.inFlight = true;
+        }
+
+        for (Map.Entry<CandidateKey, CandidateWriteBackEntry> mapEntry : candidateWriteBack(bucketId).entrySet()) {
+            if (membershipIds.size() + candidateKeys.size() >= maximumEntries)
+                break;
+            CandidateWriteBackEntry entry = mapEntry.getValue();
+            if (!entry.dirty || entry.inFlight)
+                continue;
+            byte[] encodedKey = candidateKey(mapEntry.getKey());
+            byte[] encodedValue = entry.state.rejected() ? encodeCandidateState(entry.state) : null;
+            long writeBytes = encodedKey.length + (encodedValue == null ? 0L : encodedValue.length);
+            if (encodedBytes > 0 && encodedBytes + writeBytes > maximumBytes)
+                break;
+            candidateKeys.add(mapEntry.getKey());
+            candidateWrites.add(new CandidateWrite(encodedKey, encodedValue, encodedValue == null));
+            encodedBytes += writeBytes;
+            entry.dirty = false;
+            entry.inFlight = true;
+        }
+
+        if (membershipIds.isEmpty() && candidateKeys.isEmpty())
+            return PreparedWriteBatch.empty();
+
+        int[] ids = membershipIds.toIntArray();
+        CandidateKey[] keys = candidateKeys.toArray(CandidateKey[]::new);
+        EncodedWriteBatch message = new EncodedWriteBatch(bucketId, batchId, ids,
+                membershipValues.toArray(byte[][]::new), candidateWrites.toArray(CandidateWrite[]::new),
+                encodedBytes, replyTo);
+        return new PreparedWriteBatch(message, new InFlightWrite(batchId, ids, keys, encodedBytes));
+    }
+
+    public void acknowledgeWrite(int bucketId, InFlightWrite write) {
+        BucketMembershipCache cache = bucketCache(bucketId);
+        for (int valueId : write.membershipValueIds()) {
+            MembershipCacheEntry entry = cache.peek(valueId);
+            if (entry == null || !entry.inFlight)
+                continue;
+            entry.inFlight = false;
+            if (!entry.dirty) {
+                cache.overlayValueIds.remove(valueId);
+                pinnedEstimatedBytes.addAndGet(-BucketMembershipCache.weight(entry.membership));
+            }
+        }
+        Map<CandidateKey, CandidateWriteBackEntry> candidates = candidateWriteBack(bucketId);
+        for (CandidateKey key : write.candidateKeys()) {
+            CandidateWriteBackEntry entry = candidates.get(key);
+            if (entry == null || !entry.inFlight)
+                continue;
+            entry.inFlight = false;
+            if (entry.dirty)
+                continue;
+            pinnedEstimatedBytes.addAndGet(-candidatePinnedWeight(entry.state));
+            if (entry.state.rejected())
+                candidateStateCache.put(key, entry.state);
             else
                 candidateStateCache.invalidate(key);
-            pendingCandidates.put(key, state);
+            candidates.remove(key);
+        }
+        cache.evictCleanEntriesIfNecessary();
+    }
+
+    public void failWrite(int bucketId, InFlightWrite write) {
+        BucketMembershipCache cache = bucketCache(bucketId);
+        for (int valueId : write.membershipValueIds()) {
+            MembershipCacheEntry entry = cache.peek(valueId);
+            if (entry != null && entry.inFlight) {
+                entry.inFlight = false;
+                entry.dirty = true;
+                cache.overlayValueIds.add(valueId);
+            }
+        }
+        Map<CandidateKey, CandidateWriteBackEntry> candidates = candidateWriteBack(bucketId);
+        for (CandidateKey key : write.candidateKeys()) {
+            CandidateWriteBackEntry entry = candidates.get(key);
+            if (entry != null && entry.inFlight) {
+                entry.inFlight = false;
+                entry.dirty = true;
+            }
         }
     }
 
-    public int pendingOverlaySize() {
-        return pendingRecords.size() + pendingCandidates.size();
-    }
-
-    public void flushOverlay() {
-        if (pendingRecords.isEmpty() && pendingCandidates.isEmpty())
-            return;
-
-        Map<Long, Int2IntMap> recordSnapshot = new HashMap<>(pendingRecords);
-        Map<CandidateKey, CandidateState> candidateSnapshot = new HashMap<>(pendingCandidates);
-        if (recordSnapshot.isEmpty() && candidateSnapshot.isEmpty())
-            return;
-
-        long logicalBytes = 0L;
-        long membershipWrites = 0L;
+    public void writeEncodedBatch(EncodedWriteBatch encodedBatch) {
+        long membershipWrites = encodedBatch.membershipValueIds().length;
         long candidateWrites = 0L;
         long candidateDeletes = 0L;
-
         try (WriteBatch batch = new WriteBatch()) {
-            for (Map.Entry<Long, Int2IntMap> entry : recordSnapshot.entrySet()) {
-                long overlayKey = entry.getKey();
-                byte[] encodedKey = key(overlayKeyBucket(overlayKey), overlayKeyValueId(overlayKey));
-                byte[] encodedValue = encode(entry.getValue());
-                batch.put(encodedKey, encodedValue);
-                logicalBytes = Math.addExact(logicalBytes, encodedKey.length + encodedValue.length);
-                membershipWrites = Math.incrementExact(membershipWrites);
-            }
-            for (Map.Entry<CandidateKey, CandidateState> entry : candidateSnapshot.entrySet()) {
-                CandidateKey key = entry.getKey();
-                CandidateState state = entry.getValue();
-                byte[] encodedKey = candidateKey(key);
-                if (state.rejected()) {
-                    byte[] encodedValue = encodeCandidateState(state);
-                    batch.put(encodedKey, encodedValue);
-                    logicalBytes = Math.addExact(logicalBytes, encodedKey.length + encodedValue.length);
-                    candidateWrites = Math.incrementExact(candidateWrites);
+            for (int index = 0; index < encodedBatch.membershipValueIds().length; index++)
+                batch.put(key(encodedBatch.bucketId(), encodedBatch.membershipValueIds()[index]),
+                        encodedBatch.membershipValues()[index]);
+            for (CandidateWrite write : encodedBatch.candidateWrites()) {
+                if (write.delete()) {
+                    batch.delete(write.key());
+                    candidateDeletes++;
                 } else {
-                    batch.delete(encodedKey);
-                    logicalBytes = Math.addExact(logicalBytes, encodedKey.length);
-                    candidateDeletes = Math.incrementExact(candidateDeletes);
+                    batch.put(write.key(), write.value());
+                    candidateWrites++;
                 }
             }
-
-            long writeStarted = System.nanoTime();
+            long started = System.nanoTime();
             db.write(writeOptions, batch);
-            long writeNanos = System.nanoTime() - writeStarted;
-            metrics.rocksWrite(writeNanos, logicalBytes, membershipWrites, candidateWrites, candidateDeletes);
+            metrics.rocksWrite(System.nanoTime() - started, encodedBatch.encodedBytes(), membershipWrites,
+                    candidateWrites, candidateDeletes);
         } catch (RocksDBException exception) {
-            throw new IllegalStateException("Unable to flush VO write overlay", exception);
+            throw new IllegalStateException("Unable to write encoded VO batch", exception);
         }
-
-        for (Map.Entry<Long, Int2IntMap> entry : recordSnapshot.entrySet())
-            pendingRecords.remove(entry.getKey(), entry.getValue());
-        for (Map.Entry<CandidateKey, CandidateState> entry : candidateSnapshot.entrySet())
-            pendingCandidates.remove(entry.getKey(), entry.getValue());
     }
 
     public int[] findWitnesses(int bucketId, int lhsCol, int rhsCol, int limit,
@@ -634,6 +788,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         IntArrayList witnesses = new IntArrayList(limit);
         IntSet seenValues = new IntOpenHashSet();
         byte[] prefix = bucketPrefix(bucketId);
+        BucketMembershipCache cache = bucketCache(bucketId);
 
         try (RocksIterator iterator = db.newIterator()) {
             iterator.seek(prefix);
@@ -648,12 +803,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
                 // int valueId = ByteBuffer.wrap(storedKey).getInt(Integer.BYTES);
                 int valueId = readInt(storedKey, Integer.BYTES);
+                seenValues.add(valueId);
                 Int2IntMap membership = updatedRecords.get(valueId);
-                if (membership == null)
-                    membership = pendingRecords.get(overlayKey(bucketId, valueId));
+                MembershipCacheEntry cached = cache.peek(valueId);
+                if (membership == null && cached != null && cached.authoritative())
+                    membership = cached.membership;
                 boolean violation;
                 if (membership != null) {
-                    seenValues.add(valueId);
                     violation = isViolation(membership, lhsCol, rhsCol);
                 } else
                     violation = isEncodedViolation(iterator.value(), lhsCol, rhsCol);
@@ -687,15 +843,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             }
         }
 
-        if (witnesses.size() < limit && !pendingRecords.isEmpty()) {
-            for (Map.Entry<Long, Int2IntMap> entry : pendingRecords.entrySet()) {
-                long compositeKey = entry.getKey();
-                if (overlayKeyBucket(compositeKey) != bucketId)
-                    continue;
-                int valueId = overlayKeyValueId(compositeKey);
+        if (witnesses.size() < limit) {
+            for (int valueId : cache.overlayValueIds) {
                 if (!seenValues.add(valueId))
                     continue;
-                if (isViolation(entry.getValue(), lhsCol, rhsCol)) {
+                MembershipCacheEntry entry = cache.peek(valueId);
+                if (entry != null && entry.authoritative()
+                        && isViolation(entry.membership, lhsCol, rhsCol)) {
                     witnesses.add(valueId);
                     if (witnesses.size() == limit)
                         break;
@@ -798,7 +952,6 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
     @Override
     public void close() {
-        flushOverlay();
         candidateStateCache.invalidateAll();
 
         for (BucketMembershipCache cache : bucketCaches) {
