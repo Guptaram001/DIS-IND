@@ -22,10 +22,7 @@ public final class TransitiveValidityIndex {
         }
     }
 
-    public void setValid(
-            int lhs,
-            int rhs,
-            boolean valid) {
+    public void setValid(int lhs, int rhs, boolean valid) {
 
         validateColumn(lhs);
         validateColumn(rhs);
@@ -37,40 +34,31 @@ public final class TransitiveValidityIndex {
         }
     }
 
-    /*
-     * Returns every column transitively reachable from lhs.
-     *
-     * affectedRhsByLhs contains candidates whose previous state
-     * cannot be trusted for the current batch.
-     */
-    public BitSet reachableFrom(
-            int lhs,
-            BitSet[] affectedRhsByLhs) {
+    public void initializeValid(int lhs, BitSet validRhs) {
+        validateColumn(lhs);
+        if (validRhs.length() > totalColumns)
+            throw new IllegalArgumentException("Valid RHS contains a column outside the domain");
+        validRhsByLhs[lhs].clear();
+        validRhsByLhs[lhs].or(validRhs);
+    }
+
+    public BitSet reachableFrom(int lhs, BitSet[] affectedRhsByLhs) {
 
         validateColumn(lhs);
-
         BitSet visited = new BitSet(totalColumns);
-
         BitSet pending = new BitSet(totalColumns);
-
         visited.set(lhs);
         pending.set(lhs);
 
         while (!pending.isEmpty()) {
             int current = pending.nextSetBit(0);
-
             pending.clear(current);
-
             BitSet next = (BitSet) validRhsByLhs[current].clone();
-
             BitSet affected = affectedRhsByLhs[current];
-
             if (affected != null) {
                 next.andNot(affected);
             }
-
             next.andNot(visited);
-
             if (next.isEmpty()) {
                 continue;
             }
@@ -83,11 +71,9 @@ public final class TransitiveValidityIndex {
     }
 
     private void validateColumn(int column) {
-        if (column < 0
-                || column >= totalColumns) {
+        if (column < 0 || column >= totalColumns) {
 
-            throw new IllegalArgumentException(
-                    "Invalid column " + column);
+            throw new IllegalArgumentException("Invalid column " + column);
         }
     }
 }

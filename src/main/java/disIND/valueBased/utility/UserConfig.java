@@ -48,6 +48,7 @@ public final class UserConfig {
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED = true;
+    public static final boolean DEFAULT_PRUNE_TRANSITIVE_ENABLED = false;
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
     public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 100_000;
@@ -82,6 +83,7 @@ public final class UserConfig {
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static boolean PRUNE_CQF_ENABLED = DEFAULT_PRUNE_CQF_ENABLED;
     public static boolean PRUNE_PARTITION_COUNTS_ENABLED = DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED;
+    public static boolean PRUNE_TRANSITIVE_ENABLED = DEFAULT_PRUNE_TRANSITIVE_ENABLED;
     public static int PRUNE_COUNT_PARTITIONS = DEFAULT_PRUNE_COUNT_PARTITIONS;
     public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
     public static int VALUE_OWNER_HOT_ENTRIES = DEFAULT_VALUE_OWNER_HOT_ENTRIES;
@@ -173,6 +175,8 @@ public final class UserConfig {
                 "dis.ind.prune-cqf-enabled", DEFAULT_PRUNE_CQF_ENABLED);
         PRUNE_PARTITION_COUNTS_ENABLED = booleanSetting("DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED",
                 "dis.ind.prune-partition-counts-enabled", DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED);
+        PRUNE_TRANSITIVE_ENABLED = booleanSetting("DIS_IND_PRUNE_TRANSITIVE_ENABLED",
+                "dis.ind.prune-transitive-enabled", DEFAULT_PRUNE_TRANSITIVE_ENABLED);
         PRUNE_COUNT_PARTITIONS = powerOfTwoSetting("DIS_IND_PRUNE_COUNT_PARTITIONS",
                 "dis.ind.prune-count-partitions", DEFAULT_PRUNE_COUNT_PARTITIONS);
         VALUE_ID_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",

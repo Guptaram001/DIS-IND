@@ -46,4 +46,9 @@ public final class CandidateDomain {
     public int nextCompatibleRhs(int lhs, int currentRhs) {
         return compatibleRhsByLhs[lhs].nextSetBit(currentRhs + 1);
     }
+
+    /** Returns a mutable copy; callers cannot alter the shared candidate domain. */
+    public BitSet compatibleRhsSnapshot(int lhs) {
+        return (BitSet) compatibleRhsByLhs[lhs].clone();
+    }
 }

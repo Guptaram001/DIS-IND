@@ -167,7 +167,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.batchProcessor = newProcessor(orientation);
         this.modeSpecificContext = ModeSpecificContext.create(
                 Objects.requireNonNull(candidateTrackingMode, "candidateTrackingMode"),
-                bucketId, metadata.totalCols());
+                bucketId, metadata.totalCols(), candidateDomain);
         this.workerMetricsFlusher = Objects.requireNonNull(workerMetricsFlusher);
 
         ColumnSetFactory columnSets = new ColumnSetFactory(metadata.totalCols());

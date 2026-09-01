@@ -159,6 +159,7 @@ export_docker_application_arguments() {
             --delete-percent) export DIS_IND_DELETE_PERCENT="$value" ;;
             --delete-seed) export DIS_IND_DELETE_SEED="$value" ;;
             --prune-partition-counts-enabled) export DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED="$value" ;;
+            --prune-transitive-enabled) export DIS_IND_PRUNE_TRANSITIVE_ENABLED="$value" ;;
             --prune-count-partitions) export DIS_IND_PRUNE_COUNT_PARTITIONS="$value" ;;
             --input-dir) export DIS_IND_INPUT_DIR="$value" ;;
             --output-file) export DIS_IND_OUTPUT_FILE="$value" ;;
@@ -332,6 +333,7 @@ run_distributed_docker() {
         echo "chunk_size=${DIS_IND_CHUNK_SIZE:-UserConfig default}"
         echo "prune_cqf_enabled=${DIS_IND_PRUNE_CQF_ENABLED:-true}"
         echo "prune_partition_counts_enabled=${DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED:-true}"
+        echo "prune_transitive_enabled=${DIS_IND_PRUNE_TRANSITIVE_ENABLED:-false}"
         echo "prune_count_partitions=${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
         echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
         echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
@@ -722,6 +724,7 @@ fi
     echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES:-UserConfig default}"
     echo "prune_cqf_enabled=${DIS_IND_PRUNE_CQF_ENABLED:-true}"
     echo "prune_partition_counts_enabled=${DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED:-true}"
+    echo "prune_transitive_enabled=${DIS_IND_PRUNE_TRANSITIVE_ENABLED:-false}"
     echo "prune_count_partitions=${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
     echo "started_at=$(timestamp)"
     echo "sample_interval_seconds=$SAMPLE_INTERVAL"

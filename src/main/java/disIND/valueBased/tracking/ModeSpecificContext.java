@@ -1,6 +1,7 @@
 package disIND.valueBased.tracking;
 
 import disIND.valueBased.membership.CandidateIndex;
+import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.membership.CandidateSet;
 import disIND.valueBased.membership.CandidateSetFactory;
 import disIND.valueBased.membership.ColumnSet;
@@ -73,12 +74,13 @@ public sealed interface ModeSpecificContext
             destination.set(iterator.nextInt());
     }
 
-    static ModeSpecificContext create(CandidateTrackingMode mode, int bucketId, int totalColumns) {
+    static ModeSpecificContext create(CandidateTrackingMode mode, int bucketId, int totalColumns,
+            CandidateDomain candidateDomain) {
         return switch (mode) {
             case COUNT -> new CountContext(new CountCandidateTracker());
             case WITNESS -> new WitnessContext(
                     new WitnessCandidateTracker(UserConfig.MAX_TRACKED_VIOLATIONS));
-            case PRUNE -> new PruneContext(bucketId, totalColumns);
+            case PRUNE -> new PruneContext(bucketId, totalColumns, candidateDomain);
             case EXACT -> new ExactContext(bucketId, totalColumns);
         };
     }
@@ -163,7 +165,7 @@ public sealed interface ModeSpecificContext
         private final BitSet beforeSignature;
         private final BitSet afterSignature;
 
-        private PruneContext(int bucketId, int totalColumns) {
+        private PruneContext(int bucketId, int totalColumns, CandidateDomain candidateDomain) {
             localDistinctCounts = new int[totalColumns];
             localDistinctCountsByPartition = UserConfig.PRUNE_PARTITION_COUNTS_ENABLED
                     ? new int[totalColumns][UserConfig.PRUNE_COUNT_PARTITIONS]
@@ -177,7 +179,8 @@ public sealed interface ModeSpecificContext
             candidateIndex = new CandidateIndex(totalColumns);
             locallyRejectedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
             tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, localDistinctCountsByPartition,
-                    metrics, candidateIndex, locallyRejectedCandidates);
+                    metrics, candidateIndex, locallyRejectedCandidates, candidateDomain,
+                    UserConfig.PRUNE_TRANSITIVE_ENABLED);
         }
 
         @Override
