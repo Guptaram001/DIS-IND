@@ -67,7 +67,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private final Options options;
     private final WriteOptions writeOptions;
     private final RocksDB db;
-    private final BucketMembershipCache[] bucketCaches;
+    private final BucketMembershipCache[] bucketMembershipCaches;
     private final WorkerMembershipMetrics metrics;
 
     private final AtomicLong pinnedEstimatedBytes = new AtomicLong();
@@ -366,7 +366,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             throw new IllegalArgumentException("bucketCount must be positive");
         try {
             Files.createDirectories(directory);
-            this.bucketCaches = new BucketMembershipCache[bucketCount];
+            this.bucketMembershipCaches = new BucketMembershipCache[bucketCount];
             this.candidateWriteBackByBucket = new CandidateWriteBackCache[bucketCount];
             this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
@@ -390,13 +390,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private BucketMembershipCache bucketCache(int bucketId) {
-        if (bucketId < 0 || bucketId >= bucketCaches.length)
+        if (bucketId < 0 || bucketId >= bucketMembershipCaches.length)
             throw new IllegalArgumentException("Invalid bucketId: " + bucketId);
-        BucketMembershipCache cache = bucketCaches[bucketId];
+        BucketMembershipCache cache = bucketMembershipCaches[bucketId];
         if (cache == null) {
-            long bytesPerBucket = MAX_MEMBERSHIP_CACHE_BYTES / bucketCaches.length;
+            long bytesPerBucket = MAX_MEMBERSHIP_CACHE_BYTES / bucketMembershipCaches.length;
             cache = new BucketMembershipCache(bytesPerBucket);
-            bucketCaches[bucketId] = cache;
+            bucketMembershipCaches[bucketId] = cache;
         }
         return cache;
     }
@@ -572,7 +572,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         long currentEstimatedBytes = 0L;
         long activeBuckets = 0L;
 
-        for (BucketMembershipCache cache : bucketCaches) {
+        for (BucketMembershipCache cache : bucketMembershipCaches) {
             if (cache == null)
                 continue;
             activeBuckets = Math.incrementExact(activeBuckets);
@@ -1060,7 +1060,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     public void close() {
         candidateStateCache.invalidateAll();
 
-        for (BucketMembershipCache cache : bucketCaches) {
+        for (BucketMembershipCache cache : bucketMembershipCaches) {
             if (cache != null)
                 cache.clear();
         }

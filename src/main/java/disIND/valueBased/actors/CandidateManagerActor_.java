@@ -19,7 +19,6 @@ import disIND.valueBased.model.SharedModel.UnaryPair;
 import disIND.valueBased.utility.Debug;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.BitSet;
 import java.util.HashSet;
@@ -87,34 +86,48 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
-        LhsState state = stateFor(msg.lhsCol());
+        if (msg.cmPartition() != partitionId)
+            throw new IllegalArgumentException("Candidate status partition mismatch: expected=" + partitionId
+                    + ", actual=" + msg.cmPartition());
         int bucketId = msg.bucketId();
         if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length)
             return this;
-        if (msg.voSequence() < latestVoSequenceByBucket[bucketId])
-            return this;
         int processedSequence = latestVoSequenceByBucket[bucketId];
+        if (msg.voSequence() <= processedSequence) {
+            msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.CandidateStatusApplied(
+                    bucketId, partitionId, msg.voSequence()));
+            return this;
+        }
         int expectedSequence = Math.incrementExact(processedSequence);
         if (msg.voSequence() != expectedSequence) {
-            throw new IllegalStateException("Missing VO status update: partition=");
+            throw new IllegalStateException("Missing VO status update");
         }
 
-        for (CandidateLocalStatus status : msg.statuses()) {
-            int rhsCol = status.rhsCol();
-            if (rhsCol < 0 || rhsCol >= state.violationCountByRhs.length)
-                continue;
-
-            if (status.valid()) {
-                if (state.violationCountByRhs[rhsCol] == 0) {
-                    getContext().getLog().warn("Unexpected valid transition: rhs={} bucket={} sequence={}",
-                            rhsCol, bucketId, msg.voSequence());
+        for (CMCommand.LhsCandidateStatusUpdate lhsUpdate : msg.lhsUpdates()) {
+            if (CMCommand.partitionFor(lhsUpdate.lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS) != partitionId)
+                throw new IllegalArgumentException(
+                        "LHS " + lhsUpdate.lhsCol() + " does not belong to cm partition " + partitionId);
+            LhsState state = stateFor(lhsUpdate.lhsCol());
+            for (CandidateLocalStatus status : lhsUpdate.statuses()) {
+                int rhsCol = status.rhsCol();
+                if (rhsCol < 0 || rhsCol >= state.violationCountByRhs.length)
                     continue;
+
+                if (status.valid()) {
+                    if (state.violationCountByRhs[rhsCol] == 0) {
+                        getContext().getLog().warn("Unexpected valid transition: lhs={} rhs={} bucket={} sequence={}",
+                                lhsUpdate.lhsCol(), rhsCol, bucketId, msg.voSequence());
+                        continue;
+                    }
+                    state.violationCountByRhs[rhsCol]--;
+                } else {
+                    state.violationCountByRhs[rhsCol]++;
                 }
-                state.violationCountByRhs[rhsCol]--;
-            } else
-                state.violationCountByRhs[rhsCol]++;
+            }
         }
         latestVoSequenceByBucket[bucketId] = msg.voSequence();
+        msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.CandidateStatusApplied(bucketId,
+                partitionId, msg.voSequence()));
         return this;
     }
 

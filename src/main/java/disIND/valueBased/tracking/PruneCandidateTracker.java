@@ -19,6 +19,8 @@ import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.PruneState;
+import disIND.valueBased.membership.CandidateIndex;
+import disIND.valueBased.membership.CandidateSet;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
@@ -35,15 +37,25 @@ public final class PruneCandidateTracker implements CandidateTracker {
     private final PruneMetricsCollector metrics;
     private final TransitiveValidityIndex transitiveValidity;
     private long transitivelyValidated;
+    private final CandidateIndex candidateIndex;
+    private final CandidateSet locallyRejectedCandidates;
 
     public PruneCandidateTracker(ValueOwnerCqf cqf, ValueOwnerClusterIndex clusters,
             int[] localDistinctCounts, int[][] localDistinctCountsByPartition,
-            PruneMetricsCollector metrics) {
+            PruneMetricsCollector metrics, CandidateIndex candidateIndex,
+            CandidateSet locallyRejectedCandidates) {
         this.cqf = cqf;
         this.clusters = Objects.requireNonNull(clusters, "clusters");
         this.localDistinctCounts = Objects.requireNonNull(localDistinctCounts, "localDistinctCounts");
         this.localDistinctCountsByPartition = localDistinctCountsByPartition;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.candidateIndex = Objects.requireNonNull(
+                candidateIndex,
+                "candidateIndex");
+
+        this.locallyRejectedCandidates = Objects.requireNonNull(
+                locallyRejectedCandidates,
+                "locallyRejectedCandidates");
         this.transitiveValidity = new TransitiveValidityIndex(localDistinctCounts.length);
         if (localDistinctCountsByPartition == null)
             return;
@@ -112,7 +124,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
         if (keys.isEmpty())
             return new TrackingResult(Map.of(), new Int2ObjectOpenHashMap<>());
 
-        Map<CandidateKey, CandidateState> previousStates = store.loadCandidates(keys, CandidateTrackingMode.PRUNE);
+        // Map<CandidateKey, CandidateState> previousStates = store.loadCandidates(keys,
+        // CandidateTrackingMode.PRUNE);
         Map<CandidateKey, CandidateState> changedStates = new HashMap<>(keys.size());
         Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
 
@@ -120,9 +133,11 @@ public final class PruneCandidateTracker implements CandidateTracker {
         for (CandidateKey key : keys) {
             long compactKey = CandidateEvaluator.candidateKey(key.lhsCol(), key.rhsCol());
             byte delta = pruneChanges.deltas.get(compactKey);
-            PruneState before = (PruneState) previousStates.get(key);
-            if (before == null)
-                throw new IllegalStateException("No previous prune state for candidate " + key);
+            // PruneState before = (PruneState) previousStates.get(key);
+            PruneState before = previousState(key);
+            // if (before == null)
+            // throw new IllegalStateException("No previous prune state for candidate " +
+            // key);
 
             if (delta == PruneChanges.VIOLATION_CREATED) {
                 transitiveValidity.setValid(key.lhsCol(), key.rhsCol(), false);
@@ -165,7 +180,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
             for (CandidateKey key : cqfViolations) {
                 transitiveValidity.setValid(key.lhsCol(), key.rhsCol(), false);
                 metrics.cqfPruned(key.lhsCol());
-                PruneState before = (PruneState) previousStates.get(key);
+                // PruneState before = (PruneState) previousStates.get(key);
+                PruneState before = previousState(key);
                 recordResult(key, before, PruneState.rejectedByCluster(), changedStates, transitionsByLhs);
             }
 
@@ -194,7 +210,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
                 transitivelyValidated = Math.incrementExact(transitivelyValidated);
                 metrics.transitivelyValidated(key.lhsCol());
                 transitiveValidity.setValid(key.lhsCol(), key.rhsCol(), true);
-                PruneState before = (PruneState) previousStates.get(key);
+                // PruneState before = (PruneState) previousStates.get(key);
+                PruneState before = previousState(key);
                 recordResult(key, before, PruneState.valid(), changedStates, transitionsByLhs);
             }
 
@@ -222,7 +239,8 @@ public final class PruneCandidateTracker implements CandidateTracker {
                         metrics.exactValidated(key.lhsCol());
                         after = PruneState.valid();
                     }
-                    PruneState before = (PruneState) previousStates.get(key);
+                    // PruneState before = (PruneState) previousStates.get(key);
+                    PruneState before = previousState(key);
                     recordResult(key, before, after, changedStates, transitionsByLhs);
                 }
             }
@@ -230,6 +248,23 @@ public final class PruneCandidateTracker implements CandidateTracker {
 
         return new TrackingResult(changedStates, transitionsByLhs);
 
+    }
+
+    @Override
+    public boolean persistsCandidateState() {
+        return false;
+    }
+
+    private PruneState previousState(
+            CandidateKey key) {
+
+        int index = candidateIndex.index(
+                key.lhsCol(),
+                key.rhsCol());
+
+        return locallyRejectedCandidates.contains(index)
+                ? PruneState.rejectedByCluster()
+                : PruneState.valid();
     }
 
     private BitSet[] buildAffectedCandidates(PruneChanges changes) {
@@ -251,12 +286,20 @@ public final class PruneCandidateTracker implements CandidateTracker {
         return affected;
     }
 
-    private static void recordResult(CandidateKey key, PruneState before, PruneState after,
+    private void recordResult(CandidateKey key, PruneState before, PruneState after,
             Map<CandidateKey, CandidateState> changedStates,
             Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs) {
 
-        if (!after.equals(before))
-            changedStates.put(key, after);
+        int index = candidateIndex.index(
+                key.lhsCol(),
+                key.rhsCol());
+        if (after.rejected()) {
+            locallyRejectedCandidates.add(index);
+        } else {
+            locallyRejectedCandidates.remove(index);
+        }
+        // if (!after.equals(before))
+        // changedStates.put(key, after);
         if (before.rejected() != after.rejected()) {
             int lhsCol = key.lhsCol();
             List<CandidateLocalStatus> transitions = transitionsByLhs.get(lhsCol);

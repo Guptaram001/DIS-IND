@@ -1,20 +1,16 @@
 package disIND.valueBased.tracking;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
+import disIND.valueBased.membership.CandidateIndex;
+import disIND.valueBased.membership.CandidateSet;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
-import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.structures.ValueOwnerClusterIndex;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
-import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
-import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
-import disIND.valueBased.structures.ValueOwnerMembershipStore.ExactState;
+
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
@@ -25,13 +21,17 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 public final class ExactCandidateTracker implements CandidateTracker {
 
     private final ValueOwnerClusterIndex clusters;
+    private final CandidateIndex candidateIndex;
+    private final CandidateSet locallyRejectedCandidates;
 
-    public ExactCandidateTracker(ValueOwnerClusterIndex clusters) {
+    public ExactCandidateTracker(ValueOwnerClusterIndex clusters, CandidateIndex candidateIndex,
+            CandidateSet locallyRejectedCandidates) {
         this.clusters = Objects.requireNonNull(clusters, "clusters");
+        this.candidateIndex = Objects.requireNonNull(candidateIndex, "candidateIndex");
+        this.locallyRejectedCandidates = Objects.requireNonNull(locallyRejectedCandidates, "locallyRejectedCandidates");
     }
 
-    private static final class ExactChanges
-            implements CandidateViolationAfterApplyingUpdates {
+    private static final class ExactChanges implements CandidateViolationAfterApplyingUpdates {
 
         private final int bucketId;
         private final LongOpenHashSet candidates = new LongOpenHashSet();
@@ -41,124 +41,72 @@ public final class ExactCandidateTracker implements CandidateTracker {
         }
 
         @Override
-        public void violationCreated(
-                int lhsCol,
-                int rhsCol,
-                int valueId) {
-
-            candidates.add(
-                    CandidateEvaluator.candidateKey(lhsCol, rhsCol));
+        public void violationCreated(int lhsCol, int rhsCol, int valueId) {
+            candidates.add(CandidateEvaluator.candidateKey(lhsCol, rhsCol));
         }
 
         @Override
-        public void violationRepaired(
-                int lhsCol,
-                int rhsCol,
-                int valueId) {
-
-            candidates.add(
-                    CandidateEvaluator.candidateKey(lhsCol, rhsCol));
+        public void violationRepaired(int lhsCol, int rhsCol, int valueId) {
+            candidates.add(CandidateEvaluator.candidateKey(lhsCol, rhsCol));
         }
     }
 
     @Override
-    public CandidateViolationAfterApplyingUpdates newChanges(
-            int bucketId) {
-
+    public CandidateViolationAfterApplyingUpdates newChanges(int bucketId) {
         return new ExactChanges(bucketId);
     }
 
     @Override
-    public TrackingResult apply(
-            CandidateViolationAfterApplyingUpdates changes,
-            Int2ObjectMap<Int2IntMap> updatedMembership,
-            ValueOwnerMembershipStore store) {
+    public boolean persistsCandidateState() {
+        return false;
+    }
+
+    @Override
+    public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
+            Int2ObjectMap<Int2IntMap> updatedMembership, ValueOwnerMembershipStore store) {
 
         Objects.requireNonNull(updatedMembership, "updatedMembership");
         Objects.requireNonNull(store, "store");
 
         if (!(changes instanceof ExactChanges exactChanges)) {
-            throw new IllegalArgumentException(
-                    "Exact tracker received incompatible changes");
+            throw new IllegalArgumentException("Exact tracker received incompatible changes");
         }
 
-        Set<CandidateKey> keys = new HashSet<>(exactChanges.candidates.size());
+        if (exactChanges.candidates.isEmpty()) {
+            return new TrackingResult(Map.of(), new Int2ObjectOpenHashMap<>());
+        }
 
+        LongSet violationKeys = clusters.findViolationKeys(exactChanges.candidates);
+        Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
         LongIterator iterator = exactChanges.candidates.iterator();
-
         while (iterator.hasNext()) {
             long compactKey = iterator.nextLong();
 
-            keys.add(new CandidateKey(
-                    exactChanges.bucketId,
-                    lhsColumn(compactKey),
-                    rhsColumn(compactKey)));
-        }
+            int lhsCol = lhsColumn(compactKey);
+            int rhsCol = rhsColumn(compactKey);
 
-        if (keys.isEmpty()) {
-            return new TrackingResult(
-                    Map.of(),
-                    new Int2ObjectOpenHashMap<>());
-        }
-
-        /*
-         * This is the unconditional exact scan.
-         *
-         * There is no cardinality check, partition check, CQF check,
-         * witness lookup, or violation-count calculation before it.
-         */
-        LongSet violationKeys = clusters.findViolationKeys(
-                exactChanges.candidates);
-
-        Map<CandidateKey, CandidateState> previousStates = store.loadCandidates(
-                keys,
-                CandidateTrackingMode.EXACT);
-
-        Map<CandidateKey, CandidateState> changedStates = new HashMap<>(keys.size());
-
-        Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
-
-        for (CandidateKey key : keys) {
-            ExactState before = (ExactState) previousStates.get(key);
-
-            if (before == null) {
-                throw new IllegalStateException(
-                        "No previous exact state for " + key);
+            int index = candidateIndex.index(lhsCol, rhsCol);
+            boolean rejectedBefore = locallyRejectedCandidates.contains(index);
+            boolean rejectedAfter = violationKeys.contains(compactKey);
+            if (rejectedAfter) {
+                locallyRejectedCandidates.add(index);
+            } else {
+                locallyRejectedCandidates.remove(index);
             }
 
-            long compactKey = CandidateEvaluator.candidateKey(
-                    key.lhsCol(),
-                    key.rhsCol());
-            boolean rejected = violationKeys.contains(compactKey);
-
-            ExactState after = rejected
-                    ? ExactState.rejectedState()
-                    : ExactState.valid();
-
-            if (after.equals(before)) {
+            if (rejectedBefore == rejectedAfter) {
                 continue;
             }
-
-            changedStates.put(key, after);
-
-            List<CandidateLocalStatus> transitions = transitionsByLhs.get(key.lhsCol());
-
+            List<CandidateLocalStatus> transitions = transitionsByLhs.get(lhsCol);
             if (transitions == null) {
                 transitions = new ArrayList<>();
-                transitionsByLhs.put(
-                        key.lhsCol(),
-                        transitions);
+                transitionsByLhs.put(lhsCol, transitions);
             }
 
-            transitions.add(
-                    new CandidateLocalStatus(
-                            key.rhsCol(),
-                            !rejected));
+            transitions.add(new CandidateLocalStatus(rhsCol, !rejectedAfter));
         }
 
-        return new TrackingResult(
-                changedStates,
-                transitionsByLhs);
+        return new TrackingResult(Map.of(), transitionsByLhs);
     }
 
     private static int lhsColumn(long key) {

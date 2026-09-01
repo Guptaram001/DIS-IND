@@ -17,6 +17,8 @@ import disIND.valueBased.membership.ColumnSetFactory;
 import disIND.valueBased.membership.MembershipBatchResult;
 import disIND.valueBased.membership.MembershipUpdater;
 import disIND.valueBased.model.SharedModel.CMCommand;
+import disIND.valueBased.model.SharedModel.CMCommand.LhsCandidateStatusUpdate;
+import disIND.valueBased.model.SharedModel.CMCommand.ValueOwnerCandidateStatusUpdate;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.SharedModel.DataOrientation;
@@ -32,9 +34,13 @@ import disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerRe
 import disIND.valueBased.protocol.ValueOwnerProtocol.MembershipWriteAcknowledged;
 import disIND.valueBased.protocol.ValueOwnerProtocol.MembershipWriteFailed;
 import disIND.valueBased.protocol.ValueOwnerProtocol.RetryMembershipWrite;
+import disIND.valueBased.protocol.ValueOwnerProtocol.CandidateStatusApplied;
+import disIND.valueBased.protocol.ValueOwnerProtocol.RetryCandidateStatusUpdates;
 import disIND.valueBased.protocol.DrainProtocol;
 import disIND.valueBased.protocol.MembershipWriteProtocol;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
+import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.InFlightWrite;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.PreparedWriteBatch;
 import disIND.valueBased.structures.WorkerValueIdStore;
@@ -42,6 +48,7 @@ import disIND.valueBased.tracking.CandidateViolationAfterApplyingUpdates;
 import disIND.valueBased.tracking.CandidateEvaluator;
 import disIND.valueBased.tracking.TrackingResult;
 import disIND.valueBased.tracking.ModeSpecificContext;
+import disIND.valueBased.tracking.PruneCandidateTracker;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
 import disIND.valueBased.monitor.WorkerMetricsFlusher;
@@ -49,14 +56,14 @@ import disIND.valueBased.monitor.WorkerPhaseMetrics;
 import disIND.valueBased.monitor.WorkerPhaseMetrics.Phase;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2BooleanLinkedOpenHashMap;
-import it.unimi.dsi.fastutil.objects.ObjectIterator;
 
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -92,6 +99,11 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private int awaitingPartitionFinalSequence = -1;
     private long nextMembershipBatchId;
     private InFlightWrite inFlightWrite;
+    private static final int MAX_IN_FLIGHT_STATUS_PARTITIONS = 4;
+    private static final Duration STATUS_RETRY_DELAY = Duration.ofSeconds(2);
+    private final List<ArrayDeque<ValueOwnerCandidateStatusUpdate>> pendingStatusByPartition = new ArrayList<>();
+    private final Map<Integer, ValueOwnerCandidateStatusUpdate> inFlightStatusByPartition = new LinkedHashMap<>();
+    private int nextStatusPartition;
 
     static final class DelayedInputAcknowledgments {
         private record InputBatchKey(long epoch, int tableId, int batchId) {
@@ -165,6 +177,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.candidateEvaluator = new CandidateEvaluator(metadata, columnSets, modeSpecificContext, candidateDomain);
 
         this.resolvedBatches = new Long2BooleanLinkedOpenHashMap(recentBatchLimit);
+        for (int partition = 0; partition < UserConfig.DEFAULT_CM_PARTITIONS; partition++)
+            pendingStatusByPartition.add(new ArrayDeque<>());
 
         if (Debug.INTERNAL) {
             getContext().getLog().info(
@@ -183,16 +197,17 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 .onMessage(PartitionCandidateManagerReady.class, this::onPartitionCandidateManagerReady)
                 .onMessage(MembershipWriteAcknowledged.class, this::onMembershipWriteAcknowledged)
                 .onMessage(MembershipWriteFailed.class, this::onMembershipWriteFailed)
+                .onMessage(CandidateStatusApplied.class, this::onCandidateStatusApplied)
                 .onMessageEquals(RetryMembershipWrite.INSTANCE, this::onRetryMembershipWrite)
+                .onMessageEquals(RetryCandidateStatusUpdates.INSTANCE, this::onRetryCandidateStatusUpdates)
                 .onMessageEquals(RetryDrainProbe.INSTANCE, this::onRetryDrainProbe)
                 .build();
     }
 
     private Behavior<Command> onStoreBatch(StoreBatch message) {
         if (Debug.INTERNAL) {
-            getContext().getLog().info(
-                    "[VO] round={} bucket={} epoch={} tableId={} batchId={}",
-                    message.round(), message.bucketId(), message.epoch(), message.tableId(), message.batchId());
+            getContext().getLog().info("[VO] round={} bucket={} epoch={} tableId={} batchId={}", message.round(),
+                    message.bucketId(), message.epoch(), message.tableId(), message.batchId());
         }
 
         if (message.bucketId() != bucketId) {
@@ -247,9 +262,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 .tracker().newChanges(bucketId);
         // Find which IND pairs might have been changed.
         long started = System.nanoTime();
-        candidateEvaluator.evaluate(membership.updatedRecordsByValue(),
-                membership.newlyAddedColumnsByValue(), membership.newlyRemovedColumnsByValue(),
-                candidateViolationAfterApplyingUpdates);
+        candidateEvaluator.evaluate(membership.updatedRecordsByValue(), membership.newlyAddedColumnsByValue(),
+                membership.newlyRemovedColumnsByValue(), candidateViolationAfterApplyingUpdates);
         phaseMetrics.record(Phase.CANDIDATE_EVALUATION, System.nanoTime() - started);
 
         started = System.nanoTime();
@@ -258,7 +272,11 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         phaseMetrics.record(Phase.TRACKER_RESOLUTION, System.nanoTime() - started);
 
         started = System.nanoTime();
-        membershipStore.stage(bucketId, membership.updatedRecordsByValue(), trackingResult.changedStates());
+
+        Map<CandidateKey, CandidateState> candidatesToPersist = modeSpecificContext.tracker()
+                .persistsCandidateState() ? trackingResult.changedStates() : Map.of();
+
+        membershipStore.stage(bucketId, membership.updatedRecordsByValue(), candidatesToPersist);
         phaseMetrics.record(Phase.ROCKSDB_WRITE, System.nanoTime() - started);
         tryStartMembershipWrite();
 
@@ -269,38 +287,96 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     }
 
     private void sendCandidateStatusTransitions(StoreBatch batch,
-            Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs,
-            int affectedCandidateCount) {
+            Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs, int affectedCandidateCount) {
 
         int transitionCount = 0;
         int affectedCms = 0;
-        ObjectIterator<Int2ObjectMap.Entry<List<CandidateLocalStatus>>> iterator = Int2ObjectMaps
-                .fastIterator(transitionsByLhs);
-        while (iterator.hasNext()) {
-            Int2ObjectMap.Entry<List<CandidateLocalStatus>> entry = iterator.next();
-            int lhsCol = entry.getIntKey();
-            List<CandidateLocalStatus> transitions = entry.getValue();
+        Int2ObjectMap<List<LhsCandidateStatusUpdate>> updatesByPartition = new Int2ObjectOpenHashMap<>();
 
-            if (transitions == null || transitions.isEmpty())
+        for (var entry : transitionsByLhs.int2ObjectEntrySet()) {
+            int lhsCol = entry.getIntKey();
+            List<CandidateLocalStatus> statuses = entry.getValue();
+
+            if (statuses == null || statuses.isEmpty())
                 continue;
 
-            if (Debug.INTERNAL) {
-                transitionCount += transitions.size();
-                affectedCms++;
-            }
-            int cmPartition = CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS);
-            int partitionSequence = Math.incrementExact(statusSequenceByPartition[cmPartition]);
-            statusSequenceByPartition[cmPartition] = partitionSequence;
-            sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(cmPartition))
-                    .tell(new CMCommand.ValueOwnerCandidateStatusUpdate(
-                            lhsCol, batch.epoch(), partitionSequence, batch.round(), bucketId, transitions));
+            int partition = CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS);
+            updatesByPartition.computeIfAbsent(partition, ignored -> new ArrayList<>())
+                    .add(new LhsCandidateStatusUpdate(lhsCol, statuses));
         }
+
+        for (var entry : updatesByPartition.int2ObjectEntrySet()) {
+            int partition = entry.getIntKey();
+            int sequence = Math.incrementExact(statusSequenceByPartition[partition]);
+            statusSequenceByPartition[partition] = sequence;
+            pendingStatusByPartition.get(partition).addLast(new ValueOwnerCandidateStatusUpdate(partition,
+                    batch.epoch(), sequence, batch.round(), bucketId, entry.getValue(), getContext().getSelf()));
+            if (Debug.INTERNAL) {
+                affectedCms++;
+                for (LhsCandidateStatusUpdate update : entry.getValue())
+                    transitionCount += update.statuses().size();
+            }
+        }
+        pumpCandidateStatusUpdates();
         if (Debug.INTERNAL) {
             getContext().getLog().info(
                     "[VO] round={} bucket={} epoch={} affectedCandidates={} transitions={} affectedCms={}",
-                    batch.round(), bucketId, batch.epoch(), affectedCandidateCount,
-                    transitionCount, affectedCms);
+                    batch.round(), bucketId, batch.epoch(), affectedCandidateCount, transitionCount, affectedCms);
         }
+    }
+
+    private void pumpCandidateStatusUpdates() {
+        int examined = 0;
+        while (inFlightStatusByPartition.size() < MAX_IN_FLIGHT_STATUS_PARTITIONS
+                && examined < UserConfig.DEFAULT_CM_PARTITIONS) {
+            int partition = nextStatusPartition;
+            nextStatusPartition = (nextStatusPartition + 1) % UserConfig.DEFAULT_CM_PARTITIONS;
+            examined++;
+            if (inFlightStatusByPartition.containsKey(partition))
+                continue;
+            ValueOwnerCandidateStatusUpdate update = pendingStatusByPartition.get(partition).pollFirst();
+            if (update == null)
+                continue;
+            inFlightStatusByPartition.put(partition, update);
+            sendCandidateStatusUpdate(update);
+        }
+        if (!inFlightStatusByPartition.isEmpty())
+            timers.startSingleTimer(RetryCandidateStatusUpdates.INSTANCE, STATUS_RETRY_DELAY);
+    }
+
+    private void sendCandidateStatusUpdate(ValueOwnerCandidateStatusUpdate update) {
+        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(update.cmPartition()))
+                .tell(update);
+    }
+
+    private Behavior<Command> onCandidateStatusApplied(CandidateStatusApplied message) {
+        if (message.bucketId() != bucketId)
+            return this;
+        ValueOwnerCandidateStatusUpdate inFlight = inFlightStatusByPartition.get(message.partitionId());
+        if (inFlight == null || message.sequence() != inFlight.voSequence())
+            return this;
+        inFlightStatusByPartition.remove(message.partitionId());
+        pumpCandidateStatusUpdates();
+        releaseDelayedInputAcknowledgmentIfPossible();
+        return this;
+    }
+
+    private Behavior<Command> onRetryCandidateStatusUpdates() {
+        for (ValueOwnerCandidateStatusUpdate update : inFlightStatusByPartition.values())
+            sendCandidateStatusUpdate(update);
+        if (!inFlightStatusByPartition.isEmpty())
+            timers.startSingleTimer(RetryCandidateStatusUpdates.INSTANCE, STATUS_RETRY_DELAY);
+        return this;
+    }
+
+    private boolean hasPendingCandidateStatusUpdates() {
+        if (!inFlightStatusByPartition.isEmpty())
+            return true;
+        for (ArrayDeque<ValueOwnerCandidateStatusUpdate> queue : pendingStatusByPartition) {
+            if (!queue.isEmpty())
+                return true;
+        }
+        return false;
     }
 
     private Behavior<Command> onFinalizeMembership(FinalizeMembership message) {
@@ -449,6 +525,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
     private void releaseDelayedInputAcknowledgmentIfPossible() {
         if (delayedInputAcknowledgments.isEmpty()
+                || hasPendingCandidateStatusUpdates()
                 || membershipStore.pinnedEstimatedBytes() > UserConfig.DEFAULT_VO_PINNED_LOW_BYTES)
             return;
         delayedInputAcknowledgments.release(bucketId);
@@ -457,7 +534,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private void acknowledge(StoreBatch message) {
         if (message.ackTo() == null)
             return;
-        if (!delayedInputAcknowledgments.isEmpty()
+        if (hasPendingCandidateStatusUpdates()
+                || !delayedInputAcknowledgments.isEmpty()
                 || membershipStore.pinnedEstimatedBytes() >= UserConfig.DEFAULT_VO_PINNED_HIGH_BYTES) {
             delayedInputAcknowledgments.add(message);
             timers.startSingleTimer(RetryMembershipWrite.INSTANCE,

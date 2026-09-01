@@ -262,12 +262,20 @@ public final class SharedModel {
         record MembershipResult(UnaryPair pair, int round, RoaringBitmap missingValues) implements CMCommand {
         }
 
-        record ValueOwnerCandidateStatusUpdate(int lhsCol, long epoch, int voSequence, int round, int bucketId,
-                List<CandidateLocalStatus> statuses) implements CMCommand {
+        record LhsCandidateStatusUpdate(int lhsCol, List<CandidateLocalStatus> statuses) implements AkkaSerializable {
+            public LhsCandidateStatusUpdate {
+                statuses = List.copyOf(statuses);
+            }
+        }
+
+        record ValueOwnerCandidateStatusUpdate(int cmPartition, long epoch, int voSequence, int round, int bucketId,
+                List<LhsCandidateStatusUpdate> lhsUpdates,
+                ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
             public ValueOwnerCandidateStatusUpdate {
                 if (voSequence <= 0)
                     throw new IllegalArgumentException("voSequence must be positive");
-                statuses = List.copyOf(statuses);
+                lhsUpdates = List.copyOf(lhsUpdates);
+                Objects.requireNonNull(replyTo, "replyTo");
             }
         }
 

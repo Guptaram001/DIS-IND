@@ -56,8 +56,7 @@ public final class MembershipUpdater {
                 int previousCount = record.getOrDefault(columnId, 0);
                 int updatedCount = Math.addExact(previousCount, delta);
                 if (updatedCount < 0)
-                    throw new IllegalStateException(
-                            "Membership count became negative");
+                    throw new IllegalStateException("Membership count became negative: bucketId=" + bucketId);
 
                 if (previousCount == 0 && updatedCount > 0) {
                     record.put(columnId, updatedCount);

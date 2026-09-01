@@ -8,6 +8,9 @@ public interface CandidateTracker {
     CandidateViolationAfterApplyingUpdates newChanges(int bucketId);
 
     TrackingResult apply(CandidateViolationAfterApplyingUpdates candidateViolationAfterApplyingUpdates,
-            Int2ObjectMap<Int2IntMap> updatedMembership,
-            ValueOwnerMembershipStore store);
+            Int2ObjectMap<Int2IntMap> updatedMembership, ValueOwnerMembershipStore store);
+
+    default boolean persistsCandidateState() {
+        return true;
+    }
 }

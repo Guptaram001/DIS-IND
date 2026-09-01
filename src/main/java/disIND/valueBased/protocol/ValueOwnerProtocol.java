@@ -17,7 +17,7 @@ public final class ValueOwnerProtocol {
     public sealed interface Command extends AkkaSerializable
             permits StoreBatch, FinalizeMembership, CandidateManagerReady, PartitionCandidateManagerReady,
             DrainQueued, PartitionDrainQueued, RetryDrainProbe, MembershipWriteAcknowledged,
-            MembershipWriteFailed, RetryMembershipWrite {
+            MembershipWriteFailed, RetryMembershipWrite, CandidateStatusApplied, RetryCandidateStatusUpdates {
     }
 
     @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "batchType")
@@ -101,6 +101,13 @@ public final class ValueOwnerProtocol {
     }
 
     public enum RetryMembershipWrite implements Command {
+        INSTANCE
+    }
+
+    public record CandidateStatusApplied(int bucketId, int partitionId, int sequence) implements Command {
+    }
+
+    public enum RetryCandidateStatusUpdates implements Command {
         INSTANCE
     }
 

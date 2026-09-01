@@ -22,7 +22,7 @@ public final class UserConfig {
     public static final long DEFAULT_DELETE_SEED = 12345L; // For reproducibility
     public static final int DEFAULT_BATCH_SIZE = 2;
     public static boolean TYPE_COMPATIBILITY_ENABLED = true;
-    public static final int DEFAULT_CHUNK_SIZE = 6_000_000;
+    public static final int DEFAULT_CHUNK_SIZE = 5_000_000;
     public static final String DEFAULT_DATASET_NAME = "tpch-1";
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
     public static final int MAX_VALUE_OWNER_WITNESSES = 500;

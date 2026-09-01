@@ -96,12 +96,27 @@ public sealed interface ModeSpecificContext
 
         private final BitSet beforeSignature;
         private final BitSet afterSignature;
+        private final CandidateIndex candidateIndex;
+        private final CandidateSet locallyRejectedCandidates;
 
         private ExactContext(int bucketId, int totalColumns) {
             clusters = new ValueOwnerClusterIndex(bucketId, totalColumns);
-            tracker = new ExactCandidateTracker(clusters);
             beforeSignature = new BitSet(totalColumns);
             afterSignature = new BitSet(totalColumns);
+            candidateIndex = new CandidateIndex(totalColumns);
+            locallyRejectedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
+            tracker = new ExactCandidateTracker(clusters, candidateIndex, locallyRejectedCandidates);
+
+        }
+
+        @Override
+        public boolean locallyRejected(int candidateIndex) {
+            return locallyRejectedCandidates.contains(candidateIndex);
+        }
+
+        @Override
+        public int locallyRejectedCount() {
+            return locallyRejectedCandidates.size();
         }
 
         @Override
@@ -156,13 +171,13 @@ public sealed interface ModeSpecificContext
             clusters = new ValueOwnerClusterIndex(bucketId, totalColumns);
             cqf = UserConfig.PRUNE_CQF_ENABLED ? new ValueOwnerCqf(bucketId, totalColumns) : null;
             metrics = new PruneMetricsCollector(totalColumns);
-            tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, localDistinctCountsByPartition,
-                    metrics);
 
             beforeSignature = new BitSet(totalColumns);
             afterSignature = new BitSet(totalColumns);
             candidateIndex = new CandidateIndex(totalColumns);
             locallyRejectedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
+            tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, localDistinctCountsByPartition,
+                    metrics, candidateIndex, locallyRejectedCandidates);
         }
 
         @Override

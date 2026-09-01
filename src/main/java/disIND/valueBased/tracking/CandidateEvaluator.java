@@ -123,14 +123,13 @@ public final class CandidateEvaluator {
                         changes);
             }
 
-            for (int lhsCol = 0; lhsCol < totalColumns; lhsCol++) {
+            for (int lhsCol = candidateDomain.firstCompatibleRhs(changedColumn); lhsCol >= 0; lhsCol = candidateDomain
+                    .nextCompatibleRhs(changedColumn, lhsCol)) {
                 boolean lhsAfter = membershipAfter.containsKey(lhsCol);
                 boolean lhsBefore = containedBefore(lhsCol, membershipAfter, addedColumns, removedColumns);
                 if (!lhsBefore && !lhsAfter)
                     continue;
 
-                if (!candidateDomain.isCompatible(lhsCol, changedColumn))
-                    continue;
                 evaluateCandidateOnce(valueId, lhsCol, changedColumn, membershipAfter, addedColumns, removedColumns,
                         changes);
             }
@@ -152,11 +151,31 @@ public final class CandidateEvaluator {
         if (violatedBefore == violatedAfter)
             return;
 
+        boolean prune = modeSpecificContext.pruningEnabled();
+        if (prune) {
+            if (newlyRejectedThisBatch.contains(index)) {
+                modeSpecificContext.sameBatchSkipped(lhsCol);
+                return;
+            }
+            boolean rejected = modeSpecificContext.locallyRejected(index);
+            if (violatedAfter && rejected) {
+                modeSpecificContext.invalidLhsSkipped(lhsCol);
+                return;
+            }
+            if (!violatedAfter && !rejected) {
+                modeSpecificContext.validRhsSkipped(lhsCol);
+                return;
+            }
+        }
+
         countComparison(lhsCol, index);
-        if (violatedAfter)
+        if (violatedAfter) {
             changes.violationCreated(lhsCol, rhsCol, valueId);
-        else
+            if (prune)
+                newlyRejectedThisBatch.add(index);
+        } else {
             changes.violationRepaired(lhsCol, rhsCol, valueId);
+        }
     }
 
     public void evaluateInsertions(Int2ObjectMap<ColumnSet> addedColumnsByValue,
