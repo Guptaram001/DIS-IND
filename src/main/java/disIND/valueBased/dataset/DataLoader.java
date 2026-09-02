@@ -132,11 +132,12 @@ public final class DataLoader {
         return INDGuardian.Config.withAll(metadata, orientation, candidateTracking);
     }
 
-    public static void run(ActorSystem<BDCommand> system, DatasetMetadata metadata, String csvDir, int chunkSize,
+    public static void run(ActorRef<BDCommand> guardian, ActorSystem<?> system, DatasetMetadata metadata,
+            String csvDir, int chunkSize,
             int timeoutSec,
             String outputFile, DataOrientation orientation) throws Exception {
 
-        AskPattern.ask(system, BDCommand.GetIngestionReady::new, Duration.ofSeconds(10), system.scheduler())
+        AskPattern.ask(guardian, BDCommand.GetIngestionReady::new, Duration.ofSeconds(10), system.scheduler())
                 .toCompletableFuture().get();
         Path dir = Paths.get(csvDir);
         List<String> files = listInputFiles(dir);
@@ -148,14 +149,14 @@ public final class DataLoader {
 
         long pipelineStarted = System.nanoTime();
         long ingestionStarted = pipelineStarted;
-        IngestionResult ingestion = ingestAllInterleaved(system, files, metadata.offsets(), metadata.nCols(), chunkSize,
-                orientation);
+        IngestionResult ingestion = ingestAllInterleaved(guardian, system, files, metadata.offsets(), metadata.nCols(),
+                chunkSize, orientation);
         long ingestionFinished = System.nanoTime();
         long ingestionNanos = ingestionFinished - ingestionStarted;
         System.out.printf("[Loader] Ingestion done: %,d rows " + "in %.3fs%n", ingestion.totalRows(),
                 ingestionNanos / 1_000_000_000.0);
 
-        CompletionStage<BDReply> doneFuture = AskPattern.ask(system, replyTo -> new BDCommand.FinishDiscovery(
+        CompletionStage<BDReply> doneFuture = AskPattern.ask(guardian, replyTo -> new BDCommand.FinishDiscovery(
                 ingestion.finalRound(), ingestion.finalBatchByTable(), replyTo), Duration.ofMinutes(30),
                 system.scheduler());
         doneFuture.toCompletableFuture().get();
@@ -163,7 +164,7 @@ public final class DataLoader {
         long finalizationNanos = finalizationFinished - ingestionFinished;
 
         System.out.println("[Loader] Waiting for discovery result...");
-        CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(system, BDCommand.GetResultCollector::new,
+        CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(guardian, BDCommand.GetResultCollector::new,
                 Duration.ofSeconds(5), system.scheduler());
 
         ActorRef<RCCommand> rcRef = rcFuture.toCompletableFuture().get();
@@ -179,10 +180,11 @@ public final class DataLoader {
                 report.confirmedUnary().size());
         System.out.println("[PIPELINE-METRICS] writtenTo=" + metricsFile);
 
-        system.tell(new BDCommand.Shutdown());
+        guardian.tell(new BDCommand.Shutdown());
     }
 
-    private static IngestionResult ingestAllInterleaved(ActorSystem<BDCommand> system, List<String> files,
+    private static IngestionResult ingestAllInterleaved(ActorRef<BDCommand> guardian, ActorSystem<?> system,
+            List<String> files,
             List<Integer> offsets, List<Integer> nCols, int chunkSize, DataOrientation orientation) throws Exception {
         int n = files.size();
         CSVParser[] parsers = new CSVParser[n];
@@ -198,7 +200,8 @@ public final class DataLoader {
         int preparedQueueCapacity = Math.max(2, creditWindow);
         boolean enforceTblOrdering = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
 
-        AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(system, creditWindow, preparedQueueCapacity,
+        AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
+                preparedQueueCapacity,
                 enforceTblOrdering);
         AtomicInteger nextEpoch = new AtomicInteger();
 
@@ -347,7 +350,8 @@ public final class DataLoader {
 
                 dispatcher.finishAndWait();
                 dispatcher.close();
-                dispatcher = new AsyncBatchDispatcher(system, creditWindow, preparedQueueCapacity, enforceTblOrdering);
+                dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow, preparedQueueCapacity,
+                        enforceTblOrdering);
 
                 int restorationRound = Math.incrementExact(round);
                 round = restorationRound;
@@ -480,7 +484,7 @@ public final class DataLoader {
         return ownerBatches;
     }
 
-    public static CompletionStage<BDReply> sendTableBatch(ActorSystem<BDCommand> system, int epoch,
+    public static CompletionStage<BDReply> sendTableBatch(ActorRef<BDCommand> guardian, ActorSystem<?> system, int epoch,
             int tableId, int startRowId, Map<Integer, BatchBody> ownerBatches,
             int round, int individualBatchId, DataOrientation orientation) {
 

@@ -2,6 +2,7 @@ package disIND.valueBased.actors;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
+import akka.actor.typed.PostStop;
 import akka.actor.typed.Props;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
@@ -20,6 +21,7 @@ import disIND.valueBased.protocol.MembershipWriteProtocol;
 import disIND.valueBased.structures.*;
 import disIND.valueBased.utility.Debug;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.nio.file.Path;
 import disIND.valueBased.utility.UserConfig;
 import disIND.valueBased.monitor.WorkerPhaseMetrics;
@@ -59,6 +61,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private final WorkerValueIdMetrics valueIdMetrics;
     private final WorkerMembershipMetrics membershipMetrics;
     private final WorkerMetricsFlusher workerMetricsFlusher;
+    private final AtomicBoolean storesClosed = new AtomicBoolean();
 
     public static Behavior<BDCommand> create(Config cfg) {
         return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg));
@@ -171,12 +174,22 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
                     return this;
                 })
                 .onMessage(BDCommand.Shutdown.class, msg -> {
-                    workerMetricsFlusher.flushOnce();
-                    workerValueIdStore.close();
-                    valueOwnerMembershipStore.close();
+                    closeStores();
                     return Behaviors.stopped();
                 })
+                .onSignal(PostStop.class, signal -> {
+                    closeStores();
+                    return Behaviors.same();
+                })
                 .build();
+    }
+
+    private void closeStores() {
+        if (!storesClosed.compareAndSet(false, true))
+            return;
+        workerMetricsFlusher.flushOnce();
+        workerValueIdStore.close();
+        valueOwnerMembershipStore.close();
     }
 
 }

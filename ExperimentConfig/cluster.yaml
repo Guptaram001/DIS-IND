@@ -1,0 +1,32 @@
+cluster:
+  ssh_user: clusteruser
+
+  coordinator:
+    host: 192.168.2.234
+    advertised_ip: 192.168.2.234
+    output_base: /data/dis-ind/results
+    java_xmx: 8g
+
+  workers:
+    - {host: 192.168.2.157, advertised_ip: 192.168.2.157}
+    - {host: 192.168.2.89, advertised_ip: 192.168.2.89}
+    - {host: 192.168.2.233, advertised_ip: 192.168.2.233}
+    - {host: 192.168.2.232, advertised_ip: 192.168.2.232}
+    - {host: 192.168.2.90, advertised_ip: 192.168.2.90}
+    - {host: 192.168.2.138, advertised_ip: 192.168.2.138}
+
+  worker_defaults:
+    java_xms: 2g
+    java_xmx: 8g
+
+  akka:
+    port: 2551
+    maximum_frame_size: 64 MiB
+    buffer_pool_size: 4
+    startup_timeout_seconds: 600
+
+deployment:
+  git_url: git@github.com:Guptaram001/DIS-IND.git
+  git_branch: pruneTest
+  project_dir: /home/clusteruser/dis-ind
+  state_base: /home/clusteruser/.local/state/dis-ind

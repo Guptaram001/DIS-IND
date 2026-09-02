@@ -1,0 +1,27 @@
+experiment:
+  name: tpch-prune
+  enabled: true
+  repeats: 1
+  timeout_seconds: 3600
+
+dataset:
+  name: tpch-10
+  input_dir: /data/dis-ind/input/tpch-10
+
+application:
+  data_orientation: value
+  candidate_tracking: prune
+  ingestion_mode: insert-only
+  chunk_size: 5000000
+  prune_cqf_enabled: true
+  prune_partition_counts_enabled: true
+  prune_partition_hierarchy_enabled: true
+  prune_transitive_enabled: true
+  prune_count_partitions: 64
+  cluster_validation: scan
+  exact_event_filtering_enabled: true
+  exact_direct_violation_enabled: true
+
+resources:
+  coordinator_java_xmx: 8g
+  worker_java_xmx: 8g

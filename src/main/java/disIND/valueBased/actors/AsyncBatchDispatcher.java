@@ -1,6 +1,7 @@
 package disIND.valueBased.actors;
 
 import akka.actor.typed.ActorSystem;
+import akka.actor.typed.ActorRef;
 import disIND.valueBased.dataset.DataLoader;
 import disIND.valueBased.dataset.DataLoader.PreparedBatch;
 import disIND.valueBased.model.SharedModel.BDCommand;
@@ -80,10 +81,11 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private final CompletableFuture<Void> dispatcherFinished;
 
-    public AsyncBatchDispatcher(ActorSystem<BDCommand> system, int creditWindow,
+    public AsyncBatchDispatcher(ActorRef<BDCommand> guardian, ActorSystem<?> system, int creditWindow,
             int queueCapacity, boolean enforceTableOrdering) {
         this(creditWindow, queueCapacity, enforceTableOrdering, batch -> DataLoader.sendTableBatch(
-                Objects.requireNonNull(system, "system"), batch.epoch(), batch.tableId(), batch.startRowId(),
+                Objects.requireNonNull(guardian, "guardian"), Objects.requireNonNull(system, "system"),
+                batch.epoch(), batch.tableId(), batch.startRowId(),
                 batch.ownerBatches(), batch.round(), batch.individualBatchId(), batch.orientation()));
     }
 
