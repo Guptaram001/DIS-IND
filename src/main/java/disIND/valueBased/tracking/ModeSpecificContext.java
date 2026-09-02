@@ -5,6 +5,7 @@ import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.membership.CandidateSet;
 import disIND.valueBased.membership.CandidateSetFactory;
 import disIND.valueBased.membership.ColumnSet;
+import disIND.valueBased.membership.RowBitSetCandidateSet;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.SharedModel.PruneMetrics;
 import disIND.valueBased.structures.PruneMetricsCollector;
@@ -41,6 +42,14 @@ public sealed interface ModeSpecificContext
 
     default boolean locallyRejected(int candidateIndex) {
         return false;
+    }
+
+    /** PRUNE-only bulk removal; other modes deliberately leave candidates unchanged. */
+    default void removeLocallyRejected(int lhsCol, BitSet candidates) {
+    }
+
+    /** Records candidates removed in bulk because they were rejected earlier this batch. */
+    default void sameBatchSkipped(int lhsCol, long count) {
     }
 
     default void candidateStatesChanged(Map<CandidateKey, CandidateState> changedStates) {
@@ -177,7 +186,7 @@ public sealed interface ModeSpecificContext
             beforeSignature = new BitSet(totalColumns);
             afterSignature = new BitSet(totalColumns);
             candidateIndex = new CandidateIndex(totalColumns);
-            locallyRejectedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
+            locallyRejectedCandidates = new RowBitSetCandidateSet(totalColumns);
             tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, localDistinctCountsByPartition,
                     metrics, candidateIndex, locallyRejectedCandidates, candidateDomain,
                     UserConfig.PRUNE_TRANSITIVE_ENABLED);
@@ -254,6 +263,12 @@ public sealed interface ModeSpecificContext
         }
 
         @Override
+        public void removeLocallyRejected(int lhsCol, BitSet candidates) {
+            int removed = ((RowBitSetCandidateSet) locallyRejectedCandidates).removeRowFrom(lhsCol, candidates);
+            metrics.invalidLhsSkipped(lhsCol, removed);
+        }
+
+        @Override
         public void candidateStatesChanged(Map<CandidateKey, CandidateState> changedStates) {
             for (Map.Entry<CandidateKey, CandidateState> entry : changedStates.entrySet()) {
                 CandidateKey key = entry.getKey();
@@ -284,6 +299,11 @@ public sealed interface ModeSpecificContext
         @Override
         public void sameBatchSkipped(int lhsCol) {
             metrics.sameBatchSkipped(lhsCol);
+        }
+
+        @Override
+        public void sameBatchSkipped(int lhsCol, long count) {
+            metrics.sameBatchSkipped(lhsCol, count);
         }
 
         @Override

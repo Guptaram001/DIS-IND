@@ -1,6 +1,8 @@
 
 package disIND.valueBased.tracking;
 
+import java.util.BitSet;
+
 import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.membership.CandidateIndex;
 import disIND.valueBased.membership.CandidateSet;
@@ -26,8 +28,12 @@ public final class CandidateEvaluator {
     private final CandidateSet evaluatedCandidates;
     private final CandidateSet newlyRejectedThisBatch;
 
-    private final ColumnSet afterChangeSet;
     private final CandidateSet affectedCandidatesForValue;
+    private final BitSet beforeChangeSet;
+    private final BitSet afterChangeSet;
+    private final BitSet candidateScratch;
+    private final BitSet[] newlyRejectedRhsByLhs;
+    private final BitSet touchedNewlyRejectedLhs;
 
     public CandidateEvaluator(DatasetMetadata metadata, ColumnSetFactory columnSets,
             ModeSpecificContext modeSpecificContext, CandidateDomain candidateDomain) {
@@ -39,12 +45,23 @@ public final class CandidateEvaluator {
         this.candidateIndex = new CandidateIndex(totalColumns);
         this.evaluatedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
         this.newlyRejectedThisBatch = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
-        this.afterChangeSet = columnSets.create();
         this.affectedCandidatesForValue = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
+        this.beforeChangeSet = new BitSet(totalColumns);
+        this.afterChangeSet = new BitSet(totalColumns);
+        this.candidateScratch = new BitSet(totalColumns);
+        if (modeSpecificContext.pruningEnabled()) {
+            this.newlyRejectedRhsByLhs = new BitSet[totalColumns];
+            this.touchedNewlyRejectedLhs = new BitSet(totalColumns);
+        } else {
+            this.newlyRejectedRhsByLhs = null;
+            this.touchedNewlyRejectedLhs = null;
+        }
     }
 
     public void evaluate(Int2ObjectMap<Int2IntMap> updatedRecordsByValue, Int2ObjectMap<ColumnSet> addedColumnsByValue,
             Int2ObjectMap<ColumnSet> removedColumnsByValue, CandidateViolationAfterApplyingUpdates changes) {
+
+        clearNewlyRejectedRows();
 
         if (removedColumnsByValue.isEmpty()) {
             evaluateInsertions(addedColumnsByValue, updatedRecordsByValue, changes);
@@ -103,36 +120,46 @@ public final class CandidateEvaluator {
             ColumnSet removedColumns, CandidateViolationAfterApplyingUpdates changes) {
 
         affectedCandidatesForValue.clear();
-        if (addedColumns != null)
-            evaluateChangedColumns(valueId, membershipAfter, addedColumns, addedColumns, removedColumns, changes);
+        loadAfter(membershipAfter);
+        loadBefore(addedColumns, removedColumns);
 
-        if (removedColumns != null)
-            evaluateChangedColumns(valueId, membershipAfter, removedColumns, addedColumns, removedColumns, changes);
+        if (addedColumns != null) {
+            for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns.nextSetBit(column + 1)) {
+                // New LHS membership creates violations only in RHS columns that do not contain the value.
+                candidateDomain.copyCompatibleRhs(column, candidateScratch);
+                candidateScratch.andNot(afterChangeSet);
+                evaluateCandidates(valueId, column, true, membershipAfter, addedColumns, removedColumns, changes);
 
+                // New RHS membership repairs only LHS memberships that existed before this update.
+                candidateDomain.copyCompatibleLhs(column, candidateScratch);
+                candidateScratch.and(beforeChangeSet);
+                evaluateCandidates(valueId, column, false, membershipAfter, addedColumns, removedColumns, changes);
+            }
+        }
+
+        if (removedColumns != null) {
+            for (int column = removedColumns.nextSetBit(0); column >= 0; column = removedColumns.nextSetBit(column + 1)) {
+                // Removed LHS membership repairs only violations that existed before the update.
+                candidateDomain.copyCompatibleRhs(column, candidateScratch);
+                candidateScratch.andNot(beforeChangeSet);
+                evaluateCandidates(valueId, column, true, membershipAfter, addedColumns, removedColumns, changes);
+
+                // Removed RHS membership creates violations only for LHS columns still containing the value.
+                candidateDomain.copyCompatibleLhs(column, candidateScratch);
+                candidateScratch.and(afterChangeSet);
+                evaluateCandidates(valueId, column, false, membershipAfter, addedColumns, removedColumns, changes);
+            }
+        }
     }
 
-    private void evaluateChangedColumns(int valueId, Int2IntMap membershipAfter, ColumnSet changedColumns,
-            ColumnSet addedColumns, ColumnSet removedColumns, CandidateViolationAfterApplyingUpdates changes) {
-
-        for (int changedColumn = changedColumns.nextSetBit(0); changedColumn >= 0; changedColumn = changedColumns
-                .nextSetBit(changedColumn + 1)) {
-
-            for (int rhsCol = candidateDomain.firstCompatibleRhs(changedColumn); rhsCol >= 0; rhsCol = candidateDomain
-                    .nextCompatibleRhs(changedColumn, rhsCol)) {
-                evaluateCandidateOnce(valueId, changedColumn, rhsCol, membershipAfter, addedColumns, removedColumns,
-                        changes);
-            }
-
-            for (int lhsCol = candidateDomain.firstCompatibleRhs(changedColumn); lhsCol >= 0; lhsCol = candidateDomain
-                    .nextCompatibleRhs(changedColumn, lhsCol)) {
-                boolean lhsAfter = membershipAfter.containsKey(lhsCol);
-                boolean lhsBefore = containedBefore(lhsCol, membershipAfter, addedColumns, removedColumns);
-                if (!lhsBefore && !lhsAfter)
-                    continue;
-
-                evaluateCandidateOnce(valueId, lhsCol, changedColumn, membershipAfter, addedColumns, removedColumns,
-                        changes);
-            }
+    private void evaluateCandidates(int valueId, int changedColumn, boolean changedColumnIsLhs,
+            Int2IntMap membershipAfter, ColumnSet addedColumns, ColumnSet removedColumns,
+            CandidateViolationAfterApplyingUpdates changes) {
+        for (int candidateColumn = candidateScratch.nextSetBit(0); candidateColumn >= 0;
+                candidateColumn = candidateScratch.nextSetBit(candidateColumn + 1)) {
+            int lhsCol = changedColumnIsLhs ? changedColumn : candidateColumn;
+            int rhsCol = changedColumnIsLhs ? candidateColumn : changedColumn;
+            evaluateCandidateOnce(valueId, lhsCol, rhsCol, membershipAfter, addedColumns, removedColumns, changes);
         }
     }
 
@@ -198,52 +225,52 @@ public final class CandidateEvaluator {
                 throw new IllegalStateException("No updated membership for value " + valueId);
 
             loadAfter(updatedRecord);
-
-            for (int lhsCol = addedColumns.nextSetBit(0); lhsCol >= 0; lhsCol = addedColumns.nextSetBit(lhsCol + 1))
-                evaluateCreatedViolations(valueId, lhsCol, afterChangeSet, prune, changes);
-            for (int rhsCol = addedColumns.nextSetBit(0); rhsCol >= 0; rhsCol = addedColumns.nextSetBit(rhsCol + 1))
-                evaluateRepairedViolations(valueId, rhsCol, updatedRecord, addedColumns, prune, changes);
+            for (int lhsCol = addedColumns.nextSetBit(0); lhsCol >= 0;
+                    lhsCol = addedColumns.nextSetBit(lhsCol + 1))
+                evaluateCreatedViolations(valueId, lhsCol, prune, changes);
+            for (int rhsCol = addedColumns.nextSetBit(0); rhsCol >= 0;
+                    rhsCol = addedColumns.nextSetBit(rhsCol + 1))
+                evaluateRepairedViolations(valueId, rhsCol, addedColumns, prune, changes);
         }
     }
 
-    private void evaluateCreatedViolations(int valueId, int lhsCol, ColumnSet after, boolean prune,
+    private void evaluateCreatedViolations(int valueId, int lhsCol, boolean prune,
             CandidateViolationAfterApplyingUpdates changes) {
 
-        for (int rhsCol = candidateDomain.firstCompatibleRhs(lhsCol); rhsCol >= 0; rhsCol = candidateDomain
-                .nextCompatibleRhs(lhsCol, rhsCol)) {
+        candidateDomain.copyCompatibleRhs(lhsCol, candidateScratch);
+        candidateScratch.andNot(afterChangeSet);
+        if (prune) {
+            modeSpecificContext.removeLocallyRejected(lhsCol, candidateScratch);
+            BitSet newlyRejected = newlyRejectedRhsByLhs[lhsCol];
+            if (newlyRejected != null) {
+                int before = candidateScratch.cardinality();
+                candidateScratch.andNot(newlyRejected);
+                modeSpecificContext.sameBatchSkipped(lhsCol, before - candidateScratch.cardinality());
+            }
+        }
+        for (int rhsCol = candidateScratch.nextSetBit(0); rhsCol >= 0;
+                rhsCol = candidateScratch.nextSetBit(rhsCol + 1)) {
             int index = candidateIndex.index(lhsCol, rhsCol);
-            if (prune) {
-                if (modeSpecificContext.locallyRejected(index)) {
-                    modeSpecificContext.invalidLhsSkipped(lhsCol);
-                    continue;
-                }
-                if (newlyRejectedThisBatch.contains(index)) {
-                    modeSpecificContext.sameBatchSkipped(lhsCol);
-                    continue;
-                }
-            }
             countComparison(lhsCol, index);
-            if (!after.contains(rhsCol)) {
-                changes.violationCreated(lhsCol, rhsCol, valueId);
-                if (prune)
-                    newlyRejectedThisBatch.add(index);
-            }
+            changes.violationCreated(lhsCol, rhsCol, valueId);
+            if (prune)
+                markNewlyRejected(lhsCol, rhsCol);
         }
     }
 
-    private void evaluateRepairedViolations(int valueId, int rhsCol, Int2IntMap updatedRecord,
-            ColumnSet addedColumns, boolean prune, CandidateViolationAfterApplyingUpdates changes) {
+    private void evaluateRepairedViolations(int valueId, int rhsCol, ColumnSet addedColumns, boolean prune,
+            CandidateViolationAfterApplyingUpdates changes) {
 
-        IntIterator iterator = updatedRecord.keySet().iterator();
-        while (iterator.hasNext()) {
-            int lhsCol = iterator.nextInt();
-            if (addedColumns.contains(lhsCol))
-                continue;
-            if (!candidateDomain.isCompatible(lhsCol, rhsCol))
-                continue;
+        candidateDomain.copyCompatibleLhs(rhsCol, candidateScratch);
+        candidateScratch.and(afterChangeSet);
+        for (int lhsCol = addedColumns.nextSetBit(0); lhsCol >= 0; lhsCol = addedColumns.nextSetBit(lhsCol + 1))
+            candidateScratch.clear(lhsCol);
+
+        for (int lhsCol = candidateScratch.nextSetBit(0); lhsCol >= 0;
+                lhsCol = candidateScratch.nextSetBit(lhsCol + 1)) {
             int index = candidateIndex.index(lhsCol, rhsCol);
             if (prune) {
-                if (newlyRejectedThisBatch.contains(index)) {
+                if (isNewlyRejected(lhsCol, rhsCol)) {
                     modeSpecificContext.sameBatchSkipped(lhsCol);
                     continue;
                 }
@@ -262,7 +289,44 @@ public final class CandidateEvaluator {
 
         IntIterator iterator = membership.keySet().iterator();
         while (iterator.hasNext())
-            afterChangeSet.add(iterator.nextInt());
+            afterChangeSet.set(iterator.nextInt());
+    }
+
+    private void loadBefore(ColumnSet addedColumns, ColumnSet removedColumns) {
+        beforeChangeSet.clear();
+        beforeChangeSet.or(afterChangeSet);
+        if (addedColumns != null) {
+            for (int column = addedColumns.nextSetBit(0); column >= 0; column = addedColumns.nextSetBit(column + 1))
+                beforeChangeSet.clear(column);
+        }
+        if (removedColumns != null) {
+            for (int column = removedColumns.nextSetBit(0); column >= 0; column = removedColumns.nextSetBit(column + 1))
+                beforeChangeSet.set(column);
+        }
+    }
+
+    private void markNewlyRejected(int lhsCol, int rhsCol) {
+        BitSet row = newlyRejectedRhsByLhs[lhsCol];
+        if (row == null) {
+            row = new BitSet(totalColumns);
+            newlyRejectedRhsByLhs[lhsCol] = row;
+        }
+        row.set(rhsCol);
+        touchedNewlyRejectedLhs.set(lhsCol);
+    }
+
+    private boolean isNewlyRejected(int lhsCol, int rhsCol) {
+        BitSet row = newlyRejectedRhsByLhs[lhsCol];
+        return row != null && row.get(rhsCol);
+    }
+
+    private void clearNewlyRejectedRows() {
+        if (touchedNewlyRejectedLhs == null)
+            return;
+        for (int lhs = touchedNewlyRejectedLhs.nextSetBit(0); lhs >= 0;
+                lhs = touchedNewlyRejectedLhs.nextSetBit(lhs + 1))
+            newlyRejectedRhsByLhs[lhs].clear();
+        touchedNewlyRejectedLhs.clear();
     }
 
     public long candidateEvaluationsFor(int lhsCol) {

@@ -26,12 +26,20 @@ public final class PruneMetricsCollector {
         increment(lhs, INVALID_LHS);
     }
 
+    public void invalidLhsSkipped(int lhs, long count) {
+        add(lhs, INVALID_LHS, count);
+    }
+
     public void validRhsSkipped(int lhs) {
         increment(lhs, VALID_RHS);
     }
 
     public void sameBatchSkipped(int lhs) {
         increment(lhs, SAME_BATCH);
+    }
+
+    public void sameBatchSkipped(int lhs, long count) {
+        add(lhs, SAME_BATCH, count);
     }
 
     public void directLhsRejected(int lhs) {
@@ -77,5 +85,12 @@ public final class PruneMetricsCollector {
 
     private void increment(int lhs, int metric) {
         counts[lhs * METRIC_COUNT + metric]++;
+    }
+
+    private void add(int lhs, int metric, long count) {
+        if (count < 0)
+            throw new IllegalArgumentException("Metric increment cannot be negative: " + count);
+        int index = lhs * METRIC_COUNT + metric;
+        counts[index] = Math.addExact(counts[index], count);
     }
 }

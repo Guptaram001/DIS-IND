@@ -11,6 +11,7 @@ public final class CandidateDomain {
     // Candidate domain for unary with compatibility
     private final int totalColumns;
     private final BitSet[] compatibleRhsByLhs;
+    private BitSet[] compatibleLhsByRhs;
 
     public CandidateDomain(DatasetMetadata metadata) {
         boolean useTypeCompatibility = UserConfig.TYPE_COMPATIBILITY_ENABLED;
@@ -50,5 +51,32 @@ public final class CandidateDomain {
     /** Returns a mutable copy; callers cannot alter the shared candidate domain. */
     public BitSet compatibleRhsSnapshot(int lhs) {
         return (BitSet) compatibleRhsByLhs[lhs].clone();
+    }
+
+    /** Copies the compatible RHS columns into caller-owned reusable storage. */
+    public void copyCompatibleRhs(int lhs, BitSet destination) {
+        destination.clear();
+        destination.or(compatibleRhsByLhs[lhs]);
+    }
+
+    /** Copies the compatible LHS columns into caller-owned reusable storage. */
+    public void copyCompatibleLhs(int rhs, BitSet destination) {
+        ensureReverseCompatibility();
+        destination.clear();
+        destination.or(compatibleLhsByRhs[rhs]);
+    }
+
+    private void ensureReverseCompatibility() {
+        if (compatibleLhsByRhs != null)
+            return;
+        BitSet[] reverse = new BitSet[totalColumns];
+        for (int rhs = 0; rhs < totalColumns; rhs++)
+            reverse[rhs] = new BitSet(totalColumns);
+        for (int lhs = 0; lhs < totalColumns; lhs++) {
+            BitSet rhsSet = compatibleRhsByLhs[lhs];
+            for (int rhs = rhsSet.nextSetBit(0); rhs >= 0; rhs = rhsSet.nextSetBit(rhs + 1))
+                reverse[rhs].set(lhs);
+        }
+        compatibleLhsByRhs = reverse;
     }
 }
