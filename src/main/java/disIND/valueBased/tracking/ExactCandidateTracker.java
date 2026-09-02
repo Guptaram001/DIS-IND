@@ -23,18 +23,26 @@ public final class ExactCandidateTracker implements CandidateTracker {
     private final ValueOwnerClusterIndex clusters;
     private final CandidateIndex candidateIndex;
     private final CandidateSet locallyRejectedCandidates;
+    private final boolean directViolationEnabled;
 
     public ExactCandidateTracker(ValueOwnerClusterIndex clusters, CandidateIndex candidateIndex,
             CandidateSet locallyRejectedCandidates) {
+        this(clusters, candidateIndex, locallyRejectedCandidates, false);
+    }
+
+    public ExactCandidateTracker(ValueOwnerClusterIndex clusters, CandidateIndex candidateIndex,
+            CandidateSet locallyRejectedCandidates, boolean directViolationEnabled) {
         this.clusters = Objects.requireNonNull(clusters, "clusters");
         this.candidateIndex = Objects.requireNonNull(candidateIndex, "candidateIndex");
         this.locallyRejectedCandidates = Objects.requireNonNull(locallyRejectedCandidates, "locallyRejectedCandidates");
+        this.directViolationEnabled = directViolationEnabled;
     }
 
     private static final class ExactChanges implements CandidateViolationAfterApplyingUpdates {
 
         private final int bucketId;
-        private final LongOpenHashSet candidates = new LongOpenHashSet();
+        private final LongOpenHashSet createdViolations = new LongOpenHashSet();
+        private final LongOpenHashSet repairedViolations = new LongOpenHashSet();
 
         private ExactChanges(int bucketId) {
             this.bucketId = bucketId;
@@ -42,12 +50,12 @@ public final class ExactCandidateTracker implements CandidateTracker {
 
         @Override
         public void violationCreated(int lhsCol, int rhsCol, int valueId) {
-            candidates.add(CandidateEvaluator.candidateKey(lhsCol, rhsCol));
+            createdViolations.add(CandidateEvaluator.candidateKey(lhsCol, rhsCol));
         }
 
         @Override
         public void violationRepaired(int lhsCol, int rhsCol, int valueId) {
-            candidates.add(CandidateEvaluator.candidateKey(lhsCol, rhsCol));
+            repairedViolations.add(CandidateEvaluator.candidateKey(lhsCol, rhsCol));
         }
     }
 
@@ -72,41 +80,54 @@ public final class ExactCandidateTracker implements CandidateTracker {
             throw new IllegalArgumentException("Exact tracker received incompatible changes");
         }
 
-        if (exactChanges.candidates.isEmpty()) {
+        if (exactChanges.createdViolations.isEmpty() && exactChanges.repairedViolations.isEmpty()) {
             return new TrackingResult(Map.of(), new Int2ObjectOpenHashMap<>());
         }
 
-        LongSet violationKeys = clusters.findViolationKeys(exactChanges.candidates);
         Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
-        LongIterator iterator = exactChanges.candidates.iterator();
+
+        LongOpenHashSet candidatesToValidate = new LongOpenHashSet(exactChanges.repairedViolations);
+        if (directViolationEnabled) {
+            LongIterator created = exactChanges.createdViolations.iterator();
+            while (created.hasNext())
+                recordStatus(created.nextLong(), true, transitionsByLhs);
+            candidatesToValidate.removeAll(exactChanges.createdViolations);
+        } else {
+            candidatesToValidate.addAll(exactChanges.createdViolations);
+        }
+
+        LongSet violationKeys = clusters.findViolationKeys(candidatesToValidate);
+        LongIterator iterator = candidatesToValidate.iterator();
         while (iterator.hasNext()) {
             long compactKey = iterator.nextLong();
-
-            int lhsCol = lhsColumn(compactKey);
-            int rhsCol = rhsColumn(compactKey);
-
-            int index = candidateIndex.index(lhsCol, rhsCol);
-            boolean rejectedBefore = locallyRejectedCandidates.contains(index);
             boolean rejectedAfter = violationKeys.contains(compactKey);
-            if (rejectedAfter) {
-                locallyRejectedCandidates.add(index);
-            } else {
-                locallyRejectedCandidates.remove(index);
-            }
-
-            if (rejectedBefore == rejectedAfter) {
-                continue;
-            }
-            List<CandidateLocalStatus> transitions = transitionsByLhs.get(lhsCol);
-            if (transitions == null) {
-                transitions = new ArrayList<>();
-                transitionsByLhs.put(lhsCol, transitions);
-            }
-
-            transitions.add(new CandidateLocalStatus(rhsCol, !rejectedAfter));
+            recordStatus(compactKey, rejectedAfter, transitionsByLhs);
         }
 
         return new TrackingResult(Map.of(), transitionsByLhs);
+    }
+
+    private void recordStatus(long compactKey, boolean rejectedAfter,
+            Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs) {
+        int lhsCol = lhsColumn(compactKey);
+        int rhsCol = rhsColumn(compactKey);
+        int index = candidateIndex.index(lhsCol, rhsCol);
+        boolean rejectedBefore = locallyRejectedCandidates.contains(index);
+
+        if (rejectedAfter)
+            locallyRejectedCandidates.add(index);
+        else
+            locallyRejectedCandidates.remove(index);
+
+        if (rejectedBefore == rejectedAfter)
+            return;
+
+        List<CandidateLocalStatus> transitions = transitionsByLhs.get(lhsCol);
+        if (transitions == null) {
+            transitions = new ArrayList<>();
+            transitionsByLhs.put(lhsCol, transitions);
+        }
+        transitions.add(new CandidateLocalStatus(rhsCol, !rejectedAfter));
     }
 
     private static int lhsColumn(long key) {

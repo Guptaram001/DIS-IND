@@ -6,6 +6,7 @@ import java.util.Map;
 import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.IngestionMode;
+import disIND.valueBased.structures.ClusterValidationStrategy;
 
 public final class UserConfig {
     public static boolean inputFileHasHeader;
@@ -48,7 +49,11 @@ public final class UserConfig {
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED = true;
+    public static final boolean DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_TRANSITIVE_ENABLED = false;
+    public static final boolean DEFAULT_EXACT_EVENT_FILTERING_ENABLED = true;
+    public static final boolean DEFAULT_EXACT_DIRECT_VIOLATION_ENABLED = true;
+    public static final ClusterValidationStrategy DEFAULT_CLUSTER_VALIDATION_STRATEGY = ClusterValidationStrategy.SCAN;
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
     public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 100_000;
@@ -83,7 +88,11 @@ public final class UserConfig {
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static boolean PRUNE_CQF_ENABLED = DEFAULT_PRUNE_CQF_ENABLED;
     public static boolean PRUNE_PARTITION_COUNTS_ENABLED = DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED;
+    public static boolean PRUNE_PARTITION_HIERARCHY_ENABLED = DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED;
     public static boolean PRUNE_TRANSITIVE_ENABLED = DEFAULT_PRUNE_TRANSITIVE_ENABLED;
+    public static boolean EXACT_EVENT_FILTERING_ENABLED = DEFAULT_EXACT_EVENT_FILTERING_ENABLED;
+    public static boolean EXACT_DIRECT_VIOLATION_ENABLED = DEFAULT_EXACT_DIRECT_VIOLATION_ENABLED;
+    public static ClusterValidationStrategy CLUSTER_VALIDATION_STRATEGY = DEFAULT_CLUSTER_VALIDATION_STRATEGY;
     public static int PRUNE_COUNT_PARTITIONS = DEFAULT_PRUNE_COUNT_PARTITIONS;
     public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
     public static int VALUE_OWNER_HOT_ENTRIES = DEFAULT_VALUE_OWNER_HOT_ENTRIES;
@@ -116,7 +125,11 @@ public final class UserConfig {
         CLI_PROPERTIES.put("store-value-strings", "dis.ind.store-value-strings");
         CLI_PROPERTIES.put("prune-cqf-enabled", "dis.ind.prune-cqf-enabled");
         CLI_PROPERTIES.put("prune-partition-counts-enabled", "dis.ind.prune-partition-counts-enabled");
+        CLI_PROPERTIES.put("prune-partition-hierarchy-enabled", "dis.ind.prune-partition-hierarchy-enabled");
         CLI_PROPERTIES.put("prune-count-partitions", "dis.ind.prune-count-partitions");
+        CLI_PROPERTIES.put("cluster-validation", "dis.ind.cluster-validation");
+        CLI_PROPERTIES.put("exact-event-filtering-enabled", "dis.ind.exact-event-filtering-enabled");
+        CLI_PROPERTIES.put("exact-direct-violation-enabled", "dis.ind.exact-direct-violation-enabled");
         CLI_PROPERTIES.put("value-id-hot-entries", "dis.ind.value-id-hot-entries");
         CLI_PROPERTIES.put("value-id-disk-dir", "dis.ind.value-id-disk-dir");
         CLI_PROPERTIES.put("value-to-rows-disk-dir", "dis.ind.value-to-rows-disk-dir");
@@ -175,10 +188,18 @@ public final class UserConfig {
                 "dis.ind.prune-cqf-enabled", DEFAULT_PRUNE_CQF_ENABLED);
         PRUNE_PARTITION_COUNTS_ENABLED = booleanSetting("DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED",
                 "dis.ind.prune-partition-counts-enabled", DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED);
+        PRUNE_PARTITION_HIERARCHY_ENABLED = booleanSetting("DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED",
+                "dis.ind.prune-partition-hierarchy-enabled", DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED);
         PRUNE_TRANSITIVE_ENABLED = booleanSetting("DIS_IND_PRUNE_TRANSITIVE_ENABLED",
                 "dis.ind.prune-transitive-enabled", DEFAULT_PRUNE_TRANSITIVE_ENABLED);
         PRUNE_COUNT_PARTITIONS = powerOfTwoSetting("DIS_IND_PRUNE_COUNT_PARTITIONS",
                 "dis.ind.prune-count-partitions", DEFAULT_PRUNE_COUNT_PARTITIONS);
+        CLUSTER_VALIDATION_STRATEGY = clusterValidationStrategySetting("DIS_IND_CLUSTER_VALIDATION",
+                "dis.ind.cluster-validation", DEFAULT_CLUSTER_VALIDATION_STRATEGY);
+        EXACT_EVENT_FILTERING_ENABLED = booleanSetting("DIS_IND_EXACT_EVENT_FILTERING_ENABLED",
+                "dis.ind.exact-event-filtering-enabled", DEFAULT_EXACT_EVENT_FILTERING_ENABLED);
+        EXACT_DIRECT_VIOLATION_ENABLED = booleanSetting("DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED",
+                "dis.ind.exact-direct-violation-enabled", DEFAULT_EXACT_DIRECT_VIOLATION_ENABLED);
         VALUE_ID_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
                 "dis.ind.value-id-hot-entries", DEFAULT_VALUE_ID_HOT_ENTRIES);
         VALUE_ID_DISK_DIR = stringSetting("DIS_IND_VALUE_ID_DISK_DIR",
@@ -334,6 +355,20 @@ public final class UserConfig {
             case "exact" -> CandidateTrackingMode.EXACT;
             default -> throw new IllegalArgumentException(
                     settingName(environmentName, propertyName) + " must be count, exact,prune,or witness: " + value);
+        };
+    }
+
+    private static ClusterValidationStrategy clusterValidationStrategySetting(String environmentName,
+            String propertyName, ClusterValidationStrategy fallback) {
+        String value = stringSetting(environmentName, propertyName, null);
+        if (value == null)
+            return fallback;
+
+        return switch (value.trim().toLowerCase()) {
+            case "scan", "current" -> ClusterValidationStrategy.SCAN;
+            case "lhs-cache", "lhs_cache", "cache", "cached" -> ClusterValidationStrategy.LHS_CACHE;
+            default -> throw new IllegalArgumentException(settingName(environmentName, propertyName)
+                    + " must be scan or lhs-cache: " + value);
         };
     }
 

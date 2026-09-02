@@ -13,7 +13,15 @@ import it.unimi.dsi.fastutil.longs.LongIterator;
 public final class ValueOwnerClusterIndex {
     private final int bucketId;
     private final int totalColumns;
+    private final ClusterValidationStrategy validationStrategy;
     private final Object2IntOpenHashMap<BitSet> valueCountsBySignature = new Object2IntOpenHashMap<>();
+
+    private final BitSet[] commonRhsByLhs;
+    private final BitSet dirtyLhs;
+    private long cacheHits;
+    private long cacheRebuilds;
+    private long cacheInvalidations;
+    private long cacheRebuildSignatureVisits;
 
     private int peakActiveClusters;
     private long activeValues;
@@ -38,13 +46,35 @@ public final class ValueOwnerClusterIndex {
     }
 
     public ValueOwnerClusterIndex(int bucketId, int totalColumns) {
+        this(bucketId, totalColumns, ClusterValidationStrategy.SCAN);
+    }
+
+    public ValueOwnerClusterIndex(int bucketId, int totalColumns, ClusterValidationStrategy validationStrategy) {
         if (bucketId < 0)
             throw new IllegalArgumentException("bucketId must not be negative");
         if (totalColumns <= 0)
             throw new IllegalArgumentException("totalColumns must be positive");
         this.bucketId = bucketId;
         this.totalColumns = totalColumns;
+        this.validationStrategy = Objects.requireNonNull(validationStrategy, "validationStrategy");
         valueCountsBySignature.defaultReturnValue(0);
+        if (validationStrategy == ClusterValidationStrategy.LHS_CACHE) {
+            commonRhsByLhs = new BitSet[totalColumns];
+            dirtyLhs = new BitSet(totalColumns);
+            dirtyLhs.set(0, totalColumns);
+        } else {
+            commonRhsByLhs = null;
+            dirtyLhs = null;
+        }
+    }
+
+    public record CacheMetrics(ClusterValidationStrategy strategy, long hits, long rebuilds, long invalidations,
+            long rebuildSignatureVisits) {
+    }
+
+    public CacheMetrics cacheMetrics() {
+        return new CacheMetrics(validationStrategy, cacheHits, cacheRebuilds, cacheInvalidations,
+                cacheRebuildSignatureVisits);
     }
 
     public void moveMembership(BitSet oldSignature, BitSet newSignature) {
@@ -79,8 +109,10 @@ public final class ValueOwnerClusterIndex {
     private void increment(BitSet signature) {
         int previous = valueCountsBySignature.getInt(signature);
         if (previous == 0) {
-            valueCountsBySignature.put((BitSet) signature.clone(), 1);
+            BitSet storedSignature = (BitSet) signature.clone();
+            valueCountsBySignature.put(storedSignature, 1);
             clusterCreations = Math.incrementExact(clusterCreations);
+            signatureAdded(storedSignature);
         } else {
             valueCountsBySignature.put(signature, Math.addExact(previous, 1));
         }
@@ -94,8 +126,37 @@ public final class ValueOwnerClusterIndex {
         if (previous == 1) {
             valueCountsBySignature.removeInt(signature);
             clusterRemovals = Math.incrementExact(clusterRemovals);
+            signatureRemoved(signature);
         } else {
             valueCountsBySignature.put(signature, previous - 1);
+        }
+    }
+
+    private void signatureAdded(BitSet signature) {
+        if (validationStrategy != ClusterValidationStrategy.LHS_CACHE)
+            return;
+
+        for (int lhs = signature.nextSetBit(0); lhs >= 0; lhs = signature.nextSetBit(lhs + 1)) {
+            if (dirtyLhs.get(lhs))
+                continue;
+
+            BitSet cached = commonRhsByLhs[lhs];
+            if (cached == null)
+                commonRhsByLhs[lhs] = (BitSet) signature.clone();
+            else
+                cached.and(signature);
+        }
+    }
+
+    private void signatureRemoved(BitSet signature) {
+        if (validationStrategy != ClusterValidationStrategy.LHS_CACHE)
+            return;
+
+        for (int lhs = signature.nextSetBit(0); lhs >= 0; lhs = signature.nextSetBit(lhs + 1)) {
+            if (!dirtyLhs.get(lhs)) {
+                dirtyLhs.set(lhs);
+                cacheInvalidations = Math.incrementExact(cacheInvalidations);
+            }
         }
     }
 
@@ -139,6 +200,13 @@ public final class ValueOwnerClusterIndex {
         }
 
         LongOpenHashSet violations = new LongOpenHashSet();
+        if (validationStrategy == ClusterValidationStrategy.LHS_CACHE) {
+            long signatureVisits = findViolationKeysCached(candidateRhsByLhs, violations);
+            long elapsedNanos = System.nanoTime() - scanStarted;
+            recordScan(candidates.size(), lhsGroups, signatureVisits, violations.size(), elapsedNanos);
+            return violations;
+        }
+
         long signatureVisits = 0L;
         for (int lhs = 0; lhs < totalColumns; lhs++) {
             BitSet rhsCandidates = candidateRhsByLhs[lhs];
@@ -172,6 +240,50 @@ public final class ValueOwnerClusterIndex {
         recordScan(candidates.size(), lhsGroups, signatureVisits, violations.size(), elapsedNanos);
 
         return violations;
+    }
+
+    private long findViolationKeysCached(BitSet[] candidateRhsByLhs, LongOpenHashSet violations) {
+        long visitsBefore = cacheRebuildSignatureVisits;
+        for (int lhs = 0; lhs < totalColumns; lhs++) {
+            BitSet rhsCandidates = candidateRhsByLhs[lhs];
+            if (rhsCandidates == null)
+                continue;
+
+            BitSet cached = commonRhsFor(lhs);
+            if (cached == null)
+                continue;
+
+            BitSet invalidRhs = (BitSet) rhsCandidates.clone();
+            invalidRhs.andNot(cached);
+            for (int rhs = invalidRhs.nextSetBit(0); rhs >= 0; rhs = invalidRhs.nextSetBit(rhs + 1))
+                violations.add(candidateKey(lhs, rhs));
+        }
+        return cacheRebuildSignatureVisits - visitsBefore;
+    }
+
+    private BitSet commonRhsFor(int lhs) {
+        if (!dirtyLhs.get(lhs)) {
+            cacheHits = Math.incrementExact(cacheHits);
+            return commonRhsByLhs[lhs];
+        }
+
+        BitSet intersection = null;
+        long visits = 0L;
+        for (BitSet signature : valueCountsBySignature.keySet()) {
+            visits = Math.incrementExact(visits);
+            if (!signature.get(lhs))
+                continue;
+            if (intersection == null)
+                intersection = (BitSet) signature.clone();
+            else
+                intersection.and(signature);
+        }
+
+        commonRhsByLhs[lhs] = intersection;
+        dirtyLhs.clear(lhs);
+        cacheRebuilds = Math.incrementExact(cacheRebuilds);
+        cacheRebuildSignatureVisits = Math.addExact(cacheRebuildSignatureVisits, visits);
+        return intersection;
     }
 
     private static long candidateKey(int lhs, int rhs) {

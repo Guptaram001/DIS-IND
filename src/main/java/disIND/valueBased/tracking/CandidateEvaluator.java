@@ -49,7 +49,7 @@ public final class CandidateEvaluator {
         this.beforeChangeSet = new BitSet(totalColumns);
         this.afterChangeSet = new BitSet(totalColumns);
         this.candidateScratch = new BitSet(totalColumns);
-        if (modeSpecificContext.pruningEnabled()) {
+        if (modeSpecificContext.candidateEventFilteringEnabled()) {
             this.newlyRejectedRhsByLhs = new BitSet[totalColumns];
             this.touchedNewlyRejectedLhs = new BitSet(totalColumns);
         } else {
@@ -178,8 +178,8 @@ public final class CandidateEvaluator {
         if (violatedBefore == violatedAfter)
             return;
 
-        boolean prune = modeSpecificContext.pruningEnabled();
-        if (prune) {
+        boolean filterEvents = modeSpecificContext.candidateEventFilteringEnabled();
+        if (filterEvents) {
             if (newlyRejectedThisBatch.contains(index)) {
                 modeSpecificContext.sameBatchSkipped(lhsCol);
                 return;
@@ -198,7 +198,7 @@ public final class CandidateEvaluator {
         countComparison(lhsCol, index);
         if (violatedAfter) {
             changes.violationCreated(lhsCol, rhsCol, valueId);
-            if (prune)
+            if (filterEvents)
                 newlyRejectedThisBatch.add(index);
         } else {
             changes.violationRepaired(lhsCol, rhsCol, valueId);
@@ -211,7 +211,7 @@ public final class CandidateEvaluator {
 
         evaluatedCandidates.clear();
         newlyRejectedThisBatch.clear();
-        boolean prune = modeSpecificContext.pruningEnabled();
+        boolean filterEvents = modeSpecificContext.candidateEventFilteringEnabled();
 
         ObjectIterator<Int2ObjectMap.Entry<ColumnSet>> valueIterator = Int2ObjectMaps.fastIterator(
                 addedColumnsByValue);
@@ -227,19 +227,19 @@ public final class CandidateEvaluator {
             loadAfter(updatedRecord);
             for (int lhsCol = addedColumns.nextSetBit(0); lhsCol >= 0;
                     lhsCol = addedColumns.nextSetBit(lhsCol + 1))
-                evaluateCreatedViolations(valueId, lhsCol, prune, changes);
+                evaluateCreatedViolations(valueId, lhsCol, filterEvents, changes);
             for (int rhsCol = addedColumns.nextSetBit(0); rhsCol >= 0;
                     rhsCol = addedColumns.nextSetBit(rhsCol + 1))
-                evaluateRepairedViolations(valueId, rhsCol, addedColumns, prune, changes);
+                evaluateRepairedViolations(valueId, rhsCol, addedColumns, filterEvents, changes);
         }
     }
 
-    private void evaluateCreatedViolations(int valueId, int lhsCol, boolean prune,
+    private void evaluateCreatedViolations(int valueId, int lhsCol, boolean filterEvents,
             CandidateViolationAfterApplyingUpdates changes) {
 
         candidateDomain.copyCompatibleRhs(lhsCol, candidateScratch);
         candidateScratch.andNot(afterChangeSet);
-        if (prune) {
+        if (filterEvents) {
             modeSpecificContext.removeLocallyRejected(lhsCol, candidateScratch);
             BitSet newlyRejected = newlyRejectedRhsByLhs[lhsCol];
             if (newlyRejected != null) {
@@ -253,12 +253,12 @@ public final class CandidateEvaluator {
             int index = candidateIndex.index(lhsCol, rhsCol);
             countComparison(lhsCol, index);
             changes.violationCreated(lhsCol, rhsCol, valueId);
-            if (prune)
+            if (filterEvents)
                 markNewlyRejected(lhsCol, rhsCol);
         }
     }
 
-    private void evaluateRepairedViolations(int valueId, int rhsCol, ColumnSet addedColumns, boolean prune,
+    private void evaluateRepairedViolations(int valueId, int rhsCol, ColumnSet addedColumns, boolean filterEvents,
             CandidateViolationAfterApplyingUpdates changes) {
 
         candidateDomain.copyCompatibleLhs(rhsCol, candidateScratch);
@@ -269,7 +269,7 @@ public final class CandidateEvaluator {
         for (int lhsCol = candidateScratch.nextSetBit(0); lhsCol >= 0;
                 lhsCol = candidateScratch.nextSetBit(lhsCol + 1)) {
             int index = candidateIndex.index(lhsCol, rhsCol);
-            if (prune) {
+            if (filterEvents) {
                 if (isNewlyRejected(lhsCol, rhsCol)) {
                     modeSpecificContext.sameBatchSkipped(lhsCol);
                     continue;

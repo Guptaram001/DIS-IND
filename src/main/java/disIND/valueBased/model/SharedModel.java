@@ -142,10 +142,13 @@ public final class SharedModel {
 
     public record PruneMetrics(long invalidLhsSkips, long validRhsSkips, long sameBatchSkips, long directLhsRejections,
             long wholeCountPruned, long partitionCountPruned, long cqfPruned, long transitivelyValidated,
-            long exactTested, long exactRejected, long exactValidated) implements AkkaSerializable {
+            long exactTested, long exactRejected, long exactValidated,
+            long partition4Pruned, long partition16Pruned, long partitionFinePruned,
+            long partition4Comparisons, long partition16Comparisons, long partitionFineComparisons)
+            implements AkkaSerializable {
 
         public static PruneMetrics empty() {
-            return new PruneMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new PruneMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         public PruneMetrics plus(PruneMetrics other) {
@@ -159,7 +162,13 @@ public final class SharedModel {
                     Math.addExact(cqfPruned, other.cqfPruned),
                     Math.addExact(transitivelyValidated, other.transitivelyValidated),
                     Math.addExact(exactTested, other.exactTested), Math.addExact(exactRejected, other.exactRejected),
-                    Math.addExact(exactValidated, other.exactValidated));
+                    Math.addExact(exactValidated, other.exactValidated),
+                    Math.addExact(partition4Pruned, other.partition4Pruned),
+                    Math.addExact(partition16Pruned, other.partition16Pruned),
+                    Math.addExact(partitionFinePruned, other.partitionFinePruned),
+                    Math.addExact(partition4Comparisons, other.partition4Comparisons),
+                    Math.addExact(partition16Comparisons, other.partition16Comparisons),
+                    Math.addExact(partitionFineComparisons, other.partitionFineComparisons));
         }
     }
 

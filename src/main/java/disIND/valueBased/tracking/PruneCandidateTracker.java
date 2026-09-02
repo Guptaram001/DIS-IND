@@ -34,7 +34,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
     private final ValueOwnerCqf cqf;
     private final ValueOwnerClusterIndex clusters;
     private final int[] localDistinctCounts;
-    private final int[][] localDistinctCountsByPartition;
+    private final PartitionCountHierarchy partitionCounts;
     private final PruneMetricsCollector metrics;
     private final TransitiveValidityIndex transitiveValidity;
     private long transitivelyValidated;
@@ -43,14 +43,14 @@ public final class PruneCandidateTracker implements CandidateTracker {
     private final boolean transitiveEnabled;
 
     public PruneCandidateTracker(ValueOwnerCqf cqf, ValueOwnerClusterIndex clusters,
-            int[] localDistinctCounts, int[][] localDistinctCountsByPartition,
+            int[] localDistinctCounts, PartitionCountHierarchy partitionCounts,
             PruneMetricsCollector metrics, CandidateIndex candidateIndex,
             CandidateSet locallyRejectedCandidates, CandidateDomain candidateDomain,
             boolean transitiveEnabled) {
         this.cqf = cqf;
         this.clusters = Objects.requireNonNull(clusters, "clusters");
         this.localDistinctCounts = Objects.requireNonNull(localDistinctCounts, "localDistinctCounts");
-        this.localDistinctCountsByPartition = localDistinctCountsByPartition;
+        this.partitionCounts = partitionCounts;
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.candidateIndex = Objects.requireNonNull(candidateIndex, "candidateIndex");
         this.locallyRejectedCandidates = Objects.requireNonNull(locallyRejectedCandidates, "locallyRejectedCandidates");
@@ -60,20 +60,6 @@ public final class PruneCandidateTracker implements CandidateTracker {
             Objects.requireNonNull(candidateDomain, "candidateDomain");
             for (int lhs = 0; lhs < localDistinctCounts.length; lhs++)
                 transitiveValidity.initializeValid(lhs, candidateDomain.compatibleRhsSnapshot(lhs));
-        }
-        if (localDistinctCountsByPartition == null)
-            return;
-        if (localDistinctCountsByPartition.length != localDistinctCounts.length)
-            throw new IllegalArgumentException("Partition-count columns must match distinct-count columns");
-        int partitionCount = -1;
-        for (int[] counts : localDistinctCountsByPartition) {
-            Objects.requireNonNull(counts, "partition count row");
-            if (counts.length == 0 || (counts.length & (counts.length - 1)) != 0)
-                throw new IllegalArgumentException("Partition count must be a positive power of two");
-            if (partitionCount < 0)
-                partitionCount = counts.length;
-            else if (counts.length != partitionCount)
-                throw new IllegalArgumentException("Every column must use the same partition count");
         }
     }
 
@@ -164,9 +150,10 @@ public final class PruneCandidateTracker implements CandidateTracker {
                 continue;
             }
 
-            if (rejectedByPartitionCounts(lhsCol, rhsCol)) {
+            PartitionCountHierarchy.CheckResult partitionResult = checkPartitionCounts(lhsCol, rhsCol);
+            if (partitionResult.rejected()) {
                 setTransitiveValid(lhsCol, rhsCol, false);
-                metrics.partitionCountPruned(lhsCol);
+                metrics.partitionCountPruned(lhsCol, partitionResult.rejectionLevel());
                 recordResult(key, before, PruneState.rejectedByCardinality(), transitionsByLhs);
                 continue;
             }
@@ -320,15 +307,12 @@ public final class PruneCandidateTracker implements CandidateTracker {
         return localDistinctCounts[columnId];
     }
 
-    private boolean rejectedByPartitionCounts(int lhsCol, int rhsCol) {
-        if (localDistinctCountsByPartition == null)
-            return false;
-        int[] lhsCounts = localDistinctCountsByPartition[lhsCol];
-        int[] rhsCounts = localDistinctCountsByPartition[rhsCol];
-        for (int partition = 0; partition < lhsCounts.length; partition++) {
-            if (lhsCounts[partition] > rhsCounts[partition])
-                return true;
-        }
-        return false;
+    private PartitionCountHierarchy.CheckResult checkPartitionCounts(int lhsCol, int rhsCol) {
+        if (partitionCounts == null)
+            return new PartitionCountHierarchy.CheckResult(false, 0, 0, 0, 0);
+        PartitionCountHierarchy.CheckResult result = partitionCounts.check(lhsCol, rhsCol);
+        metrics.partitionComparisons(lhsCol, result.comparisons4(), result.comparisons16(),
+                result.comparisonsFine());
+        return result;
     }
 }

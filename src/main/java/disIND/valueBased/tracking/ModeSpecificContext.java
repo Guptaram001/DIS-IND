@@ -31,6 +31,10 @@ public sealed interface ModeSpecificContext
         return false;
     }
 
+    default boolean candidateEventFilteringEnabled() {
+        return pruningEnabled();
+    }
+
     default void membershipAdded(int columnId, int valueId) {
     }
 
@@ -44,11 +48,9 @@ public sealed interface ModeSpecificContext
         return false;
     }
 
-    /** PRUNE-only bulk removal; other modes deliberately leave candidates unchanged. */
     default void removeLocallyRejected(int lhsCol, BitSet candidates) {
     }
 
-    /** Records candidates removed in bulk because they were rejected earlier this batch. */
     default void sameBatchSkipped(int lhsCol, long count) {
     }
 
@@ -111,12 +113,15 @@ public sealed interface ModeSpecificContext
         private final CandidateSet locallyRejectedCandidates;
 
         private ExactContext(int bucketId, int totalColumns) {
-            clusters = new ValueOwnerClusterIndex(bucketId, totalColumns);
+            clusters = new ValueOwnerClusterIndex(bucketId, totalColumns, UserConfig.CLUSTER_VALIDATION_STRATEGY);
             beforeSignature = new BitSet(totalColumns);
             afterSignature = new BitSet(totalColumns);
             candidateIndex = new CandidateIndex(totalColumns);
-            locallyRejectedCandidates = CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
-            tracker = new ExactCandidateTracker(clusters, candidateIndex, locallyRejectedCandidates);
+            locallyRejectedCandidates = UserConfig.EXACT_EVENT_FILTERING_ENABLED
+                    ? new RowBitSetCandidateSet(totalColumns)
+                    : CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
+            tracker = new ExactCandidateTracker(clusters, candidateIndex, locallyRejectedCandidates,
+                    UserConfig.EXACT_DIRECT_VIOLATION_ENABLED);
 
         }
 
@@ -133,6 +138,17 @@ public sealed interface ModeSpecificContext
         @Override
         public ExactCandidateTracker tracker() {
             return tracker;
+        }
+
+        @Override
+        public boolean candidateEventFilteringEnabled() {
+            return UserConfig.EXACT_EVENT_FILTERING_ENABLED;
+        }
+
+        @Override
+        public void removeLocallyRejected(int lhsCol, BitSet candidates) {
+            if (UserConfig.EXACT_EVENT_FILTERING_ENABLED)
+                ((RowBitSetCandidateSet) locallyRejectedCandidates).removeRowFrom(lhsCol, candidates);
         }
 
         @Override
@@ -164,7 +180,7 @@ public sealed interface ModeSpecificContext
     final class PruneContext implements ModeSpecificContext {
         private final PruneCandidateTracker tracker;
         private final int[] localDistinctCounts;
-        private final int[][] localDistinctCountsByPartition;
+        private final PartitionCountHierarchy partitionCounts;
         private final ValueOwnerClusterIndex clusters;
         private final ValueOwnerCqf cqf;
         private final PruneMetricsCollector metrics;
@@ -176,10 +192,11 @@ public sealed interface ModeSpecificContext
 
         private PruneContext(int bucketId, int totalColumns, CandidateDomain candidateDomain) {
             localDistinctCounts = new int[totalColumns];
-            localDistinctCountsByPartition = UserConfig.PRUNE_PARTITION_COUNTS_ENABLED
-                    ? new int[totalColumns][UserConfig.PRUNE_COUNT_PARTITIONS]
+            partitionCounts = UserConfig.PRUNE_PARTITION_COUNTS_ENABLED
+                    ? new PartitionCountHierarchy(totalColumns, UserConfig.PRUNE_COUNT_PARTITIONS,
+                            UserConfig.PRUNE_PARTITION_HIERARCHY_ENABLED)
                     : null;
-            clusters = new ValueOwnerClusterIndex(bucketId, totalColumns);
+            clusters = new ValueOwnerClusterIndex(bucketId, totalColumns, UserConfig.CLUSTER_VALIDATION_STRATEGY);
             cqf = UserConfig.PRUNE_CQF_ENABLED ? new ValueOwnerCqf(bucketId, totalColumns) : null;
             metrics = new PruneMetricsCollector(totalColumns);
 
@@ -187,7 +204,7 @@ public sealed interface ModeSpecificContext
             afterSignature = new BitSet(totalColumns);
             candidateIndex = new CandidateIndex(totalColumns);
             locallyRejectedCandidates = new RowBitSetCandidateSet(totalColumns);
-            tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, localDistinctCountsByPartition,
+            tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, partitionCounts,
                     metrics, candidateIndex, locallyRejectedCandidates, candidateDomain,
                     UserConfig.PRUNE_TRANSITIVE_ENABLED);
         }
@@ -205,11 +222,8 @@ public sealed interface ModeSpecificContext
         @Override
         public void membershipAdded(int columnId, int valueId) {
             localDistinctCounts[columnId] = Math.addExact(localDistinctCounts[columnId], 1);
-            if (localDistinctCountsByPartition != null) {
-                int partition = countPartition(valueId, localDistinctCountsByPartition[columnId].length);
-                localDistinctCountsByPartition[columnId][partition] = Math.addExact(
-                        localDistinctCountsByPartition[columnId][partition], 1);
-            }
+            if (partitionCounts != null)
+                partitionCounts.add(columnId, valueId);
             if (cqf != null)
                 cqf.addMembership(columnId, valueId);
         }
@@ -243,15 +257,8 @@ public sealed interface ModeSpecificContext
                         + " columnId=" + columnId + ", valueId=" + valueId);
 
             localDistinctCounts[columnId] = previousDistinctCount - 1;
-            if (localDistinctCountsByPartition != null) {
-                int partition = countPartition(valueId, localDistinctCountsByPartition[columnId].length);
-                int previousPartitionCount = localDistinctCountsByPartition[columnId][partition];
-                if (previousPartitionCount <= 0) {
-                    throw new IllegalStateException("Cannot remove missing partition membership:"
-                            + " columnId=" + columnId + ", valueId=" + valueId + ", partition=" + partition);
-                }
-                localDistinctCountsByPartition[columnId][partition] = previousPartitionCount - 1;
-            }
+            if (partitionCounts != null)
+                partitionCounts.remove(columnId, valueId);
             if (cqf != null)
                 cqf.removeMembership(columnId, valueId);
 
@@ -316,14 +323,5 @@ public sealed interface ModeSpecificContext
             return locallyRejectedCandidates.size();
         }
 
-        private static int countPartition(int valueId, int partitionCount) {
-            int hash = valueId;
-            hash ^= hash >>> 16;
-            hash *= 0x7feb352d;
-            hash ^= hash >>> 15;
-            hash *= 0x846ca68b;
-            hash ^= hash >>> 16;
-            return hash & (partitionCount - 1);
-        }
     }
 }

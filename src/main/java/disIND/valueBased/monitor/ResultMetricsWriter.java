@@ -80,6 +80,30 @@ public final class ResultMetricsWriter {
                                 + metrics.partitionCountPruned()
                                 + "\tcandidates\n"
 
+                                + "partition_4_pruned\t"
+                                + metrics.partition4Pruned()
+                                + "\tcandidates\n"
+
+                                + "partition_16_pruned\t"
+                                + metrics.partition16Pruned()
+                                + "\tcandidates\n"
+
+                                + "partition_fine_pruned\t"
+                                + metrics.partitionFinePruned()
+                                + "\tcandidates\n"
+
+                                + "partition_4_comparisons\t"
+                                + metrics.partition4Comparisons()
+                                + "\tpartition_comparisons\n"
+
+                                + "partition_16_comparisons\t"
+                                + metrics.partition16Comparisons()
+                                + "\tpartition_comparisons\n"
+
+                                + "partition_fine_comparisons\t"
+                                + metrics.partitionFineComparisons()
+                                + "\tpartition_comparisons\n"
+
                                 + "cqf_pruned\t"
                                 + metrics.cqfPruned()
                                 + "\tcandidates\n"
