@@ -277,7 +277,7 @@ public final class SharedModel {
             }
         }
 
-        record ValueOwnerCandidateStatusUpdate(int cmPartition, long epoch, int voSequence, int round, int bucketId,
+        record ValueOwnerCandidateStatusUpdate(int voSequence, int bucketId,
                 List<LhsCandidateStatusUpdate> lhsUpdates,
                 ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
             public ValueOwnerCandidateStatusUpdate {

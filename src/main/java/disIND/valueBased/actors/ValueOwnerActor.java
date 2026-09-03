@@ -39,6 +39,7 @@ import disIND.valueBased.protocol.ValueOwnerProtocol.RetryCandidateStatusUpdates
 import disIND.valueBased.protocol.DrainProtocol;
 import disIND.valueBased.protocol.MembershipWriteProtocol;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.ValueOwnerBatchCodec;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.InFlightWrite;
@@ -230,7 +231,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         // handles the incoming message into valueId-colId-count for both cases as
         // deltas
         long started = System.nanoTime();
-        MembershipUpdates updates = batchProcessor.process(bucketId, message.body(), valueIdStore);
+        MembershipUpdates updates = batchProcessor.process(bucketId,
+                ValueOwnerBatchCodec.decode(message.orientation(), message.body()), valueIdStore);
         phaseMetrics.record(Phase.BATCH_PREPARATION, System.nanoTime() - started);
 
         applyUpdates(message, updates);
@@ -309,8 +311,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             int partition = entry.getIntKey();
             int sequence = Math.incrementExact(statusSequenceByPartition[partition]);
             statusSequenceByPartition[partition] = sequence;
-            pendingStatusByPartition.get(partition).addLast(new ValueOwnerCandidateStatusUpdate(partition,
-                    batch.epoch(), sequence, batch.round(), bucketId, entry.getValue(), getContext().getSelf()));
+            pendingStatusByPartition.get(partition).addLast(new ValueOwnerCandidateStatusUpdate(
+                    sequence, bucketId, entry.getValue(), getContext().getSelf()));
             if (Debug.INTERNAL) {
                 affectedCms++;
                 for (LhsCandidateStatusUpdate update : entry.getValue())
@@ -338,14 +340,14 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             if (update == null)
                 continue;
             inFlightStatusByPartition.put(partition, update);
-            sendCandidateStatusUpdate(update);
+            sendCandidateStatusUpdate(partition, update);
         }
         if (!inFlightStatusByPartition.isEmpty())
             timers.startSingleTimer(RetryCandidateStatusUpdates.INSTANCE, STATUS_RETRY_DELAY);
     }
 
-    private void sendCandidateStatusUpdate(ValueOwnerCandidateStatusUpdate update) {
-        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(update.cmPartition()))
+    private void sendCandidateStatusUpdate(int partition, ValueOwnerCandidateStatusUpdate update) {
+        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(partition))
                 .tell(update);
     }
 
@@ -362,8 +364,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     }
 
     private Behavior<Command> onRetryCandidateStatusUpdates() {
-        for (ValueOwnerCandidateStatusUpdate update : inFlightStatusByPartition.values())
-            sendCandidateStatusUpdate(update);
+        for (var entry : inFlightStatusByPartition.entrySet())
+            sendCandidateStatusUpdate(entry.getKey(), entry.getValue());
         if (!inFlightStatusByPartition.isEmpty())
             timers.startSingleTimer(RetryCandidateStatusUpdates.INSTANCE, STATUS_RETRY_DELAY);
         return this;

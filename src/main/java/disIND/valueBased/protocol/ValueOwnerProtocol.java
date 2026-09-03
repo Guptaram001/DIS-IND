@@ -23,10 +23,19 @@ public final class ValueOwnerProtocol {
     @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "batchType")
     @JsonSubTypes({
             @JsonSubTypes.Type(value = ValueMajorBatch.class, name = "value-major"),
-            @JsonSubTypes.Type(value = ColumnMajorBatch.class, name = "column-major")
+            @JsonSubTypes.Type(value = ColumnMajorBatch.class, name = "column-major"),
+            @JsonSubTypes.Type(value = CompressedBatch.class, name = "compressed")
     })
     public sealed interface BatchBody extends AkkaSerializable
-            permits ValueMajorBatch, ColumnMajorBatch {
+            permits ValueMajorBatch, ColumnMajorBatch, CompressedBatch {
+    }
+
+    public record CompressedBatch(int formatVersion, int uncompressedSize, byte[] bytes) implements BatchBody {
+        public CompressedBatch {
+            if (formatVersion <= 0 || uncompressedSize < 0)
+                throw new IllegalArgumentException("Invalid compressed batch metadata");
+            bytes = Objects.requireNonNull(bytes, "bytes").clone();
+        }
     }
 
     public record ColumnRows(int columnId, int count) implements AkkaSerializable {
@@ -64,7 +73,7 @@ public final class ValueOwnerProtocol {
         public StoreBatch {
             Objects.requireNonNull(orientation, "orientation");
             Objects.requireNonNull(body, "body");
-            boolean matchingBody = switch (orientation) {
+            boolean matchingBody = body instanceof CompressedBatch || switch (orientation) {
                 case VALUE_MAJOR -> body instanceof ValueMajorBatch;
                 case COLUMN_MAJOR -> body instanceof ColumnMajorBatch;
             };

@@ -86,9 +86,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     }
 
     private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
-        if (msg.cmPartition() != partitionId)
-            throw new IllegalArgumentException("Candidate status partition mismatch: expected=" + partitionId
-                    + ", actual=" + msg.cmPartition());
         int bucketId = msg.bucketId();
         if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length)
             return this;

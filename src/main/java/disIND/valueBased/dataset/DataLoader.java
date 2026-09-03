@@ -14,6 +14,7 @@ import disIND.valueBased.ingestion.ValueMajorBatchBuilder;
 import disIND.valueBased.model.SharedModel;
 import disIND.valueBased.model.SharedModel.*;
 import disIND.valueBased.protocol.ValueOwnerProtocol.BatchBody;
+import disIND.valueBased.structures.ValueOwnerBatchCodec;
 import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
 import disIND.valueBased.utility.InferDataAttributes;
 import disIND.valueBased.utility.UserConfig;
@@ -509,7 +510,7 @@ public final class DataLoader {
                     ownerBatches.forEach((ownerId, body) -> sharding
                             .entityRefFor(ValueOwnerActor.TYPE_KEY, ValueOwnerActor.entityId(ownerId))
                             .tell(new StoreBatch(epoch, tableId, individualBatchId, round,
-                                    ownerId, orientation, body, completionRef)));
+                                    ownerId, orientation, ValueOwnerBatchCodec.encode(orientation, body), completionRef)));
                     return completion;
                 });
     }
