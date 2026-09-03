@@ -5,8 +5,8 @@ experiment:
   timeout_seconds: 3600
 
 dataset:
-  name: tpch-10
-  input_dir: /data/dis-ind/input/tpch-1
+  name: tpch-1
+  input_dir: /home/node/DIS-IND/data/tpch-1
 
 application:
   data_orientation: value
