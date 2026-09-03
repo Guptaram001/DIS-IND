@@ -258,14 +258,22 @@ collect_worker_diagnostics() {
     local destination="$COORDINATOR_OUTPUT_DIR/nodes"
     echo "Collecting node diagnostics under $COORDINATOR:$destination"
     remote "$COORDINATOR" mkdir -p "$destination/coordinator"
-    remote "$COORDINATOR" tar -C "$REMOTE_STATE_DIR" -czf - diagnostics logs | \
-        remote "$COORDINATOR" "tar -C $(printf '%q' "$destination/coordinator") -xzf -"
+    if remote "$COORDINATOR" test -d "$REMOTE_STATE_DIR"; then
+        remote "$COORDINATOR" tar -C "$REMOTE_STATE_DIR" -czf - diagnostics logs | \
+            remote "$COORDINATOR" "tar -C $(printf '%q' "$destination/coordinator") -xzf -"
+    else
+        echo "[$COORDINATOR] No runtime diagnostics were created"
+    fi
     local worker
     for worker in "${WORKER_HOSTS[@]}"; do
         local remote_destination
         printf -v remote_destination '%q' "$destination/$worker"
-        remote "$worker" tar -C "$REMOTE_STATE_DIR" -czf - diagnostics logs | \
-            remote "$COORDINATOR" "mkdir -p $remote_destination && tar -C $remote_destination -xzf -"
+        if remote "$worker" test -d "$REMOTE_STATE_DIR"; then
+            remote "$worker" tar -C "$REMOTE_STATE_DIR" -czf - diagnostics logs | \
+                remote "$COORDINATOR" "mkdir -p $remote_destination && tar -C $remote_destination -xzf -"
+        else
+            echo "[$worker] No runtime diagnostics were created"
+        fi
     done
 }
 
