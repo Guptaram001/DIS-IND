@@ -456,9 +456,9 @@ public final class UserConfig {
                 fileEnding = ".csv";
             }
             case "tpch-1" -> {
-                separator = "|";
+                separator = ",";
                 inputFileHasHeader = false;
-                fileEnding = ".tbl";
+                fileEnding = ".csv";
             }
             case "tpch-1-local" -> {
                 separator = "|";
