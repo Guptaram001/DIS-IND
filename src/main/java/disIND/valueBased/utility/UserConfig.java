@@ -460,6 +460,11 @@ public final class UserConfig {
                 inputFileHasHeader = false;
                 fileEnding = ".tbl";
             }
+            case "tpch-1-local" -> {
+                separator = "|";
+                inputFileHasHeader = false;
+                fileEnding = ".tbl";
+            }
             case "tpch-10" -> {
                 separator = "|";
                 inputFileHasHeader = false;
