@@ -21,7 +21,7 @@ cluster:
 
   akka:
     port: 2551
-    maximum_frame_size: 64 MiB
+    maximum_frame_size: 64MiB
     buffer_pool_size: 4
     startup_timeout_seconds: 600
 
