@@ -6,7 +6,7 @@ experiment:
 
 dataset:
   name: tpch-1
-  input_dir: /home/node/DIS-IND/data/tpch-1
+  input_dir: /home/node/DIS-IND/data/uniprot
 
 application:
   data_orientation: value
