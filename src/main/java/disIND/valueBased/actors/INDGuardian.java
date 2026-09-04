@@ -187,9 +187,8 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         if (!storesClosed.compareAndSet(false, true))
             return;
         workerMetricsFlusher.flushOnce();
-        WorkerValueIdStore.LogicalStorageSnapshot valueIdStorage = workerValueIdStore.finalStorageSnapshot();
-        ValueOwnerMembershipStore.LogicalStorageSnapshot membershipStorage =
-                valueOwnerMembershipStore.finalStorageSnapshot();
+        WorkerValueIdStore.DBSnapshot valueIdStorage = workerValueIdStore.finalStorageSnapshot();
+        ValueOwnerMembershipStore.DBSnapshot membershipStorage = valueOwnerMembershipStore.finalStorageSnapshot();
         metricsWriter.writeAuxiliaryStorage(valueIdStorage, membershipStorage);
         workerValueIdStore.close();
         valueOwnerMembershipStore.close();
