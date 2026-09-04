@@ -5,8 +5,8 @@ experiment:
   timeout_seconds: 3600
 
 dataset:
-  name: uniprot
-  input_dir: /home/node/DIS-IND/data/uniprot
+  name: census
+  input_dir: /home/node/DIS-IND/data/census
 
 application:
   data_orientation: value
