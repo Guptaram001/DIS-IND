@@ -19,7 +19,7 @@ public final class UserConfig {
     public static final String DEFAULT_INPUT_DIR = "data/synthetic";
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
     public static final IngestionMode DEFAULT_INGESTION_MODE = IngestionMode.INSERT_ONLY;
-    public static final double DEFAULT_DELETE_PERCENT = 0.0;
+    public static final double DEFAULT_DELETE_PERCENT = 10.0;
     public static final long DEFAULT_DELETE_SEED = 12345L; // For reproducibility
     public static final int DEFAULT_BATCH_SIZE = 2;
     public static boolean TYPE_COMPATIBILITY_ENABLED = true;

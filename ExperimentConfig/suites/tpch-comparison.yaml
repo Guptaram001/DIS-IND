@@ -3,3 +3,4 @@ suite:
   stop_on_failure: true
   experiments:
     - ../experiments/01-uniprot-prune.yaml
+    - ../experiments/02-tpch-prune.yaml

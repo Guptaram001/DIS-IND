@@ -5,8 +5,8 @@ experiment:
   timeout_seconds: 3600
 
 dataset:
-  name: wikipedia
-  input_dir: /home/node/DIS-IND/data/wikipedia
+  name: imdb
+  input_dir: /home/node/DIS-IND/data/imdb
 
 application:
   data_orientation: value
