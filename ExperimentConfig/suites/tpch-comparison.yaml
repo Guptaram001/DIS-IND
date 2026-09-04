@@ -2,5 +2,4 @@ suite:
   name: tpch-comparison
   stop_on_failure: true
   experiments:
-    - ../experiments/01-tpch-count.yaml
-    - ../experiments/02-tpch-prune.yaml
+    - ../experiments/01-uniprot-prune.yaml
