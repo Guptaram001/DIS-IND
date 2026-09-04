@@ -59,7 +59,7 @@ public final class WorkerMembershipMetrics {
                         long maximumEstimatedBytes, long activeBuckets) {
 
                 return new Snapshot(cacheHits.sum(), cacheMisses.sum(), cacheEvictions.sum(),
-                                currentEntries, currentEstimatedBytes, maximumEstimatedBytes,
+                                currentEntries, maximumEstimatedBytes,
                                 activeBuckets, rocksReadCalls.sum(), rocksReadKeys.sum(),
                                 rocksReadNanos.sum(), rocksWriteCalls.sum(), rocksWriteNanos.sum(),
                                 logicalBytesWritten.sum(), membershipRecordsWritten.sum(),
@@ -73,7 +73,7 @@ public final class WorkerMembershipMetrics {
         }
 
         public record Snapshot(long cacheHits, long cacheMisses, long cacheEvictions, long currentEntries,
-                        long currentEstimatedBytes, long maximumEstimatedBytes, long activeBuckets, long rocksReadCalls,
+                        long maximumEstimatedBytes, long activeBuckets, long rocksReadCalls,
                         long rocksReadKeys, long rocksReadNanos, long rocksWriteCalls, long rocksWriteNanos,
                         long logicalBytesWritten, long membershipRecordsWritten, long candidateRecordsWritten,
                         long candidateRecordsDeleted) {
@@ -87,20 +87,20 @@ public final class WorkerMembershipMetrics {
                         return requests == 0L ? 0.0 : (double) cacheHits / requests;
                 }
 
-                public double rocksReadMillis() {
-                        return rocksReadNanos / 1_000_000.0;
+                public double rocksReadSecs() {
+                        return rocksReadNanos / 1_000_000_000.0;
                 }
 
                 public double averageReadMicrosPerKey() {
                         return rocksReadKeys == 0L ? 0.0 : (rocksReadNanos / 1_000.0) / rocksReadKeys;
                 }
 
-                public double rocksWriteMillis() {
-                        return rocksWriteNanos / 1_000_000.0;
+                public double rocksWriteSecs() {
+                        return rocksWriteNanos / 1_000_000_000.0;
                 }
 
-                public double averageWriteMillis() {
-                        return rocksWriteCalls == 0L ? 0.0 : rocksWriteMillis() / rocksWriteCalls;
+                public double averageWriteSecs() {
+                        return rocksWriteCalls == 0L ? 0.0 : rocksWriteSecs() / rocksWriteCalls;
                 }
 
                 public double averageBytesPerWrite() {

@@ -236,13 +236,9 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
             if (throwable == null)
                 promoteNextForTable(batch.tableId());
         }
-        if (throwable != null) {
-            System.err.printf(
-                    "[BATCH-DISPATCH-FAILURE] epoch=%d table=%d batch=%d round=%d queued=%d inFlight=%d cause=%s%n",
-                    batch.epoch(), batch.tableId(), batch.individualBatchId(), batch.round(),
-                    queued.get(), inFlight.get(), throwable);
+        if (throwable != null)
             throw new CompletionException(throwable);
-        }
+
         return availableCredits;
     }
 
@@ -274,20 +270,9 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
             return;
 
         InFlightBatch oldest = oldestInFlight.get();
-        int outstanding = maximumOutstanding - outstandingSlots.availablePermits();
-        if (oldest == null) {
-            System.out.printf(
-                    "[BATCH-DISPATCH] reason=%s submitted=%d completed=%d queued=%d outstanding=%d/%d inFlight=%d producerFinished=%s%n",
-                    reason, submitted.get(), completed.get(), queued.get(), outstanding, maximumOutstanding,
-                    inFlight.get(), producerFinished.get());
+        if (oldest == null)
             return;
-        }
-        double oldestSeconds = (now - oldest.startedNanos()) / 1_000_000_000.0;
-        System.out.printf(
-                "[BATCH-DISPATCH] reason=%s submitted=%d completed=%d queued=%d outstanding=%d/%d inFlight=%d oldestTable=%d oldestBatch=%d oldestRound=%d oldestSeconds=%.1f producerFinished=%s%n",
-                reason, submitted.get(), completed.get(), queued.get(), outstanding, maximumOutstanding,
-                inFlight.get(), oldest.tableId(), oldest.batchId(), oldest.round(), oldestSeconds,
-                producerFinished.get());
+
     }
 
     private void recordFailure(Throwable throwable) {

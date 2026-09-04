@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
+import disIND.valueBased.structures.ValueOwnerMembershipStore;
+import disIND.valueBased.structures.WorkerValueIdStore;
 
 public final class WorkerMetricsWriter {
 
@@ -34,6 +36,30 @@ public final class WorkerMetricsWriter {
                 writeValueIdMetrics(valueId);
                 writeMembershipMetrics(membership);
                 writeBatchPhaseMetrics(phaseMetrics);
+        }
+
+        public void writeAuxiliaryStorage(WorkerValueIdStore.DBSnapshot valueIds,
+                        ValueOwnerMembershipStore.DBSnapshot membership) {
+                long logicalTotal = Math.addExact(valueIds.logicalBytes(), membership.logicalBytes());
+                long physicalTotal = Math.addExact(valueIds.physicalDiskBytes(), membership.physicalDiskBytes());
+                String contents = "metric\tvalue\tunit\n"
+                                + "value_id_records\t" + valueIds.valueRecords() + "\trecords\n"
+                                + "value_id_key_bytes\t" + valueIds.valueKeyBytes() + "\tbytes\n"
+                                + "value_id_value_bytes\t" + valueIds.valueBytes() + "\tbytes\n"
+                                + "value_id_metadata_records\t" + valueIds.metadataRecords() + "\trecords\n"
+                                + "value_id_metadata_bytes\t"
+                                + (valueIds.metadataKeyBytes() + valueIds.metadataValueBytes()) + "\tbytes\n"
+                                + "membership_records\t" + membership.membershipRecords() + "\trecords\n"
+                                + "membership_key_bytes\t" + membership.membershipKeyBytes() + "\tbytes\n"
+                                + "membership_value_bytes\t" + membership.membershipValueBytes() + "\tbytes\n"
+                                + "candidate_records\t" + membership.candidateRecords() + "\trecords\n"
+                                + "candidate_key_bytes\t" + membership.candidateKeyBytes() + "\tbytes\n"
+                                + "candidate_value_bytes\t" + membership.candidateValueBytes() + "\tbytes\n"
+                                + "logical_auxiliary_bytes\t" + logicalTotal + "\tbytes\n"
+                                + "value_id_physical_disk_bytes\t" + valueIds.physicalDiskBytes() + "\tbytes\n"
+                                + "membership_physical_disk_bytes\t" + membership.physicalDiskBytes() + "\tbytes\n"
+                                + "physical_disk_bytes\t" + physicalTotal + "\tbytes\n";
+                write("auxiliary-storage.tsv", contents, "AUXILIARY-STORAGE");
         }
 
         private void writeValueIdMetrics(WorkerValueIdMetrics.Snapshot metrics) {
@@ -63,24 +89,44 @@ public final class WorkerMetricsWriter {
                                 + metrics.currentEntries()
                                 + "\tentries\n"
 
-                                + "cache_maximum_entries\t"
+                                + "cache_maximum_entries_per_owner\t"
                                 + metrics.maximumEntries()
                                 + "\tentries\n"
 
+                                // In multiget a batch may have multi keys. So count of batches. 1 read call may
+                                // have muletiple keys.
                                 + "rocksdb_read_batches\t"
                                 + metrics.rocksReadBatches()
                                 + "\toperations\n"
 
+                                // Total keys requested.
                                 + "rocksdb_read_keys\t"
                                 + metrics.rocksReadKeys()
                                 + "\tkeys\n"
 
-                                + "rocksdb_read_time_ns\t"
-                                + metrics.rocksReadNanos()
-                                + "\tnanoseconds\n"
+                                + "rocksdb_read_time_sec\t"
+                                + metrics.rocksReadSec()
+                                + "\tseconds\n"
 
-                                + "rocksdb_read_time_ms\t"
-                                + metrics.rocksReadMillis()
+                                + "rocksdb_average_read_in_sec_per_key\t"
+                                + metrics.averageReadInSecsPerKey()
+                                + "\tmicroseconds_per_key\n"
+
+                                // total number of batch write operation , can contain 100 records
+                                + "rocksdb_write_calls\t"
+                                + metrics.rocksWriteCalls()
+                                + "\toperations\n"
+
+                                + "rocksdb_write_records\t"
+                                + metrics.rocksWriteRecords()
+                                + "\trecords\n"
+
+                                + "rocksdb_write_time_sec\t"
+                                + metrics.rocksWriteSecs()
+                                + "\tseconds\n"
+
+                                + "rocksdb_average_write_time_sec\t"
+                                + metrics.averageWriteInSec()
                                 + "\tmilliseconds\n";
 
                 write("value-id-cache-metrics.tsv", contents, "VALUE-ID-CACHE-METRICS");
@@ -114,10 +160,6 @@ public final class WorkerMetricsWriter {
                                 + metrics.currentEntries()
                                 + "\tentries\n"
 
-                                + "cache_current_estimated_bytes\t"
-                                + metrics.currentEstimatedBytes()
-                                + "\tbytes\n"
-
                                 + "cache_maximum_estimated_bytes\t"
                                 + metrics.maximumEstimatedBytes()
                                 + "\tbytes\n"
@@ -126,23 +168,21 @@ public final class WorkerMetricsWriter {
                                 + metrics.activeBuckets()
                                 + "\tbuckets\n"
 
+                                // No. of multi read operations.
                                 + "rocksdb_read_calls\t"
                                 + metrics.rocksReadCalls()
                                 + "\toperations\n"
 
+                                // Total membership keys asked
                                 + "rocksdb_read_keys\t"
                                 + metrics.rocksReadKeys()
                                 + "\tkeys\n"
 
-                                + "rocksdb_read_time_ns\t"
-                                + metrics.rocksReadNanos()
-                                + "\tnanoseconds\n"
+                                + "rocksdb_read_time_sec\t"
+                                + metrics.rocksReadSecs()
+                                + "\tseconds\n"
 
-                                + "rocksdb_read_time_ms\t"
-                                + metrics.rocksReadMillis()
-                                + "\tmilliseconds\n"
-
-                                + "rocksdb_average_read_us_per_key\t"
+                                + "rocksdb_average_read_in_sec_per_key\t"
                                 + metrics.averageReadMicrosPerKey()
                                 + "\tmicroseconds_per_key\n"
 
@@ -150,17 +190,13 @@ public final class WorkerMetricsWriter {
                                 + metrics.rocksWriteCalls()
                                 + "\toperations\n"
 
-                                + "rocksdb_write_time_ns\t"
-                                + metrics.rocksWriteNanos()
-                                + "\tnanoseconds\n"
+                                + "rocksdb_write_time_sec\t"
+                                + metrics.rocksWriteSecs()
+                                + "\tseconds\n"
 
-                                + "rocksdb_write_time_ms\t"
-                                + metrics.rocksWriteMillis()
-                                + "\tmilliseconds\n"
-
-                                + "rocksdb_average_write_time_ms\t"
-                                + metrics.averageWriteMillis()
-                                + "\tmilliseconds\n"
+                                + "rocksdb_average_write_time_sec\t"
+                                + metrics.averageWriteSecs()
+                                + "\tseconds\n"
 
                                 + "rocksdb_logical_bytes_written\t"
                                 + metrics.logicalBytesWritten()

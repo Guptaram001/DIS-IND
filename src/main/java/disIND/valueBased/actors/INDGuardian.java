@@ -107,8 +107,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         sharding.init(Entity.of(ValueOwnerActor.TYPE_KEY, entityCtx -> {
             return ValueOwnerActor.create(entityCtx.getEntityId(),
                     sharding, metadata, valueOwnerMembershipStore, workerValueIdStore, cfg.orientation(),
-                    cfg.candidateTracking(), drainDispatcher, membershipWriter, candidateDomain, workerPhaseMetrics,
-                    workerMetricsFlusher);
+                    cfg.candidateTracking(), drainDispatcher, membershipWriter, candidateDomain, workerPhaseMetrics);
         }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_VO)));
 
         sharding.init(Entity.of(DirectBatchAggregatorActor.TYPE_KEY, entityCtx -> DirectBatchAggregatorActor.create())
@@ -188,6 +187,10 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         if (!storesClosed.compareAndSet(false, true))
             return;
         workerMetricsFlusher.flushOnce();
+        WorkerValueIdStore.LogicalStorageSnapshot valueIdStorage = workerValueIdStore.finalStorageSnapshot();
+        ValueOwnerMembershipStore.LogicalStorageSnapshot membershipStorage =
+                valueOwnerMembershipStore.finalStorageSnapshot();
+        metricsWriter.writeAuxiliaryStorage(valueIdStorage, membershipStorage);
         workerValueIdStore.close();
         valueOwnerMembershipStore.close();
     }

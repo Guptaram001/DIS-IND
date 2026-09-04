@@ -10,7 +10,6 @@ import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.typed.Cluster;
 import disIND.valueBased.utility.UserConfig;
 import disIND.valueBased.model.SharedModel.CMCommand;
-import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.DatasetMetadata;
 import disIND.valueBased.model.SharedModel.NaryPair;
 import disIND.valueBased.model.SharedModel.PruneMetrics;
@@ -76,7 +75,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
     @Override
     public Receive<CMCommand> createReceive() {
         return newReceiveBuilder()
-                .onMessage(CMCommand.ValueOwnerCandidateStatusUpdate.class, this::onCandidateStatusUpdate)
+                .onMessage(CMCommand.VOCandidateStatusUpdate.class, this::onCandidateStatusUpdate)
                 .onMessage(CMCommand.DrainReadyProbe.class, this::onDrainReadyProbe)
                 .onMessage(CMCommand.PartitionDrainReadyProbe.class, this::onPartitionDrainReadyProbe)
                 .onMessage(CMCommand.OwnersDrained.class, this::onOwnersDrained)
@@ -85,7 +84,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
                 .build();
     }
 
-    private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.ValueOwnerCandidateStatusUpdate msg) {
+    private Behavior<CMCommand> onCandidateStatusUpdate(CMCommand.VOCandidateStatusUpdate msg) {
         int bucketId = msg.bucketId();
         if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length)
             return this;
@@ -99,27 +98,29 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         if (msg.voSequence() != expectedSequence) {
             throw new IllegalStateException("Missing VO status update");
         }
+        for (int lhsIndex = 0; lhsIndex < msg.lhsCols().length; lhsIndex++) {
+            int lhsCol = msg.lhsCols()[lhsIndex];
+            if (CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS) != partitionId)
+                throw new IllegalArgumentException("LHS " + lhsCol + " does not belong to cm partition " + partitionId);
+            LhsState state = stateFor(lhsCol);
 
-        for (CMCommand.LhsCandidateStatusUpdate lhsUpdate : msg.lhsUpdates()) {
-            if (CMCommand.partitionFor(lhsUpdate.lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS) != partitionId)
-                throw new IllegalArgumentException(
-                        "LHS " + lhsUpdate.lhsCol() + " does not belong to cm partition " + partitionId);
-            LhsState state = stateFor(lhsUpdate.lhsCol());
-            for (CandidateLocalStatus status : lhsUpdate.statuses()) {
-                int rhsCol = status.rhsCol();
+            int start = msg.offsets()[lhsIndex];
+            int end = msg.offsets()[lhsIndex + 1];
+
+            for (int transition = start; transition < end; transition++) {
+                int rhsCol = msg.rhsCols()[transition];
                 if (rhsCol < 0 || rhsCol >= state.violationCountByRhs.length)
                     continue;
-
-                if (status.valid()) {
+                byte delta = msg.deltas()[transition];
+                if (delta == -1) {
                     if (state.violationCountByRhs[rhsCol] == 0) {
                         getContext().getLog().warn("Unexpected valid transition: lhs={} rhs={} bucket={} sequence={}",
-                                lhsUpdate.lhsCol(), rhsCol, bucketId, msg.voSequence());
+                                lhsCol, rhsCol, bucketId, msg.voSequence());
                         continue;
                     }
-                    state.violationCountByRhs[rhsCol]--;
-                } else {
-                    state.violationCountByRhs[rhsCol]++;
-                }
+                } else if (delta != 1)
+                    throw new IllegalArgumentException("Candidate status delta must be -1 or 1");
+                state.violationCountByRhs[rhsCol] += delta;
             }
         }
         latestVoSequenceByBucket[bucketId] = msg.voSequence();

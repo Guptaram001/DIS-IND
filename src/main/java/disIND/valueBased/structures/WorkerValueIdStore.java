@@ -7,6 +7,8 @@ import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
+import org.rocksdb.FlushOptions;
+import org.rocksdb.RocksIterator;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -184,7 +186,9 @@ public final class WorkerValueIdStore implements AutoCloseable {
                     }
 
                     batch.put(nextIdKeys[ownerId], encodeId(committedNextId));
+                    long writeStarted = System.nanoTime();
                     database.write(writeOptions, batch);
+                    metrics.rocksWrite(missingIndexes.size() + 1L, System.nanoTime() - writeStarted);
                     nextIds[ownerId] = committedNextId;
                 }
 
@@ -231,6 +235,61 @@ public final class WorkerValueIdStore implements AutoCloseable {
                 maxHotEntries);
     }
 
+    public record DBSnapshot(long valueRecords, long valueKeyBytes, long valueBytes,
+            long metadataRecords, long metadataKeyBytes, long metadataValueBytes, long physicalDiskBytes) {
+        public long logicalBytes() {
+            return valueKeyBytes + valueBytes + metadataKeyBytes + metadataValueBytes;
+        }
+    }
+
+    public DBSnapshot finalStorageSnapshot() {
+        ensureOpen();
+        try (FlushOptions flush = new FlushOptions().setWaitForFlush(true)) {
+            database.flush(flush);
+        } catch (RocksDBException exception) {
+            throw storageFailure("flush final value-ID state", exception);
+        }
+
+        long valueRecords = 0, valueKeyBytes = 0, valueBytes = 0;
+        long metadataRecords = 0, metadataKeyBytes = 0, metadataValueBytes = 0;
+        try (RocksIterator iterator = database.newIterator()) {
+            for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                byte[] key = iterator.key();
+                byte[] value = iterator.value();
+                if (key.length > 0 && key[0] == VALUE_PREFIX) {
+                    valueRecords++;
+                    valueKeyBytes += key.length;
+                    valueBytes += value.length;
+                } else if (key.length > 0 && key[0] == NEXT_ID_PREFIX) {
+                    metadataRecords++;
+                    metadataKeyBytes += key.length;
+                    metadataValueBytes += value.length;
+                } else {
+                    throw new IllegalStateException("Unknown value-ID RocksDB key type");
+                }
+            }
+            iterator.status();
+        } catch (RocksDBException exception) {
+            throw storageFailure("scan final value-ID state", exception);
+        }
+        return new DBSnapshot(valueRecords, valueKeyBytes, valueBytes,
+                metadataRecords, metadataKeyBytes, metadataValueBytes, directoryBytes(databasePath));
+    }
+
+    private static long directoryBytes(Path root) {
+        try (var paths = Files.walk(root)) {
+            return paths.filter(Files::isRegularFile).mapToLong(path -> {
+                try {
+                    return Files.size(path);
+                } catch (IOException exception) {
+                    throw new java.io.UncheckedIOException(exception);
+                }
+            }).sum();
+        } catch (IOException | java.io.UncheckedIOException exception) {
+            throw new IllegalStateException("Unable to measure RocksDB directory " + root, exception);
+        }
+    }
+
     public int size(int ownerId) {
         validateOwner(ownerId);
         ensureOpen();
@@ -245,7 +304,9 @@ public final class WorkerValueIdStore implements AutoCloseable {
         Integer cached = nextIds[ownerId];
         if (cached >= 0)
             return cached;
+        long readStarted = System.nanoTime();
         byte[] stored = database.get(nextIdKeys[ownerId]);
+        metrics.rocksRead(1, System.nanoTime() - readStarted);
         int next = stored == null ? 0 : decodeId(stored);
         // nextIds.put(ownerId, next);
         nextIds[ownerId] = next;

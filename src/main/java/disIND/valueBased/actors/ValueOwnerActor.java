@@ -7,6 +7,7 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.javadsl.TimerScheduler;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.cluster.typed.Cluster;
 import disIND.valueBased.ingestion.BatchProcessor;
@@ -17,8 +18,7 @@ import disIND.valueBased.membership.ColumnSetFactory;
 import disIND.valueBased.membership.MembershipBatchResult;
 import disIND.valueBased.membership.MembershipUpdater;
 import disIND.valueBased.model.SharedModel.CMCommand;
-import disIND.valueBased.model.SharedModel.CMCommand.LhsCandidateStatusUpdate;
-import disIND.valueBased.model.SharedModel.CMCommand.ValueOwnerCandidateStatusUpdate;
+import disIND.valueBased.model.SharedModel.CMCommand.VOCandidateStatusUpdate;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.SharedModel.DataOrientation;
@@ -49,15 +49,15 @@ import disIND.valueBased.tracking.CandidateViolationAfterApplyingUpdates;
 import disIND.valueBased.tracking.CandidateEvaluator;
 import disIND.valueBased.tracking.TrackingResult;
 import disIND.valueBased.tracking.ModeSpecificContext;
-import disIND.valueBased.tracking.PruneCandidateTracker;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
-import disIND.valueBased.monitor.WorkerMetricsFlusher;
 import disIND.valueBased.monitor.WorkerPhaseMetrics;
 import disIND.valueBased.monitor.WorkerPhaseMetrics.Phase;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.bytes.ByteArrayList;
 import it.unimi.dsi.fastutil.longs.Long2BooleanLinkedOpenHashMap;
 
 import org.roaringbitmap.RoaringBitmap;
@@ -77,7 +77,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
     private final String entityId;
     private final int bucketId;
-    private final ClusterSharding sharding;
+    private final List<EntityRef<CMCommand>> cms;
     private final ValueOwnerMembershipStore membershipStore;
     private final WorkerValueIdStore valueIdStore;
     private final ModeSpecificContext modeSpecificContext;
@@ -96,14 +96,13 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private List<DrainProtocol.DrainRecord> awaitingPartitionDrain;
     private boolean awaitingPartitionReady;
     private final WorkerPhaseMetrics phaseMetrics;
-    private final WorkerMetricsFlusher workerMetricsFlusher;
     private int awaitingPartitionFinalSequence = -1;
     private long nextMembershipBatchId;
     private InFlightWrite inFlightWrite;
     private static final int MAX_IN_FLIGHT_STATUS_PARTITIONS = 4;
     private static final Duration STATUS_RETRY_DELAY = Duration.ofSeconds(2);
-    private final List<ArrayDeque<ValueOwnerCandidateStatusUpdate>> pendingStatusByPartition = new ArrayList<>();
-    private final Map<Integer, ValueOwnerCandidateStatusUpdate> inFlightStatusByPartition = new LinkedHashMap<>();
+    private final List<ArrayDeque<VOCandidateStatusUpdate>> pendingStatusByPartition = new ArrayList<>();
+    private final Map<Integer, VOCandidateStatusUpdate> inFlightStatusByPartition = new LinkedHashMap<>();
     private int nextStatusPartition;
 
     static final class DelayedInputAcknowledgments {
@@ -139,12 +138,10 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore, DataOrientation orientation,
             CandidateTrackingMode candidateTracking, ActorRef<DrainProtocol.Command> drainDispatcher,
             ActorRef<MembershipWriteProtocol.Command> membershipWriter,
-            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
-            WorkerMetricsFlusher workerMetricsFlusher) {
+            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics) {
         return Behaviors.withTimers(timers -> Behaviors.setup(ctx -> new ValueOwnerActor(
                 ctx, entityId, sharding, metadata, membershipStore, valueIdStore, orientation,
-                candidateTracking, drainDispatcher, membershipWriter, timers, candidateDomain, phaseMetrics,
-                workerMetricsFlusher)));
+                candidateTracking, drainDispatcher, membershipWriter, timers, candidateDomain, phaseMetrics)));
     }
 
     private ValueOwnerActor(ActorContext<Command> context, String entityId, ClusterSharding sharding,
@@ -152,12 +149,18 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             DataOrientation orientation, CandidateTrackingMode candidateTrackingMode,
             ActorRef<DrainProtocol.Command> drainDispatcher,
             ActorRef<MembershipWriteProtocol.Command> membershipWriter, TimerScheduler<Command> timers,
-            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
-            WorkerMetricsFlusher workerMetricsFlusher) {
+            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics) {
         super(context);
         this.entityId = entityId;
         this.bucketId = Integer.parseInt(entityId.substring("value-bucket-".length()));
-        this.sharding = sharding;
+        // List index and CM partition number are the same.
+        List<EntityRef<CMCommand>> cmRefs = new ArrayList<>(UserConfig.DEFAULT_CM_PARTITIONS);
+        for (int partition = 0; partition < UserConfig.DEFAULT_CM_PARTITIONS; partition++) {
+            EntityRef<CMCommand> cm = sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY,
+                    CMCommand.entityId(partition));
+            cmRefs.add(cm);
+        }
+        this.cms = List.copyOf(cmRefs);
         this.membershipStore = membershipStore;
         this.valueIdStore = valueIdStore;
         this.drainDispatcher = Objects.requireNonNull(drainDispatcher, "drainDispatcher");
@@ -169,7 +172,6 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.modeSpecificContext = ModeSpecificContext.create(
                 Objects.requireNonNull(candidateTrackingMode, "candidateTrackingMode"),
                 bucketId, metadata.totalCols(), candidateDomain);
-        this.workerMetricsFlusher = Objects.requireNonNull(workerMetricsFlusher);
 
         ColumnSetFactory columnSets = new ColumnSetFactory(metadata.totalCols());
         this.phaseMetrics = Objects.requireNonNull(phaseMetrics);
@@ -192,7 +194,6 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(StoreBatch.class, this::onStoreBatch)
-                // .onMessage(GetBucket.class, this::onGetBucket)
                 .onMessage(FinalizeMembership.class, this::onFinalizeMembership)
                 .onMessage(PartitionDrainQueued.class, this::onPartitionDrainQueued)
                 .onMessage(PartitionCandidateManagerReady.class, this::onPartitionCandidateManagerReady)
@@ -271,7 +272,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         started = System.nanoTime();
         TrackingResult trackingResult = modeSpecificContext.tracker().apply(candidateViolationAfterApplyingUpdates,
                 membership.updatedRecordsByValue(), membershipStore);
-        phaseMetrics.record(Phase.TRACKER_RESOLUTION, System.nanoTime() - started);
+        phaseMetrics.record(Phase.VALIDATION, System.nanoTime() - started);
 
         started = System.nanoTime();
 
@@ -293,7 +294,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
         int transitionCount = 0;
         int affectedCms = 0;
-        Int2ObjectMap<List<LhsCandidateStatusUpdate>> updatesByPartition = new Int2ObjectOpenHashMap<>();
+        Int2ObjectMap<StatusBatchBuilder> updatesByPartition = new Int2ObjectOpenHashMap<>();
 
         for (var entry : transitionsByLhs.int2ObjectEntrySet()) {
             int lhsCol = entry.getIntKey();
@@ -303,20 +304,21 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 continue;
 
             int partition = CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS);
-            updatesByPartition.computeIfAbsent(partition, ignored -> new ArrayList<>())
-                    .add(new LhsCandidateStatusUpdate(lhsCol, statuses));
+            updatesByPartition.computeIfAbsent(partition, ignored -> new StatusBatchBuilder())
+                    .add(lhsCol, statuses);
         }
 
         for (var entry : updatesByPartition.int2ObjectEntrySet()) {
             int partition = entry.getIntKey();
             int sequence = Math.incrementExact(statusSequenceByPartition[partition]);
             statusSequenceByPartition[partition] = sequence;
-            pendingStatusByPartition.get(partition).addLast(new ValueOwnerCandidateStatusUpdate(
-                    sequence, bucketId, entry.getValue(), getContext().getSelf()));
+            StatusBatchBuilder builder = entry.getValue();
+            pendingStatusByPartition.get(partition).addLast(new VOCandidateStatusUpdate(
+                    sequence, bucketId, builder.lhsCols.toIntArray(), builder.offsets.toIntArray(),
+                    builder.rhsCols.toIntArray(), builder.deltas.toByteArray(), getContext().getSelf()));
             if (Debug.INTERNAL) {
                 affectedCms++;
-                for (LhsCandidateStatusUpdate update : entry.getValue())
-                    transitionCount += update.statuses().size();
+                transitionCount += builder.rhsCols.size();
             }
         }
         pumpCandidateStatusUpdates();
@@ -324,6 +326,22 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             getContext().getLog().info(
                     "[VO] round={} bucket={} epoch={} affectedCandidates={} transitions={} affectedCms={}",
                     batch.round(), bucketId, batch.epoch(), affectedCandidateCount, transitionCount, affectedCms);
+        }
+    }
+
+    private static final class StatusBatchBuilder {
+        private final IntArrayList lhsCols = new IntArrayList();
+        private final IntArrayList offsets = new IntArrayList(new int[] { 0 });
+        private final IntArrayList rhsCols = new IntArrayList();
+        private final ByteArrayList deltas = new ByteArrayList();
+
+        private void add(int lhsCol, List<CandidateLocalStatus> statuses) {
+            lhsCols.add(lhsCol);
+            for (CandidateLocalStatus status : statuses) {
+                rhsCols.add(status.rhsCol());
+                deltas.add(status.valid() ? (byte) -1 : (byte) 1);
+            }
+            offsets.add(rhsCols.size());
         }
     }
 
@@ -336,7 +354,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             examined++;
             if (inFlightStatusByPartition.containsKey(partition))
                 continue;
-            ValueOwnerCandidateStatusUpdate update = pendingStatusByPartition.get(partition).pollFirst();
+            VOCandidateStatusUpdate update = pendingStatusByPartition.get(partition).pollFirst();
             if (update == null)
                 continue;
             inFlightStatusByPartition.put(partition, update);
@@ -346,15 +364,14 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             timers.startSingleTimer(RetryCandidateStatusUpdates.INSTANCE, STATUS_RETRY_DELAY);
     }
 
-    private void sendCandidateStatusUpdate(int partition, ValueOwnerCandidateStatusUpdate update) {
-        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(partition))
-                .tell(update);
+    private void sendCandidateStatusUpdate(int partition, VOCandidateStatusUpdate update) {
+        cms.get(partition).tell(update);
     }
 
     private Behavior<Command> onCandidateStatusApplied(CandidateStatusApplied message) {
         if (message.bucketId() != bucketId)
             return this;
-        ValueOwnerCandidateStatusUpdate inFlight = inFlightStatusByPartition.get(message.partitionId());
+        VOCandidateStatusUpdate inFlight = inFlightStatusByPartition.get(message.partitionId());
         if (inFlight == null || message.sequence() != inFlight.voSequence())
             return this;
         inFlightStatusByPartition.remove(message.partitionId());
@@ -374,7 +391,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private boolean hasPendingCandidateStatusUpdates() {
         if (!inFlightStatusByPartition.isEmpty())
             return true;
-        for (ArrayDeque<ValueOwnerCandidateStatusUpdate> queue : pendingStatusByPartition) {
+        for (ArrayDeque<VOCandidateStatusUpdate> queue : pendingStatusByPartition) {
             if (!queue.isEmpty())
                 return true;
         }
@@ -384,12 +401,6 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private Behavior<Command> onFinalizeMembership(FinalizeMembership message) {
         if (finalization != null && finalization.finalRound() == message.finalRound())
             return this;
-        boolean metricsWritten = workerMetricsFlusher.flushOnce();
-        if (metricsWritten) {
-            getContext().getLog().info("[WORKER-METRICS] flushed before drain node={} bucket={} round={}",
-                    Cluster.get(getContext().getSystem()).selfMember().address(),
-                    bucketId, message.finalRound());
-        }
         finalization = message;
         tryStartMembershipWrite();
         nextDrainPartition = 0;
@@ -455,8 +466,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     }
 
     private void probeAwaitingPartition() {
-        sharding.entityRefFor(CandidateManagerActor_.TYPE_KEY, CMCommand.entityId(nextDrainPartition))
-                .tell(new CMCommand.PartitionDrainReadyProbe(finalization.finalRound(), nextDrainPartition, bucketId,
+        cms.get(nextDrainPartition).tell(
+                new CMCommand.PartitionDrainReadyProbe(finalization.finalRound(), nextDrainPartition, bucketId,
                         awaitingPartitionFinalSequence, getContext().getSelf()));
         timers.startSingleTimer(RetryDrainProbe.INSTANCE, Duration.ofSeconds(UserConfig.DRAIN_RETRY_SECONDS));
     }

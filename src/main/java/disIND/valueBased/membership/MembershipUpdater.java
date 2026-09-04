@@ -34,6 +34,8 @@ public final class MembershipUpdater {
         started = System.nanoTime();
         Int2ObjectMap<ColumnSet> addedColumnsByValue = new Int2ObjectOpenHashMap<>();
         Int2ObjectMap<ColumnSet> removedColumnsByValue = new Int2ObjectOpenHashMap<>();
+        long filterUpdateNanos = 0L;
+        boolean measureFilterUpdates = modeSpecificContext.usesAuxiliaryFilters();
 
         for (Int2ObjectMap.Entry<Int2IntMap> valueEntry : updatesByValue.int2ObjectEntrySet()) {
 
@@ -77,24 +79,36 @@ public final class MembershipUpdater {
             }
             if (addedColumns != null) {
                 addedColumnsByValue.put(valueId, addedColumns);
+                long filterStarted = System.nanoTime();
                 for (int columnId = addedColumns.nextSetBit(0); columnId >= 0; columnId = addedColumns
                         .nextSetBit(columnId + 1)) {
                     modeSpecificContext.membershipAdded(columnId, valueId);
                 }
+                if (measureFilterUpdates)
+                    filterUpdateNanos += System.nanoTime() - filterStarted;
             }
 
             if (removedColumns != null) {
                 removedColumnsByValue.put(valueId, removedColumns);
+                long filterStarted = System.nanoTime();
                 for (int columnId = removedColumns.nextSetBit(0); columnId >= 0; columnId = removedColumns
                         .nextSetBit(columnId + 1))
                     modeSpecificContext.membershipRemoved(columnId, valueId);
+                if (measureFilterUpdates)
+                    filterUpdateNanos += System.nanoTime() - filterStarted;
             }
             if (addedColumns != null || removedColumns != null) {
+                long filterStarted = System.nanoTime();
                 modeSpecificContext.membershipChanged(record, addedColumns, removedColumns);
+                if (measureFilterUpdates)
+                    filterUpdateNanos += System.nanoTime() - filterStarted;
             }
         }
 
-        phaseMetrics.record(Phase.MEMBERSHIP_UPDATE, System.nanoTime() - started);
+        long updateNanos = System.nanoTime() - started;
+        phaseMetrics.record(Phase.MEMBERSHIP_UPDATE, Math.max(0L, updateNanos - filterUpdateNanos));
+        if (measureFilterUpdates)
+            phaseMetrics.record(Phase.FILTER_UPDATE, filterUpdateNanos);
 
         return new MembershipBatchResult(records, addedColumnsByValue, removedColumnsByValue);
     }

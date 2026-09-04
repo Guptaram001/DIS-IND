@@ -7,7 +7,7 @@ public final class WorkerPhaseMetrics {
 
     public enum Phase {
         BATCH_PREPARATION, MEMBERSHIP_LOAD, MEMBERSHIP_UPDATE, CANDIDATE_EVALUATION,
-        TRACKER_RESOLUTION, ROCKSDB_WRITE
+        FILTER_UPDATE, VALIDATION, ROCKSDB_WRITE
     }
 
     public record PhaseSnapshot(long calls, long totalNanos, long maxNanos) {

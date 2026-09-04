@@ -31,6 +31,10 @@ public sealed interface ModeSpecificContext
         return false;
     }
 
+    default boolean usesAuxiliaryFilters() {
+        return false;
+    }
+
     default boolean candidateEventFilteringEnabled() {
         return pruningEnabled();
     }
@@ -126,6 +130,11 @@ public sealed interface ModeSpecificContext
         }
 
         @Override
+        public boolean usesAuxiliaryFilters() {
+            return true;
+        }
+
+        @Override
         public boolean locallyRejected(int candidateIndex) {
             return locallyRejectedCandidates.contains(candidateIndex);
         }
@@ -207,6 +216,11 @@ public sealed interface ModeSpecificContext
             tracker = new PruneCandidateTracker(cqf, clusters, localDistinctCounts, partitionCounts,
                     metrics, candidateIndex, locallyRejectedCandidates, candidateDomain,
                     UserConfig.PRUNE_TRANSITIVE_ENABLED);
+        }
+
+        @Override
+        public boolean usesAuxiliaryFilters() {
+            return true;
         }
 
         @Override

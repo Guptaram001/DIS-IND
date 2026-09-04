@@ -11,6 +11,7 @@ import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
+import org.rocksdb.FlushOptions;
 import akka.actor.typed.ActorRef;
 
 import java.io.IOException;
@@ -67,6 +68,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private final Options options;
     private final WriteOptions writeOptions;
     private final RocksDB db;
+    private final Path directory;
     private final BucketMembershipCache[] bucketMembershipCaches;
     private final WorkerMembershipMetrics metrics;
 
@@ -362,6 +364,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             int bucketCount, WorkerMembershipMetrics metrics) {
 
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.directory = Objects.requireNonNull(directory, "directory");
         if (bucketCount <= 0)
             throw new IllegalArgumentException("bucketCount must be positive");
         try {
@@ -548,7 +551,9 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             return result;
 
         try {
+            long readStarted = System.nanoTime();
             List<byte[]> encodedStates = db.multiGetAsList(missKeys);
+            metrics.rocksRead(missKeys.size(), System.nanoTime() - readStarted);
 
             for (int index = 0; index < misses.size(); index++) {
                 CandidateKey key = misses.get(index);
@@ -887,6 +892,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         byte[] prefix = bucketPrefix(bucketId);
         BucketMembershipCache cache = bucketCache(bucketId);
 
+        long scanStarted = System.nanoTime();
+        long scannedKeys = 0L;
         try (RocksIterator iterator = db.newIterator()) {
             iterator.seek(prefix);
             while (!unfinished.isEmpty() && iterator.isValid() && hasPrefix(iterator.key(), prefix)) {
@@ -895,6 +902,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                     iterator.next();
                     continue;
                 }
+                scannedKeys++;
 
                 // int valueId = ByteBuffer.wrap(storedKey).getInt(Integer.BYTES);
                 int valueId = readInt(storedKey, Integer.BYTES);
@@ -910,6 +918,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 iterator.next();
             }
             iterator.status();
+            metrics.rocksRead(scannedKeys, System.nanoTime() - scanStarted);
         } catch (RocksDBException exception) {
             throw new IllegalStateException(
                     "Unable to find witnesses for bucket=" + bucketId,
@@ -1054,6 +1063,87 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         putInt(encoded, 1 + Integer.BYTES, lhsCol);
         putInt(encoded, 1 + Integer.BYTES * 2, rhsCol);
         return encoded;
+    }
+
+    public record DBSnapshot(long membershipRecords, long membershipKeyBytes,
+            long membershipValueBytes, long candidateRecords, long candidateKeyBytes,
+            long candidateValueBytes, long physicalDiskBytes) {
+        public long membershipBytes() {
+            return membershipKeyBytes + membershipValueBytes;
+        }
+
+        public long candidateBytes() {
+            return candidateKeyBytes + candidateValueBytes;
+        }
+
+        public long logicalBytes() {
+            return membershipBytes() + candidateBytes();
+        }
+    }
+
+    public DBSnapshot finalStorageSnapshot() {
+        requireNoPendingWrites();
+        try (FlushOptions flush = new FlushOptions().setWaitForFlush(true)) {
+            db.flush(flush);
+        } catch (RocksDBException exception) {
+            throw new IllegalStateException("Unable to flush ValueOwner membership store", exception);
+        }
+
+        long membershipRecords = 0, membershipKeyBytes = 0, membershipValueBytes = 0;
+        long candidateRecords = 0, candidateKeyBytes = 0, candidateValueBytes = 0;
+        try (RocksIterator iterator = db.newIterator()) {
+            for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                byte[] storedKey = iterator.key();
+                byte[] storedValue = iterator.value();
+                boolean candidate = storedKey.length == 1 + Integer.BYTES * 3
+                        && storedKey[0] == CANDIDATE_PREFIX;
+                if (candidate) {
+                    candidateRecords++;
+                    candidateKeyBytes += storedKey.length;
+                    candidateValueBytes += storedValue.length;
+                } else {
+                    membershipRecords++;
+                    membershipKeyBytes += storedKey.length;
+                    membershipValueBytes += storedValue.length;
+                }
+            }
+            iterator.status();
+        } catch (RocksDBException exception) {
+            throw new IllegalStateException("Unable to scan ValueOwner membership store", exception);
+        }
+        return new DBSnapshot(membershipRecords, membershipKeyBytes, membershipValueBytes,
+                candidateRecords, candidateKeyBytes, candidateValueBytes, directoryBytes(directory));
+    }
+
+    private void requireNoPendingWrites() {
+        for (BucketMembershipCache cache : bucketMembershipCaches) {
+            if (cache == null)
+                continue;
+            for (MembershipCacheEntry entry : cache.entries.values())
+                if (entry.dirty || entry.inFlight)
+                    throw new IllegalStateException("Cannot snapshot: membership writes are still pending");
+        }
+        for (CandidateWriteBackCache cache : candidateWriteBackByBucket) {
+            if (cache == null)
+                continue;
+            for (CandidateWriteBackEntry entry : cache.entries.values())
+                if (entry.dirty || entry.inFlight)
+                    throw new IllegalStateException("Cannot snapshot: candidate writes are still pending");
+        }
+    }
+
+    private static long directoryBytes(Path root) {
+        try (var paths = Files.walk(root)) {
+            return paths.filter(Files::isRegularFile).mapToLong(path -> {
+                try {
+                    return Files.size(path);
+                } catch (IOException exception) {
+                    throw new java.io.UncheckedIOException(exception);
+                }
+            }).sum();
+        } catch (IOException | java.io.UncheckedIOException exception) {
+            throw new IllegalStateException("Unable to measure RocksDB directory " + root, exception);
+        }
     }
 
     @Override

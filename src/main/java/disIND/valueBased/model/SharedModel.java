@@ -1,6 +1,7 @@
 package disIND.valueBased.model;
 
 import akka.actor.typed.ActorRef;
+import disIND.valueBased.protocol.ValueOwnerProtocol;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 
@@ -223,7 +224,7 @@ public final class SharedModel {
             CMCommand.DistinctValueDelta, CMCommand.IngestionDone,
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
             CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta, CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
-            CMCommand.MembershipResult, CMCommand.ValueOwnerCandidateStatusUpdate, CMCommand.ValueOwnerDrained,
+            CMCommand.MembershipResult, CMCommand.VOCandidateStatusUpdate, CMCommand.ValueOwnerDrained,
             CMCommand.DrainReadyProbe, CMCommand.PartitionDrainReadyProbe, CMCommand.OwnersDrained,
             CMCommand.NoMoreCandidates, CMCommand.ForceFinish, CMCommand.EnsurePartitionInitialized {
 
@@ -271,20 +272,16 @@ public final class SharedModel {
         record MembershipResult(UnaryPair pair, int round, RoaringBitmap missingValues) implements CMCommand {
         }
 
-        record LhsCandidateStatusUpdate(int lhsCol, List<CandidateLocalStatus> statuses) implements AkkaSerializable {
-            public LhsCandidateStatusUpdate {
-                statuses = List.copyOf(statuses);
-            }
-        }
-
-        record ValueOwnerCandidateStatusUpdate(int voSequence, int bucketId,
-                List<LhsCandidateStatusUpdate> lhsUpdates,
-                ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
-            public ValueOwnerCandidateStatusUpdate {
+        record VOCandidateStatusUpdate(int voSequence, int bucketId, int[] lhsCols, int[] offsets, int[] rhsCols,
+                byte[] deltas, ActorRef<ValueOwnerProtocol.Command> replyTo) implements CMCommand {
+            public VOCandidateStatusUpdate {
                 if (voSequence <= 0)
                     throw new IllegalArgumentException("voSequence must be positive");
-                lhsUpdates = List.copyOf(lhsUpdates);
                 Objects.requireNonNull(replyTo, "replyTo");
+                lhsCols = lhsCols.clone();
+                offsets = offsets.clone();
+                rhsCols = rhsCols.clone();
+                deltas = deltas.clone();
             }
         }
 

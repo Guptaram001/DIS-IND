@@ -20,7 +20,7 @@ public final class PipelineMetricsWriter {
         }
 
         public Path write(IngestionResult ingestion, long ingestionNanos,
-                        long finalizationNanos, long totalPipelineNanos, int confirmedUnaryInds) {
+                        long finalizationNanos, long totalPipelineNanos, int confirmedUnarys) {
 
                 Objects.requireNonNull(ingestion, "ingestion");
                 double ingestionSeconds = seconds(ingestionNanos);
@@ -28,9 +28,6 @@ public final class PipelineMetricsWriter {
                 double totalSeconds = seconds(totalPipelineNanos);
                 double ingestionRowsPerSecond = rate(ingestion.totalRows(), ingestionSeconds);
                 double pipelineRowsPerSecond = rate(ingestion.totalRows(), totalSeconds);
-                double pipelineBatchesPerSecond = rate(ingestion.totalBatches(), totalSeconds);
-                double pipelineCellsPerSecond = rate(ingestion.totalCells(), totalSeconds);
-
                 String contents = "metric\tvalue\tunit\n"
 
                                 + "total_rows\t"
@@ -49,29 +46,17 @@ public final class PipelineMetricsWriter {
                                 + ingestion.finalRound()
                                 + "\tround\n"
 
-                                + "confirmed_unary_inds\t"
-                                + confirmedUnaryInds
+                                + "confirmed_unarys\t"
+                                + confirmedUnarys
                                 + "\tinds\n"
-
-                                + "ingestion_runtime_ns\t"
-                                + ingestionNanos
-                                + "\tnanoseconds\n"
 
                                 + "ingestion_runtime_seconds\t"
                                 + ingestionSeconds
                                 + "\tseconds\n"
 
-                                + "finalization_runtime_ns\t"
-                                + finalizationNanos
-                                + "\tnanoseconds\n"
-
                                 + "finalization_runtime_seconds\t"
                                 + finalizationSeconds
                                 + "\tseconds\n"
-
-                                + "total_pipeline_runtime_ns\t"
-                                + totalPipelineNanos
-                                + "\tnanoseconds\n"
 
                                 + "total_pipeline_runtime_seconds\t"
                                 + totalSeconds
@@ -83,15 +68,7 @@ public final class PipelineMetricsWriter {
 
                                 + "pipeline_rows_per_second\t"
                                 + pipelineRowsPerSecond
-                                + "\trows_per_second\n"
-
-                                + "pipeline_batches_per_second\t"
-                                + pipelineBatchesPerSecond
-                                + "\tbatches_per_second\n"
-
-                                + "pipeline_cells_per_second\t"
-                                + pipelineCellsPerSecond
-                                + "\tcells_per_second\n";
+                                + "\trows_per_second\n";
 
                 try {
                         Files.createDirectories(metricsFile.getParent());
