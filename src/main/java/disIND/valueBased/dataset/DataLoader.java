@@ -1,56 +1,77 @@
 package disIND.valueBased.dataset;
 
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+import java.util.Collections;
+import java.util.stream.Stream;
+
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVRecord;
+
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
 import akka.actor.typed.javadsl.AskPattern;
-import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
 import disIND.valueBased.actors.AsyncBatchDispatcher;
 import disIND.valueBased.actors.DirectBatchAggregatorActor;
 import disIND.valueBased.actors.INDGuardian;
 import disIND.valueBased.actors.ValueOwnerActor;
 import disIND.valueBased.ingestion.ColumnMajorBatchBuilder;
 import disIND.valueBased.ingestion.ValueMajorBatchBuilder;
+import disIND.valueBased.model.IngestionMode;
 import disIND.valueBased.model.SharedModel;
-import disIND.valueBased.model.SharedModel.*;
+import disIND.valueBased.model.SharedModel.BDCommand;
+import disIND.valueBased.model.SharedModel.BDReply;
+import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
+import disIND.valueBased.model.SharedModel.ColType;
+import disIND.valueBased.model.SharedModel.ColumnInfo;
+import disIND.valueBased.model.SharedModel.DataOrientation;
+import disIND.valueBased.model.SharedModel.DatasetMetadata;
+import disIND.valueBased.model.SharedModel.IndReport;
+import disIND.valueBased.model.SharedModel.IngestionResult;
+import disIND.valueBased.model.SharedModel.InputBatchDetails;
+import disIND.valueBased.model.SharedModel.RCCommand;
+import disIND.valueBased.monitor.PipelineMetricsWriter;
 import disIND.valueBased.protocol.ValueOwnerProtocol.BatchBody;
-import disIND.valueBased.structures.ValueOwnerBatchCodec;
 import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
+import disIND.valueBased.structures.ValueOwnerBatchCodec;
 import disIND.valueBased.utility.InferDataAttributes;
 import disIND.valueBased.utility.UserConfig;
-import disIND.valueBased.model.IngestionMode;
-import java.util.concurrent.CompletionStage;
-import java.io.BufferedReader;
-import java.io.FileReader;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-import java.nio.charset.StandardCharsets;
-
-import disIND.valueBased.monitor.PipelineMetricsWriter;
-
-import org.apache.commons.csv.CSVFormat;
-import org.apache.commons.csv.CSVParser;
-import org.apache.commons.csv.CSVRecord;
 
 public final class DataLoader {
     private static final Pattern PAT_CSV_EXT = Pattern.compile("\\.(csv|tsv|tbl)$", Pattern.CASE_INSENSITIVE);
     private static final PipelineMetricsWriter pipelineMetricsWriter = new PipelineMetricsWriter();
 
-    public record PreparedBatch(int epoch, int tableId, int startRowId, Map<Integer, BatchBody> ownerBatches,
-            int round, int individualBatchId, DataOrientation orientation) {
+    public record PreparedBatch(int epoch, int tableId, int startRowId, int rowCount,
+            Map<Integer, BatchBody> ownerBatches, int round, int individualBatchId, DataOrientation orientation) {
 
         public PreparedBatch {
             ownerBatches = Map.copyOf(ownerBatches);
         }
+
     }
 
     public interface OrientetationBatchBuilder {
@@ -99,6 +120,8 @@ public final class DataLoader {
                     if (!iterator.hasNext())
                         continue;
 
+                    // From first row find the number of columns as header and add it to the
+                    // columnnames dummy wise, also add to sample
                     String[] firstRow = recordToArray(iterator.next(), tbl);
                     columnNames = new String[firstRow.length];
                     for (int i = 0; i < columnNames.length; i++)
@@ -134,12 +157,12 @@ public final class DataLoader {
     }
 
     public static void run(ActorRef<BDCommand> guardian, ActorSystem<?> system, DatasetMetadata metadata,
-            String csvDir, int chunkSize,
-            int timeoutSec,
-            String outputFile, DataOrientation orientation) throws Exception {
+            String csvDir, int chunkSize, int timeoutSec, String outputFile, DataOrientation orientation)
+            throws Exception {
 
-        AskPattern.ask(guardian, BDCommand.GetIngestionReady::new, Duration.ofSeconds(10), system.scheduler())
-                .toCompletableFuture().get();
+        // AskPattern.ask(guardian, BDCommand.GetIngestionReady::new,
+        // Duration.ofSeconds(10), system.scheduler())
+        // .toCompletableFuture().get();
         Path dir = Paths.get(csvDir);
         List<String> files = listInputFiles(dir);
 
@@ -176,17 +199,16 @@ public final class DataLoader {
 
         printReport(report, outputFile);
         long pipelineFinished = System.nanoTime();
-        long totalPipelineNanos = pipelineFinished - pipelineStarted;
-        Path metricsFile = pipelineMetricsWriter.write(ingestion, ingestionNanos, finalizationNanos, totalPipelineNanos,
+        long pipelineNanos = pipelineFinished - pipelineStarted;
+        Path metricsFile = pipelineMetricsWriter.write(ingestion, ingestionNanos, finalizationNanos, pipelineNanos,
                 report.confirmedUnary().size());
-        System.out.println("[PIPELINE-METRICS] writtenTo=" + metricsFile);
 
         guardian.tell(new BDCommand.Shutdown());
     }
 
     private static IngestionResult ingestAllInterleaved(ActorRef<BDCommand> guardian, ActorSystem<?> system,
-            List<String> files,
-            List<Integer> offsets, List<Integer> nCols, int chunkSize, DataOrientation orientation) throws Exception {
+            List<String> files, List<Integer> offsets, List<Integer> nCols, int chunkSize, DataOrientation orientation)
+            throws Exception {
         int n = files.size();
         CSVParser[] parsers = new CSVParser[n];
         @SuppressWarnings("unchecked")
@@ -199,11 +221,11 @@ public final class DataLoader {
         Map<Integer, Integer> latestBatchByTable = new HashMap<>();
         int creditWindow = UserConfig.DL_BD_CREDIT_WINDOW;
         int preparedQueueCapacity = Math.max(2, creditWindow);
+        // Ensures the delete is not processed before the insert opertion.
         boolean enforceTblOrdering = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
 
         AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
-                preparedQueueCapacity,
-                enforceTblOrdering);
+                preparedQueueCapacity, enforceTblOrdering);
         AtomicInteger nextEpoch = new AtomicInteger();
 
         long totalRows = 0;
@@ -225,7 +247,8 @@ public final class DataLoader {
             for (int i = 0; i < n; i++) {
                 if (nCols.get(i) == 0)
                     continue;
-                batchSize[i] = Math.max(1, chunkSize / nCols.get(i));
+                // batchSize[i] = Math.max(1, chunkSize / nCols.get(i));
+                batchSize[i] = UserConfig.BATCH_SIZE;
                 CSVParser parser = openCSVParser(files.get(i), UserConfig.separator.charAt(0),
                         UserConfig.inputFileHasHeader);
                 parsers[i] = parser;
@@ -332,7 +355,7 @@ public final class DataLoader {
 
                         Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
                         PreparedBatch preparedBatch = new PreparedBatch(nextEpoch.incrementAndGet(), i, batchStartRowId,
-                                ownerBatches, round, batchId, orientation);
+                                rowsRead, ownerBatches, round, batchId, orientation);
                         dispatcher.submit(preparedBatch);
                         totalBatches = Math.incrementExact(totalBatches);
                         long batchCells = Math.multiplyExact((long) rowsRead, expectedColumns);
@@ -348,11 +371,13 @@ public final class DataLoader {
                         (System.nanoTime() - roundStartedNanos) / 1_000_000_000.0);
             }
             if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
-
-                dispatcher.finishAndWait();
-                dispatcher.close();
-                dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow, preparedQueueCapacity,
-                        enforceTblOrdering);
+                // Last restoration of the deleted rows is reinserted to bring dataset
+                // consistency.
+                // dispatcher.finishAndWait();
+                // dispatcher.close();
+                // dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
+                // preparedQueueCapacity,
+                // enforceTblOrdering);
 
                 int restorationRound = Math.incrementExact(round);
                 round = restorationRound;
@@ -373,7 +398,8 @@ public final class DataLoader {
                     Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
                     int restorationBatchId = individualBatchIds[tableId]++;
                     PreparedBatch restorationBatch = new PreparedBatch(nextEpoch.incrementAndGet(), tableId,
-                            nextRowId[tableId], ownerBatches, restorationRound, restorationBatchId, orientation);
+                            nextRowId[tableId], 0, ownerBatches, restorationRound,
+                            restorationBatchId, orientation);
                     dispatcher.submit(restorationBatch);
                     totalBatches = Math.incrementExact(totalBatches);
                     totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToRestore.size());
@@ -383,10 +409,10 @@ public final class DataLoader {
 
             dispatcher.finishAndWait();
             if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
-                System.out.printf("[Loader] Mutation benchmark: %,d deletions, " + "%,d reinsertions%n",
+                System.out.printf("[Loader] Deletion Stat: %,d deletions, " + "%,d reinsertions%n",
                         totalDeletedRows, totalReinsertedRows);
                 if (totalDeletedRows != totalReinsertedRows)
-                    throw new IllegalStateException("Deletion benchmark did not restore all deleted rows:");
+                    throw new IllegalStateException("Deletion did not restore all deleted rows");
             }
             int finalRound = round;
             System.out.println("[Loader] Per-file row counts:");
@@ -409,9 +435,7 @@ public final class DataLoader {
                     }
                 }
             }
-
         }
-
     }
 
     private static CSVParser openCSVParser(String file, char separator, boolean inputHasHeader) throws IOException {
@@ -430,7 +454,9 @@ public final class DataLoader {
     }
 
     private static String[] recordToArray(CSVRecord record, boolean tbl) {
+        // One parsed row into array
         int size = record.size();
+        // For 1|Alice|Berlin|, remove last |
         if (tbl && size > 0 && record.get(size - 1).isEmpty())
             size--;
 
@@ -485,23 +511,20 @@ public final class DataLoader {
         return ownerBatches;
     }
 
-    public static CompletionStage<BDReply> sendTableBatch(ActorRef<BDCommand> guardian, ActorSystem<?> system, int epoch,
-            int tableId, int startRowId, Map<Integer, BatchBody> ownerBatches,
-            int round, int individualBatchId, DataOrientation orientation) {
+    public static CompletionStage<BDReply> sendTableBatch(ActorRef<BDCommand> guardian, ActorSystem<?> system,
+            int epoch, int tableId, int startRowId, Map<Integer, BatchBody> ownerBatches, int round,
+            int individualBatchId, DataOrientation orientation) {
 
         InputBatchDetails details = new InputBatchDetails(tableId, startRowId, individualBatchId, epoch, round, -1);
         ClusterSharding sharding = ClusterSharding.get(system);
 
         EntityRef<DirectBatchAggregatorActor.Command> aggregator = sharding.entityRefFor(
-                DirectBatchAggregatorActor.TYPE_KEY,
-                "direct-batch-" + epoch + "-" + tableId + "-" + individualBatchId);
+                DirectBatchAggregatorActor.TYPE_KEY, "direct-batch-" + epoch + "-" + tableId + "-" + individualBatchId);
 
         Duration timeout = Duration.ofSeconds(UserConfig.BATCH_ACK_TIMEOUT_SECONDS);
 
         return aggregator.<DirectBatchAggregatorActor.BatchHandle>ask(
-                replyTo -> new DirectBatchAggregatorActor.PrepareBatch(
-                        details, ownerBatches.size(), replyTo),
-                timeout)
+                replyTo -> new DirectBatchAggregatorActor.PrepareBatch(details, ownerBatches.size(), replyTo), timeout)
                 .thenCompose(handle -> {
                     ActorRef<DirectBatchAggregatorActor.Command> completionRef = handle.aggregator();
                     CompletionStage<BDReply> completion = AskPattern.ask(
@@ -510,7 +533,8 @@ public final class DataLoader {
                     ownerBatches.forEach((ownerId, body) -> sharding
                             .entityRefFor(ValueOwnerActor.TYPE_KEY, ValueOwnerActor.entityId(ownerId))
                             .tell(new StoreBatch(epoch, tableId, individualBatchId, round,
-                                    ownerId, orientation, ValueOwnerBatchCodec.encode(orientation, body), completionRef)));
+                                    ownerId, orientation, ValueOwnerBatchCodec.encode(orientation, body),
+                                    completionRef)));
                     return completion;
                 });
     }
@@ -523,12 +547,17 @@ public final class DataLoader {
     }
 
     private static List<String> listInputFiles(Path dir) throws IOException {
-        try (Stream<Path> paths = Files.list(dir)) {
-            return paths.filter(p -> {
-                String s = p.toString().toLowerCase(Locale.ROOT);
-                return s.endsWith(".csv") || s.endsWith(".tbl") || s.endsWith(".tsv");
-            }).map(Path::toString).sorted().toList();
+        List<String> files = new ArrayList<>();
+        try (DirectoryStream<Path> paths = Files.newDirectoryStream(dir)) {
+            for (Path path : paths) {
+                String file = path.toString().toLowerCase(Locale.ROOT); // Language Neutral lower case
+
+                if (file.endsWith(".csv") || file.endsWith(".tbl") || file.endsWith(".tsv"))
+                    files.add(path.toString());
+            }
         }
+        Collections.sort(files);
+        return files;
     }
 
     private static boolean isTbl(String file) {
@@ -538,7 +567,7 @@ public final class DataLoader {
     private static String normalize(String s) {
         if (s == null)
             return "";
-        s = s.strip();
+        s = s.strip(); // Removes leading/trailing space.
         if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
             s = s.substring(1, s.length() - 1).strip();
         }

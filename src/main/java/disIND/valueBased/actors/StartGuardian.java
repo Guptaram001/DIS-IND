@@ -15,7 +15,6 @@ import disIND.valueBased.protocol.StartProtocol.ConfigServiceListing;
 import disIND.valueBased.protocol.StartProtocol.DatasetConfig;
 import disIND.valueBased.protocol.StartProtocol.InstallConfig;
 import disIND.valueBased.protocol.StartProtocol.RequestConfig;
-import disIND.valueBased.protocol.StartProtocol.WorkerFailed;
 import disIND.valueBased.protocol.StartProtocol.WorkerReady;
 
 import java.util.HashSet;
@@ -70,7 +69,7 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
             completeCoordinatorWhenReady();
         } else {
             ActorRef<Receptionist.Listing> adapter = context.messageAdapter(Receptionist.Listing.class,
-                    ConfigServiceListing::new);
+                    listing -> new ConfigServiceListing(listing));
             context.getSystem().receptionist().tell(Receptionist.subscribe(CONFIG_SERVICE, adapter));
         }
     }
@@ -82,7 +81,6 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
                 .onMessage(RequestConfig.class, this::onRequestConfig)
                 .onMessage(InstallConfig.class, this::onInstallConfig)
                 .onMessage(WorkerReady.class, this::onWorkerReady)
-                .onMessage(WorkerFailed.class, this::onWorkerFailed)
                 .build();
     }
 
@@ -136,12 +134,6 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
             getContext().getLog().info("Worker ready: {} ({}/{})", message.workerId(), readyWorkers.size(),
                     settings.expectedWorkers());
         completeCoordinatorWhenReady();
-        return this;
-    }
-
-    private Behavior<StartProtocol.Command> onWorkerFailed(WorkerFailed message) {
-        ready.completeExceptionally(
-                new IllegalStateException("Worker " + message.workerId() + " failed during startup "));
         return this;
     }
 

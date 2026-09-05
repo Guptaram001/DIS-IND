@@ -6,6 +6,7 @@ import disIND.valueBased.dataset.DataLoader;
 import disIND.valueBased.dataset.DataLoader.PreparedBatch;
 import disIND.valueBased.model.SharedModel.BDCommand;
 import disIND.valueBased.model.SharedModel.BDReply;
+import disIND.valueBased.monitor.BatchTimeMonitor;
 
 import java.util.ArrayDeque;
 import java.util.HashMap;
@@ -51,6 +52,10 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     private static final long WAIT_MILLIS = 100L;
     private static final long DIAGNOSTIC_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
 
+    private long processedRows;
+    private long ingestionStartedNanos = System.nanoTime();
+    private final BatchTimeMonitor batchTimeMonitorWriter = new BatchTimeMonitor();
+
     private record InFlightBatch(int tableId, int batchId, int round, long startedNanos) {
     }
 
@@ -62,7 +67,6 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
     private final ExecutorService executor;
 
-    /* Owned exclusively by the dispatcher thread. */
     private final Set<Integer> scheduledTables = new HashSet<>();
     private final Set<Integer> tablesInFlight = new HashSet<>();
     private final Map<Integer, ArrayDeque<PreparedBatch>> waitingByTable = new HashMap<>();
@@ -224,7 +228,11 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     private int handleCompletion(Completed event, int availableCredits) {
         PreparedBatch batch = event.batch();
         Throwable throwable = event.failure() == null ? null : unwrap(event.failure());
-        inFlightByEpoch.remove(batch.epoch());
+        // inFlightByEpoch.remove(batch.epoch());
+        InFlightBatch timing = inFlightByEpoch.remove(batch.epoch());
+        if (timing == null)
+            throw new IllegalStateException("No timing information for epoch " + batch.epoch());
+
         completed.incrementAndGet();
         inFlight.decrementAndGet();
         outstandingSlots.release();
@@ -239,7 +247,18 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
         if (throwable != null)
             throw new CompletionException(throwable);
 
+        recordProcessedRows(batch, timing);
         return availableCredits;
+    }
+
+    private void recordProcessedRows(PreparedBatch batch, InFlightBatch timing) {
+        long completedNanos = System.nanoTime();
+        processedRows = Math.addExact(processedRows, batch.rowCount());
+        double dispatchStartedSec = (timing.startedNanos() - ingestionStartedNanos) / 1_000_000_000.0;
+        double completionSec = (completedNanos - ingestionStartedNanos) / 1_000_000_000.0;
+        double batchLatencySec = (completedNanos - timing.startedNanos()) / 1_000_000_000.0;
+        batchTimeMonitorWriter.write(batch.epoch(), batch.tableId(), batch.individualBatchId(), batch.round(),
+                batch.rowCount(), processedRows, dispatchStartedSec, completionSec, batchLatencySec);
     }
 
     private void promoteNextForTable(int tableId) {
@@ -304,5 +323,6 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     @Override
     public void close() {
         executor.shutdownNow();
+        batchTimeMonitorWriter.close();
     }
 }

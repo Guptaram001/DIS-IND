@@ -144,7 +144,7 @@ public final class UserConfig {
      * Precedence is CLI, JVM system property, environment variable, then the
      * single default declared in this class.
      */
-    public static void initialize(String[] args) {
+    public static void init(String[] args) {
         applyCommandLine(args);
 
         INPUT_DIR = stringSetting("DIS_IND_INPUT_DIR", "dis.ind.input-dir", DEFAULT_INPUT_DIR);

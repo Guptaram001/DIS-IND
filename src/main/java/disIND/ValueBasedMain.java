@@ -25,12 +25,12 @@ public final class ValueBasedMain {
     }
 
     public static void main(String[] args) throws Exception {
-        UserConfig.initialize(args);
+        UserConfig.init(args);
         String nodeRole = nodeRole();
-        int expectedMembers = positiveEnvironmentInt("DIS_IND_EXPECTED_CLUSTER_SIZE", 1);
-        int expectedWorkers = nonNegativeEnvironmentInt(
+        int expectedMembers = mustBePositiveInt("DIS_IND_EXPECTED_CLUSTER_SIZE", 1);
+        int expectedWorkers = mustBePositiveInt(
                 "DIS_IND_EXPECTED_WORKERS", Math.max(0, expectedMembers - 1));
-        int startTimeoutSeconds = positiveEnvironmentInt("DIS_IND_CLUSTER_START_TIMEOUT_SECONDS", 120);
+        int startTimeoutSeconds = mustBePositiveInt("DIS_IND_CLUSTER_START_TIMEOUT_SECONDS", 120);
 
         INDGuardian.Config coordinatorConfig = null;
         if ("coordinator".equals(nodeRole)) {
@@ -44,14 +44,14 @@ public final class ValueBasedMain {
         Settings settings = new Settings(nodeRole, coordinatorConfig, expectedWorkers);
         ActorSystem<StartProtocol.Command> system = ActorSystem.create(
                 StartGuardian.create(settings, runtimeReady), "disIND", ConfigFactory.load());
-        System.out.println("[Main] Value-based bootstrap started as " + nodeRole + ".");
+        System.out.println("[Main] Value-based started as " + nodeRole);
 
         try {
             awaitClusterReady(system, expectedMembers, startTimeoutSeconds);
             RuntimeHandle runtime = awaitRuntime(runtimeReady, startTimeoutSeconds);
 
             if ("worker".equals(nodeRole)) {
-                System.out.println("[Main] Worker initialized from coordinator metadata; waiting for completion.");
+                System.out.println("[Main] Worker initialized from coordinator metadata, waiting for completion.");
                 awaitCoordinatorDeparture(system);
                 runtime.guardian().tell(new BDCommand.Shutdown());
                 system.terminate();
@@ -109,7 +109,7 @@ public final class ValueBasedMain {
                 }
             }
             if (!up || unreachable) {
-                System.out.println("[Main] Coordinator left the cluster; stopping worker.");
+                System.out.println("[Main] Coordinator left the cluster, stopping worker.");
                 return;
             }
             Thread.sleep(1000);
@@ -127,25 +127,18 @@ public final class ValueBasedMain {
                     upMembers++;
             }
             if (upMembers >= expectedMembers) {
-                System.out.printf("[Main] Cluster ready with %d member(s).%n", upMembers);
+                System.out.printf("[Main] Cluster ready with %d member", upMembers);
                 return;
             }
             Thread.sleep(500);
         }
-        throw new IllegalStateException("Timed out waiting for " + expectedMembers + " cluster member(s)");
+        throw new IllegalStateException("[Main] Timed out waiting for " + expectedMembers + " members");
     }
 
-    private static int positiveEnvironmentInt(String name, int fallback) {
-        int value = Integer.parseInt(System.getenv().getOrDefault(name, Integer.toString(fallback)));
+    private static int mustBePositiveInt(String name, int fallback) {
+        int value = Integer.parseInt(System.getenv().getOrDefault(name, String.valueOf(fallback)));
         if (value <= 0)
             throw new IllegalArgumentException(name + " must be greater than zero: " + value);
-        return value;
-    }
-
-    private static int nonNegativeEnvironmentInt(String name, int fallback) {
-        int value = Integer.parseInt(System.getenv().getOrDefault(name, Integer.toString(fallback)));
-        if (value < 0)
-            throw new IllegalArgumentException(name + " cannot be negative: " + value);
         return value;
     }
 }
