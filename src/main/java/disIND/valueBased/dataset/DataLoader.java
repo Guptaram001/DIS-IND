@@ -373,11 +373,6 @@ public final class DataLoader {
             if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
                 // Last restoration of the deleted rows is reinserted to bring dataset
                 // consistency.
-                // dispatcher.finishAndWait();
-                // dispatcher.close();
-                // dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
-                // preparedQueueCapacity,
-                // enforceTblOrdering);
 
                 int restorationRound = Math.incrementExact(round);
                 round = restorationRound;

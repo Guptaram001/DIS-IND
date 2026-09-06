@@ -12,7 +12,6 @@ import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -29,28 +28,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-public final class AsyncBatchDispatcher implements AutoCloseable {
+public final class AsyncBatchDispatcher {
 
-    @FunctionalInterface
-    interface BatchSender {
-        CompletionStage<BDReply> send(PreparedBatch batch);
+    private sealed interface Event permits SubmittedEvent, CompletedEvent, FinishedEvent {
     }
 
-    private sealed interface Event permits Submitted, Completed, Finish {
+    private record SubmittedEvent(PreparedBatch batch) implements Event {
     }
 
-    private record Submitted(PreparedBatch batch) implements Event {
+    private record CompletedEvent(PreparedBatch batch, Throwable failure) implements Event {
     }
 
-    private record Completed(PreparedBatch batch, Throwable failure) implements Event {
-    }
-
-    private enum Finish implements Event {
-        INSTANCE
+    private enum FinishedEvent implements Event {
+        DONE
     }
 
     private static final long WAIT_MILLIS = 100L;
-    private static final long DIAGNOSTIC_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
 
     private long processedRows;
     private long ingestionStartedNanos = System.nanoTime();
@@ -59,13 +52,14 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     private record InFlightBatch(int tableId, int batchId, int round, long startedNanos) {
     }
 
-    private final boolean enforceTableOrdering;
+    private final boolean enforceTableOrder;
     private final int creditWindow;
     private final int maximumOutstanding;
     private final Semaphore outstandingSlots;
-    private final BatchSender sender;
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
     private final ExecutorService executor;
+    private final ActorRef<BDCommand> guardian;
+    private final ActorSystem<?> system;
 
     private final Set<Integer> scheduledTables = new HashSet<>();
     private final Set<Integer> tablesInFlight = new HashSet<>();
@@ -79,41 +73,38 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     private final AtomicInteger inFlight = new AtomicInteger();
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong completed = new AtomicLong();
-    private final AtomicLong lastDiagnosticNanos = new AtomicLong();
-    private final AtomicReference<InFlightBatch> oldestInFlight = new AtomicReference<>();
 
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private final CompletableFuture<Void> dispatcherFinished;
 
     public AsyncBatchDispatcher(ActorRef<BDCommand> guardian, ActorSystem<?> system, int creditWindow,
-            int queueCapacity, boolean enforceTableOrdering) {
-        this(creditWindow, queueCapacity, enforceTableOrdering, batch -> DataLoader.sendTableBatch(
-                Objects.requireNonNull(guardian, "guardian"), Objects.requireNonNull(system, "system"),
-                batch.epoch(), batch.tableId(), batch.startRowId(),
-                batch.ownerBatches(), batch.round(), batch.individualBatchId(), batch.orientation()));
-    }
-
-    AsyncBatchDispatcher(int creditWindow, int queueCapacity, boolean enforceTableOrdering, BatchSender sender) {
+            int queueCapacity, boolean enforceTableOrder) {
         if (creditWindow <= 0)
             throw new IllegalArgumentException("creditWindow must be positive");
+
         if (queueCapacity <= 0)
             throw new IllegalArgumentException("queueCapacity must be positive");
 
-        this.enforceTableOrdering = enforceTableOrdering;
+        this.guardian = guardian;
+        this.system = system;
+        this.enforceTableOrder = enforceTableOrder;
         this.creditWindow = creditWindow;
         this.maximumOutstanding = Math.addExact(creditWindow, queueCapacity);
         this.outstandingSlots = new Semaphore(maximumOutstanding);
-        this.sender = Objects.requireNonNull(sender, "sender");
         this.executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "dis-ind-batch-dispatcher");
-            thread.setDaemon(true);
+            thread.setDaemon(true); // When main thread terminates, it too has to terminate.
             return thread;
         });
         this.dispatcherFinished = CompletableFuture.runAsync(this::dispatchLoop, executor);
     }
 
+    private CompletionStage<BDReply> sendBatch(PreparedBatch batch) {
+        return DataLoader.sendTableBatch(guardian, system, batch.epoch(), batch.tableId(), batch.startRowId(),
+                batch.ownerBatches(), batch.round(), batch.individualBatchId(), batch.orientation());
+    }
+
     public void submit(PreparedBatch batch) throws Exception {
-        Objects.requireNonNull(batch, "batch");
         acquireOutstandingSlot();
         boolean accepted = false;
         try {
@@ -122,7 +113,7 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
                 throw new IllegalStateException("Cannot submit after dispatcher finish");
             queued.incrementAndGet();
             submitted.incrementAndGet();
-            events.add(new Submitted(batch));
+            events.add(new SubmittedEvent(batch));
             accepted = true;
         } finally {
             if (!accepted)
@@ -132,7 +123,7 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
 
     public void finishAndWait() throws Exception {
         if (producerFinished.compareAndSet(false, true))
-            events.offer(Finish.INSTANCE);
+            events.offer(FinishedEvent.DONE);
         try {
             drained.get();
             dispatcherFinished.get();
@@ -143,11 +134,11 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     }
 
     private void acquireOutstandingSlot() throws Exception {
+        // tries to find slot to add work, returns when free slott found
         while (true) {
             throwIfFailed();
-            if (outstandingSlots.tryAcquire(WAIT_MILLIS, TimeUnit.MILLISECONDS))
+            if (outstandingSlots.tryAcquire(WAIT_MILLIS, TimeUnit.MILLISECONDS)) // Max time and hte unit
                 return;
-            maybeLogState("producer-waiting-for-outstanding-slot");
         }
     }
 
@@ -158,14 +149,12 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
                 Throwable currentFailure = failure.get();
                 if (currentFailure != null)
                     throw new CompletionException(currentFailure);
-
+                // Needs wait for empty queue, if no event return null.
                 Event event = events.poll(WAIT_MILLIS, TimeUnit.MILLISECONDS);
-                if (event instanceof Submitted submittedEvent)
+                if (event instanceof SubmittedEvent submittedEvent)
                     schedule(submittedEvent.batch());
-                else if (event instanceof Completed completedEvent)
+                else if (event instanceof CompletedEvent completedEvent)
                     availableCredits = handleCompletion(completedEvent, availableCredits);
-                else if (event == null)
-                    maybeLogState("dispatcher-idle");
 
                 availableCredits = dispatchAvailable(availableCredits);
                 if (producerFinished.get() && events.isEmpty() && ready.isEmpty() && waitingByTable.isEmpty()
@@ -187,50 +176,57 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
     }
 
     private void schedule(PreparedBatch batch) {
-        if (!enforceTableOrdering || scheduledTables.add(batch.tableId())) {
+        // Determines if the batch should go for execution to ready or wait.
+        // Table order is false then add to ready queue.
+        // ScheduledTable already has a tableId so returns false, so added to
+        // waitingTable.
+        if (!enforceTableOrder || scheduledTables.add(batch.tableId())) {
             ready.addLast(batch);
             return;
         }
+        // Adds to the batch of corresponding tableId.
         waitingByTable.computeIfAbsent(batch.tableId(), ignored -> new ArrayDeque<>()).addLast(batch);
     }
 
     private int dispatchAvailable(int availableCredits) {
+
         while (availableCredits > 0 && !ready.isEmpty()) {
+            // At least a batch exist with credits.
             PreparedBatch batch = ready.removeFirst();
-            if (enforceTableOrdering && !tablesInFlight.add(batch.tableId()))
+            // Prevent two batches of same table to be in flight to handle delete.
+            if (enforceTableOrder && !tablesInFlight.add(batch.tableId()))
                 throw new IllegalStateException("Concurrent batches selected for table " + batch.tableId());
             queued.decrementAndGet();
             availableCredits--;
             dispatch(batch);
         }
-        refreshOldestInFlight();
         return availableCredits;
     }
 
     private void dispatch(PreparedBatch batch) {
         inFlight.incrementAndGet();
+        // Assigns the batch details with time.
         inFlightByEpoch.put(batch.epoch(),
                 new InFlightBatch(batch.tableId(), batch.individualBatchId(), batch.round(), System.nanoTime()));
         CompletionStage<BDReply> stage;
         try {
-            stage = sender.send(batch);
+            stage = sendBatch(batch);
         } catch (Throwable throwable) {
-            events.offer(new Completed(batch, throwable));
+            events.offer(new CompletedEvent(batch, throwable));
             return;
         }
         if (stage == null) {
-            events.offer(new Completed(batch, new NullPointerException("Batch sender returned null stage")));
+            events.offer(new CompletedEvent(batch, new NullPointerException("Batch sender returned null stage")));
             return;
         }
-        stage.whenComplete((reply, throwable) -> events.offer(new Completed(batch, throwable)));
+        stage.whenComplete((reply, throwable) -> events.offer(new CompletedEvent(batch, throwable)));
     }
 
-    private int handleCompletion(Completed event, int availableCredits) {
+    private int handleCompletion(CompletedEvent event, int availableCredits) {
         PreparedBatch batch = event.batch();
-        Throwable throwable = event.failure() == null ? null : unwrap(event.failure());
-        // inFlightByEpoch.remove(batch.epoch());
-        InFlightBatch timing = inFlightByEpoch.remove(batch.epoch());
-        if (timing == null)
+        Throwable throwable = event.failure();
+        InFlightBatch completedBatch = inFlightByEpoch.remove(batch.epoch());
+        if (completedBatch == null)
             throw new IllegalStateException("No timing information for epoch " + batch.epoch());
 
         completed.incrementAndGet();
@@ -238,25 +234,26 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
         outstandingSlots.release();
         availableCredits++;
 
-        if (enforceTableOrdering) {
+        if (enforceTableOrder) {
             if (!tablesInFlight.remove(batch.tableId()))
                 throw new IllegalStateException("Completed inactive table " + batch.tableId());
+            // allow the next batch from the same table to start.
             if (throwable == null)
                 promoteNextForTable(batch.tableId());
         }
         if (throwable != null)
             throw new CompletionException(throwable);
 
-        recordProcessedRows(batch, timing);
+        recordProcessedRows(batch, completedBatch);
         return availableCredits;
     }
 
-    private void recordProcessedRows(PreparedBatch batch, InFlightBatch timing) {
+    private void recordProcessedRows(PreparedBatch batch, InFlightBatch completedBatch) {
         long completedNanos = System.nanoTime();
         processedRows = Math.addExact(processedRows, batch.rowCount());
-        double dispatchStartedSec = (timing.startedNanos() - ingestionStartedNanos) / 1_000_000_000.0;
+        double dispatchStartedSec = (completedBatch.startedNanos() - ingestionStartedNanos) / 1_000_000_000.0;
         double completionSec = (completedNanos - ingestionStartedNanos) / 1_000_000_000.0;
-        double batchLatencySec = (completedNanos - timing.startedNanos()) / 1_000_000_000.0;
+        double batchLatencySec = completionSec - dispatchStartedSec;
         batchTimeMonitorWriter.write(batch.epoch(), batch.tableId(), batch.individualBatchId(), batch.round(),
                 batch.rowCount(), processedRows, dispatchStartedSec, completionSec, batchLatencySec);
     }
@@ -273,54 +270,20 @@ public final class AsyncBatchDispatcher implements AutoCloseable {
             waitingByTable.remove(tableId);
     }
 
-    private void refreshOldestInFlight() {
-        InFlightBatch oldest = null;
-        for (InFlightBatch candidate : inFlightByEpoch.values()) {
-            if (oldest == null || candidate.startedNanos() < oldest.startedNanos())
-                oldest = candidate;
-        }
-        oldestInFlight.set(oldest);
-    }
-
-    private void maybeLogState(String reason) {
-        long now = System.nanoTime();
-        long previous = lastDiagnosticNanos.get();
-        if (now - previous < DIAGNOSTIC_INTERVAL_NANOS || !lastDiagnosticNanos.compareAndSet(previous, now))
-            return;
-
-        InFlightBatch oldest = oldestInFlight.get();
-        if (oldest == null)
-            return;
-
-    }
-
     private void recordFailure(Throwable throwable) {
-        Throwable unwrapped = unwrap(throwable);
-        if (!failure.compareAndSet(null, unwrapped))
+        if (!failure.compareAndSet(null, throwable))
             return;
         producerFinished.set(true);
-        drained.completeExceptionally(unwrapped);
+        drained.completeExceptionally(throwable);
         outstandingSlots.release(maximumOutstanding);
     }
 
     private void throwIfFailed() throws Exception {
         Throwable throwable = failure.get();
-        if (throwable == null)
-            return;
-        if (throwable instanceof Exception exception)
-            throw exception;
-        throw new RuntimeException(throwable);
+        if (throwable != null)
+            throw new Exception(throwable);
     }
 
-    private static Throwable unwrap(Throwable throwable) {
-        Throwable current = throwable;
-        while ((current instanceof CompletionException || current instanceof ExecutionException)
-                && current.getCause() != null)
-            current = current.getCause();
-        return current;
-    }
-
-    @Override
     public void close() {
         executor.shutdownNow();
         batchTimeMonitorWriter.close();
