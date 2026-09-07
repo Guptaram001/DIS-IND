@@ -13,7 +13,7 @@ public final class ColumnSetFactory {
     public ColumnSet create() {
         if (totalColumns <= Long.SIZE)
             return new LongColumnSet();
-        if (totalColumns <= 2_000)
+        if (totalColumns <= 4_000)
             return new BitSetColumnSet(totalColumns);
         return new RoaringColumnSet();
     }

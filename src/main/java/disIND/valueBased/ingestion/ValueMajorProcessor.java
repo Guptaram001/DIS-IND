@@ -25,7 +25,7 @@ public class ValueMajorProcessor implements BatchProcessor {
     @Override
     public MembershipUpdates process(int bucketId, BatchBody body, WorkerValueIdStore valueIds) {
         if (!(body instanceof ValueMajorBatch))
-            throw new IllegalArgumentException("ValueMajorProcessor expected ValueMajorBatch, received ");
+            throw new IllegalArgumentException("ValueMajorProcessor expected ValueMajorBatch, received other");
 
         ValueMajorBatch batch = (ValueMajorBatch) body;
         List<ValueData> batchValues = batch.values();

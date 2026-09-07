@@ -73,10 +73,12 @@ public final class ValueOwnerProtocol {
         public StoreBatch {
             Objects.requireNonNull(orientation, "orientation");
             Objects.requireNonNull(body, "body");
-            boolean matchingBody = body instanceof CompressedBatch || switch (orientation) {
-                case VALUE_MAJOR -> body instanceof ValueMajorBatch;
-                case COLUMN_MAJOR -> body instanceof ColumnMajorBatch;
-            };
+            boolean matchingBody = body instanceof CompressedBatch;
+
+            if (!matchingBody)
+                matchingBody = orientation == DataOrientation.VALUE_MAJOR ? body instanceof ValueMajorBatch
+                        : body instanceof ColumnMajorBatch;
+
             if (!matchingBody) {
                 throw new IllegalArgumentException("Batch orientation " + orientation + " does not match body "
                         + body.getClass().getSimpleName());

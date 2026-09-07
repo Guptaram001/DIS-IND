@@ -271,19 +271,16 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         Int2IntMap takeForUpdate(int valueId) {
-            // MembershipCacheEntry cached = entries.getAndMoveToLast(valueId);
-            // Return a mutable copy because MembershipUpdater modifies it.
-            // return cached == null ? null : new AdaptiveColumnCounts(cached.membership);
+            // Returns the membership anyway, either a copy for mutated else removed from
+            // cache without copy creating to save unnecessary temp object.
             MembershipCacheEntry entry = entries.get(valueId);
-
             if (entry == null)
                 return null;
-
             // dirty or inflight entries must be back into the cache after membershipupdate
             // hence move to last and copy it instead
             if (entry.mutated()) {
-                entries.getAndMoveToLast(valueId);
-                return new AdaptiveColumnCounts(entry.membership);
+                entries.getAndMoveToLast(valueId); // move to the last in the cache as recently used.
+                return new AdaptiveColumnCounts(entry.membership); // returns a copy of membership.
             }
 
             // Clean entry removed for update without creating copy.
@@ -624,8 +621,9 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     public Int2ObjectMap<Int2IntMap> loadBatch(int bucketId, IntSet valueIds) {
+        // Loads the membership from the RocksDB store or caches if any
         Int2ObjectMap<Int2IntMap> result = new Int2ObjectOpenHashMap<>(valueIds.size());
-        IntArrayList misses = new IntArrayList();
+        IntArrayList misses = new IntArrayList(valueIds.size());
         List<byte[]> missKeys = new ArrayList<>();
 
         for (int valueId : valueIds) {
@@ -641,6 +639,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         if (!missKeys.isEmpty()) {
+            // Keys needed to be fetched from the db for missing keys.
             long readStarted = System.nanoTime();
             List<byte[]> encoded;
             try {
@@ -652,7 +651,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             }
             for (int index = 0; index < misses.size(); index++) {
                 int valueId = misses.getInt(index);
-                byte[] stored = encoded.get(index);
+                byte[] stored = encoded.get(index); // Encoded form for col -> count , col -> count
                 Int2IntMap record = stored == null ? new AdaptiveColumnCounts() : decode(stored);
                 result.put(valueId, record);
             }
@@ -1020,6 +1019,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private static Int2IntMap decode(byte[] encoded) {
+        // Decodes the membership values col 0 -> count, col1 -> count
         if (encoded.length < Integer.BYTES)
             throw new IllegalStateException("Truncated membership record");
 

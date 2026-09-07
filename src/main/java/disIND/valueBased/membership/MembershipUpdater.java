@@ -27,15 +27,15 @@ public final class MembershipUpdater {
 
     // Return complete records after merging with updates that later write to Db.
     public MembershipBatchResult apply(Int2ObjectMap<Int2IntMap> updatesByValue) {
-        // Loads the membership from the RocksDB store or caches if any
         long started = System.nanoTime();
+        // Loads the membership from the RocksDB store or caches if any
         Int2ObjectMap<Int2IntMap> records = membershipStore.loadBatch(bucketId, updatesByValue.keySet());
         phaseMetrics.record(Phase.MEMBERSHIP_LOAD, System.nanoTime() - started);
         started = System.nanoTime();
-        Int2ObjectMap<ColumnSet> addedColumnsByValue = new Int2ObjectOpenHashMap<>();
-        Int2ObjectMap<ColumnSet> removedColumnsByValue = new Int2ObjectOpenHashMap<>();
+        Int2ObjectMap<ColumnSet> addedColumnsByValue = new Int2ObjectOpenHashMap<>(); // ValueId to columns added.
+        Int2ObjectMap<ColumnSet> removedColumnsByValue = new Int2ObjectOpenHashMap<>(); // ValueId to columns removed.
         long filterUpdateNanos = 0L;
-        boolean measureFilterUpdates = modeSpecificContext.usesAuxiliaryFilters();
+        boolean useFilterUpdates = modeSpecificContext.usesAuxiliaryFilters();
 
         for (Int2ObjectMap.Entry<Int2IntMap> valueEntry : updatesByValue.int2ObjectEntrySet()) {
 
@@ -49,17 +49,22 @@ public final class MembershipUpdater {
             ColumnSet addedColumns = null;
             ColumnSet removedColumns = null;
             for (Int2IntMap.Entry columnEntry : columnUpdates.int2IntEntrySet()) {
+                // Update the membership with new updates.
                 int columnId = columnEntry.getIntKey();
-                int delta = columnEntry.getIntValue();
+                int newCount = columnEntry.getIntValue();
 
-                if (delta == 0)
+                if (newCount == 0)
                     continue;
 
                 int previousCount = record.getOrDefault(columnId, 0);
-                int updatedCount = Math.addExact(previousCount, delta);
+                int updatedCount = Math.addExact(previousCount, newCount);
                 if (updatedCount < 0)
                     throw new IllegalStateException("Membership count became negative: bucketId=" + bucketId);
 
+                // Count transition:
+                // 0 -> >0 : membership added
+                // >0 -> 0 : membership removed
+                // >0 -> >0 : count changed, membership unchanged
                 if (previousCount == 0 && updatedCount > 0) {
                     record.put(columnId, updatedCount);
                     if (addedColumns == null)
@@ -84,7 +89,7 @@ public final class MembershipUpdater {
                         .nextSetBit(columnId + 1)) {
                     modeSpecificContext.membershipAdded(columnId, valueId);
                 }
-                if (measureFilterUpdates)
+                if (useFilterUpdates)
                     filterUpdateNanos += System.nanoTime() - filterStarted;
             }
 
@@ -94,20 +99,21 @@ public final class MembershipUpdater {
                 for (int columnId = removedColumns.nextSetBit(0); columnId >= 0; columnId = removedColumns
                         .nextSetBit(columnId + 1))
                     modeSpecificContext.membershipRemoved(columnId, valueId);
-                if (measureFilterUpdates)
+                if (useFilterUpdates)
                     filterUpdateNanos += System.nanoTime() - filterStarted;
             }
             if (addedColumns != null || removedColumns != null) {
+                // When added or removed, still call membership changed.
                 long filterStarted = System.nanoTime();
                 modeSpecificContext.membershipChanged(record, addedColumns, removedColumns);
-                if (measureFilterUpdates)
+                if (useFilterUpdates)
                     filterUpdateNanos += System.nanoTime() - filterStarted;
             }
         }
 
         long updateNanos = System.nanoTime() - started;
         phaseMetrics.record(Phase.MEMBERSHIP_UPDATE, Math.max(0L, updateNanos - filterUpdateNanos));
-        if (measureFilterUpdates)
+        if (useFilterUpdates)
             phaseMetrics.record(Phase.FILTER_UPDATE, filterUpdateNanos);
 
         return new MembershipBatchResult(records, addedColumnsByValue, removedColumnsByValue);

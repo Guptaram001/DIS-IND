@@ -38,11 +38,11 @@ public final class SharedModel {
     }
 
     // valueId -> columnId ->count
-    public record ValueUpdates(Int2ObjectMap<Int2IntMap> byValue) implements MembershipUpdates {
+    public record ValueUpdates(Int2ObjectMap<Int2IntMap> updatesByValue) implements MembershipUpdates {
     }
 
     // columnId -> valueId -> count
-    public record ColumnUpdates(Map<Integer, Int2IntMap> byValue) implements MembershipUpdates {
+    public record ColumnUpdates(Map<Integer, Int2IntMap> updatesByValue) implements MembershipUpdates {
     }
 
     public record UnaryPair(int lhsCol, int rhsCol) implements AkkaSerializable {

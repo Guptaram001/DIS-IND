@@ -67,7 +67,6 @@ import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.time.Duration;
 import akka.actor.typed.ActorRef;
 
@@ -163,20 +162,19 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.cms = List.copyOf(cmRefs);
         this.membershipStore = membershipStore;
         this.valueIdStore = valueIdStore;
-        this.drainDispatcher = Objects.requireNonNull(drainDispatcher, "drainDispatcher");
-        this.membershipWriter = Objects.requireNonNull(membershipWriter, "membershipWriter");
+        this.drainDispatcher = drainDispatcher;
+        this.membershipWriter = membershipWriter;
         this.timers = timers;
         this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
         this.orientation = orientation;
         this.batchProcessor = newProcessor(orientation);
-        this.modeSpecificContext = ModeSpecificContext.create(
-                Objects.requireNonNull(candidateTrackingMode, "candidateTrackingMode"),
-                bucketId, metadata.totalCols(), candidateDomain);
+        this.modeSpecificContext = ModeSpecificContext.create(candidateTrackingMode, bucketId, metadata.totalCols(),
+                candidateDomain);
 
         ColumnSetFactory columnSets = new ColumnSetFactory(metadata.totalCols());
-        this.phaseMetrics = Objects.requireNonNull(phaseMetrics);
-        this.membershipUpdater = new MembershipUpdater(bucketId, membershipStore,
-                columnSets, modeSpecificContext, phaseMetrics);
+        this.phaseMetrics = phaseMetrics;
+        this.membershipUpdater = new MembershipUpdater(bucketId, membershipStore, columnSets, modeSpecificContext,
+                phaseMetrics);
         this.candidateEvaluator = new CandidateEvaluator(metadata, columnSets, modeSpecificContext, candidateDomain);
 
         this.resolvedBatches = new Long2BooleanLinkedOpenHashMap(recentBatchLimit);
@@ -184,9 +182,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             pendingStatusByPartition.add(new ArrayDeque<>());
 
         if (Debug.INTERNAL) {
-            getContext().getLog().info(
-                    "[PLACEMENT] type=VO bucket={} entity={} node={}",
-                    bucketId, entityId, Cluster.get(context.getSystem()).selfMember().address());
+            getContext().getLog().info("[PLACEMENT] type=VO bucket={} entity={} node={}", bucketId, entityId,
+                    Cluster.get(context.getSystem()).selfMember().address());
         }
     }
 
@@ -223,14 +220,14 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         }
 
         long batchKey = ((long) message.tableId() << 32) | (message.batchId() & 0xFFFFFFFFL);
-        // Message already handled.
+        // Message already handled, ignore it.
         if (resolvedBatches.getAndMoveToLast(batchKey)) {
             acknowledge(message);
             return this;
         }
 
-        // handles the incoming message into valueId-colId-count for both cases as
-        // deltas
+        // Resolves the value Id and then converts into valueId-colId-count for both
+        // cases like updatesByValue = 10 -> {0 -> 2,1 -> 1}, 20 -> {1 -> 3}
         long started = System.nanoTime();
         MembershipUpdates updates = batchProcessor.process(bucketId,
                 ValueOwnerBatchCodec.decode(message.orientation(), message.body()), valueIdStore);
@@ -246,8 +243,9 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     }
 
     private void applyUpdates(StoreBatch message, MembershipUpdates updates) {
+        // Updates can be based on values or cols, cols removed since not effecient.
         if (updates instanceof ValueUpdates valueUpdates) {
-            applyValueUpdates(message, valueUpdates.byValue());
+            applyValueUpdates(message, valueUpdates.updatesByValue());
             return;
         }
 

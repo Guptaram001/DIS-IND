@@ -30,9 +30,6 @@ public final class WorkerMembershipMetrics {
         }
 
         public void rocksRead(long keys, long elapsedNanos) {
-
-                requireNonNegative(keys, "keys");
-                requireNonNegative(elapsedNanos, "elapsedNanos");
                 rocksReadCalls.increment();
                 rocksReadKeys.add(keys);
                 rocksReadNanos.add(elapsedNanos);
@@ -40,13 +37,6 @@ public final class WorkerMembershipMetrics {
 
         public void rocksWrite(long elapsedNanos, long logicalBytes, long membershipRecords,
                         long candidateRecords, long candidateDeletes) {
-
-                requireNonNegative(elapsedNanos, "elapsedNanos");
-                requireNonNegative(logicalBytes, "logicalBytes");
-                requireNonNegative(membershipRecords, "membershipRecords");
-                requireNonNegative(candidateRecords, "candidateRecords");
-                requireNonNegative(candidateDeletes, "candidateDeletes");
-
                 rocksWriteCalls.increment();
                 rocksWriteNanos.add(elapsedNanos);
                 logicalBytesWritten.add(logicalBytes);

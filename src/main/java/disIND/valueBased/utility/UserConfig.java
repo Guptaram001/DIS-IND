@@ -29,7 +29,7 @@ public final class UserConfig {
     public static final int MAX_VALUE_OWNER_WITNESSES = 500;
     public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
     public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
-    public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 100;
+    public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 20;
     public static final int DEFAULT_VO_WRITE_BATCH_MAX_ENTRIES = 5_000;
     public static final long DEFAULT_VO_WRITE_BATCH_MAX_BYTES = 512L * 1024L;
     public static final long DEFAULT_VO_PINNED_HIGH_BYTES = 64L * 1024L * 1024L;

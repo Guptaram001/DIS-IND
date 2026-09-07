@@ -29,7 +29,7 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
 
     private static final class SmallColumnCounts {
 
-        private static final int INLINE_CAPACITY = 4;
+        private static final int CAPACITY = 4;
         private int size;
         private int column0, column1, column2, column3;
         private int count0, count1, count2, count3;
@@ -50,7 +50,7 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
                 }
             }
 
-            if (size < INLINE_CAPACITY) {
+            if (size < CAPACITY) {
                 setPair(size, column, delta);
                 size++;
                 return;
@@ -65,7 +65,7 @@ public final class ValueMajorBatchBuilder implements OrientetationBatchBuilder {
         }
 
         private void promoteToHashMap() {
-            more = new Int2IntOpenHashMap(INLINE_CAPACITY + 1);
+            more = new Int2IntOpenHashMap(CAPACITY + 1);
             for (int i = 0; i < size; i++)
                 more.put(columnAt(i), countAt(i));
 

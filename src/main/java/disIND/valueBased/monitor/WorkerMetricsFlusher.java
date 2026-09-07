@@ -31,8 +31,4 @@ public final class WorkerMetricsFlusher {
         writer.writeAll(valueIdStore.metricsSnapshot(), membershipStore.metricsSnapshot(), phaseMetrics);
         return true;
     }
-
-    // public boolean isWritten() {
-    // return written.get();
-    // }
 }
