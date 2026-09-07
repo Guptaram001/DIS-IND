@@ -45,7 +45,7 @@ public sealed interface ModeSpecificContext
     default void membershipRemoved(int columnId, int valueId) {
     }
 
-    default void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns, ColumnSet removedColumns) {
+    default void membershipChanged(Int2IntMap membershipBefore, ColumnSet addedColumns, ColumnSet removedColumns) {
     }
 
     default boolean locallyRejected(int candidateIndex) {
