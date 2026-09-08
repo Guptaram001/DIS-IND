@@ -9,6 +9,7 @@ import disIND.valueBased.membership.CandidateIndex;
 import disIND.valueBased.membership.CandidateSet;
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
 import disIND.valueBased.structures.ValueOwnerClusterIndex;
+import disIND.valueBased.structures.PruneMetricsCollector;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
@@ -24,6 +25,7 @@ public final class ExactCandidateTracker implements CandidateTracker {
     private final CandidateIndex candidateIndex;
     private final CandidateSet locallyRejectedCandidates;
     private final boolean directViolationEnabled;
+    private final PruneMetricsCollector metrics;
 
     public ExactCandidateTracker(ValueOwnerClusterIndex clusters, CandidateIndex candidateIndex,
             CandidateSet locallyRejectedCandidates) {
@@ -32,19 +34,25 @@ public final class ExactCandidateTracker implements CandidateTracker {
 
     public ExactCandidateTracker(ValueOwnerClusterIndex clusters, CandidateIndex candidateIndex,
             CandidateSet locallyRejectedCandidates, boolean directViolationEnabled) {
+        this(clusters, candidateIndex, locallyRejectedCandidates, directViolationEnabled, null);
+    }
+
+    public ExactCandidateTracker(ValueOwnerClusterIndex clusters, CandidateIndex candidateIndex,
+            CandidateSet locallyRejectedCandidates, boolean directViolationEnabled, PruneMetricsCollector metrics) {
+        this.metrics = metrics;
         this.clusters = Objects.requireNonNull(clusters, "clusters");
         this.candidateIndex = Objects.requireNonNull(candidateIndex, "candidateIndex");
         this.locallyRejectedCandidates = Objects.requireNonNull(locallyRejectedCandidates, "locallyRejectedCandidates");
         this.directViolationEnabled = directViolationEnabled;
     }
 
-    private static final class ExactChanges implements CandidateViolationAfterApplyingUpdates {
+    private static final class ExactViolationHandler implements ViolationHandler {
 
         private final int bucketId;
         private final LongOpenHashSet createdViolations = new LongOpenHashSet();
         private final LongOpenHashSet repairedViolations = new LongOpenHashSet();
 
-        private ExactChanges(int bucketId) {
+        private ExactViolationHandler(int bucketId) {
             this.bucketId = bucketId;
         }
 
@@ -60,8 +68,8 @@ public final class ExactCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public CandidateViolationAfterApplyingUpdates newChanges(int bucketId) {
-        return new ExactChanges(bucketId);
+    public ViolationHandler createViolationHandler(int bucketId) {
+        return new ExactViolationHandler(bucketId);
     }
 
     @Override
@@ -70,30 +78,30 @@ public final class ExactCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
-            Int2ObjectMap<Int2IntMap> updatedMembership, ValueOwnerMembershipStore store) {
+    public TrackingResult apply(ViolationHandler violationHandler, Int2ObjectMap<Int2IntMap> updatedMembership,
+            ValueOwnerMembershipStore store) {
 
         Objects.requireNonNull(updatedMembership, "updatedMembership");
         Objects.requireNonNull(store, "store");
 
-        if (!(changes instanceof ExactChanges exactChanges)) {
+        if (!(violationHandler instanceof ExactViolationHandler exactViolationHandler)) {
             throw new IllegalArgumentException("Exact tracker received incompatible changes");
         }
 
-        if (exactChanges.createdViolations.isEmpty() && exactChanges.repairedViolations.isEmpty()) {
+        if (exactViolationHandler.createdViolations.isEmpty() && exactViolationHandler.repairedViolations.isEmpty()) {
             return new TrackingResult(Map.of(), new Int2ObjectOpenHashMap<>());
         }
 
         Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
 
-        LongOpenHashSet candidatesToValidate = new LongOpenHashSet(exactChanges.repairedViolations);
+        LongOpenHashSet candidatesToValidate = new LongOpenHashSet(exactViolationHandler.repairedViolations);
         if (directViolationEnabled) {
-            LongIterator created = exactChanges.createdViolations.iterator();
+            LongIterator created = exactViolationHandler.createdViolations.iterator();
             while (created.hasNext())
                 recordStatus(created.nextLong(), true, transitionsByLhs);
-            candidatesToValidate.removeAll(exactChanges.createdViolations);
+            candidatesToValidate.removeAll(exactViolationHandler.createdViolations);
         } else {
-            candidatesToValidate.addAll(exactChanges.createdViolations);
+            candidatesToValidate.addAll(exactViolationHandler.createdViolations);
         }
 
         LongSet violationKeys = clusters.findViolationKeys(candidatesToValidate);
@@ -101,6 +109,16 @@ public final class ExactCandidateTracker implements CandidateTracker {
         while (iterator.hasNext()) {
             long compactKey = iterator.nextLong();
             boolean rejectedAfter = violationKeys.contains(compactKey);
+            // Count each deduplicated candidate actually submitted to cluster validation.
+            // Direct rejections above do not perform a cluster check.
+            if (metrics != null) {
+                int lhsCol = lhsColumn(compactKey);
+                metrics.exactTested(lhsCol);
+                if (rejectedAfter)
+                    metrics.exactRejected(lhsCol);
+                else
+                    metrics.exactValidated(lhsCol);
+            }
             recordStatus(compactKey, rejectedAfter, transitionsByLhs);
         }
 

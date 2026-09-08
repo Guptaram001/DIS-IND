@@ -23,7 +23,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     private final Map<Integer, List<NaryPair>> naryResults = new HashMap<>();
     private final List<ActorRef<IndReport>> pendingReportReplies = new ArrayList<>();
     private long exactComparisonsWithoutPruning;
-    private long candidateEvaluationsWithoutPruning;
+
     private PruneMetrics pruneMetrics = PruneMetrics.empty();
     private long activeClusterEntriesAcrossBuckets;
     private final Set<BitSet> distinctActiveClusterSignatures = new HashSet<>();
@@ -56,9 +56,6 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
         finishedCms.set(msg.lhsOwnerCol());
         exactComparisonsWithoutPruning = Math.addExact(
                 exactComparisonsWithoutPruning, msg.exactValueProbesWithoutPruning());
-        candidateEvaluationsWithoutPruning = Math.addExact(
-                candidateEvaluationsWithoutPruning,
-                msg.candidateEvaluationsWithoutPruning());
         pruneMetrics = pruneMetrics.plus(msg.pruneMetrics());
         activeClusterEntriesAcrossBuckets = Math.addExact(activeClusterEntriesAcrossBuckets,
                 msg.activeClusterEntriesAcrossBuckets());
@@ -117,7 +114,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
             return;
 
         discoveryFinished = true;
-        metricsWriter.writeAll(candidateEvaluationsWithoutPruning, exactComparisonsWithoutPruning,
+        metricsWriter.writeAll(exactComparisonsWithoutPruning,
                 finalRound, pruneMetrics, activeClusterEntriesAcrossBuckets, distinctActiveClusterSignatures.size());
         finishReplyTo.tell(new BDReply.DiscoveryFinished(finalRound));
         IndReport report = buildReport();

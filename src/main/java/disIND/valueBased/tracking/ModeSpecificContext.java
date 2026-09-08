@@ -45,7 +45,7 @@ public sealed interface ModeSpecificContext
     default void membershipRemoved(int columnId, int valueId) {
     }
 
-    default void membershipChanged(Int2IntMap membershipBefore, ColumnSet addedColumns, ColumnSet removedColumns) {
+    default void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns, ColumnSet removedColumns) {
     }
 
     default boolean locallyRejected(int candidateIndex) {
@@ -55,19 +55,28 @@ public sealed interface ModeSpecificContext
     default void removeLocallyRejected(int lhsCol, BitSet candidates) {
     }
 
-    default void sameBatchSkipped(int lhsCol, long count) {
+    default void sameBatchRejectedCandidateSkipped(int lhsCol, long count) {
     }
 
     default void candidateStatesChanged(Map<CandidateKey, CandidateState> changedStates) {
     }
 
-    default void invalidLhsSkipped(int lhsCol) {
+    default void rhsDeletionInvalidSkipped(int lhsCol) {
     }
 
-    default void validRhsSkipped(int lhsCol) {
+    default void lhsDeletionValidSkipped(int lhsCol) {
     }
 
-    default void sameBatchSkipped(int lhsCol) {
+    default void mixedUpdateSkipped(int lhsCol) {
+    }
+
+    default void lhsInsertionInvalidSkipped(int lhsCol) {
+    }
+
+    default void rhsInsertionValidSkipped(int lhsCol) {
+    }
+
+    default void sameBatchRejectedCandidateSkipped(int lhsCol) {
     }
 
     default PruneMetrics metricsFor(int lhsCol) {
@@ -83,13 +92,14 @@ public sealed interface ModeSpecificContext
     }
 
     private static void loadSignature(Int2IntMap membership, BitSet destination) {
+        // Finds which column a value belong to
         destination.clear();
         IntIterator iterator = membership.keySet().iterator();
         while (iterator.hasNext())
             destination.set(iterator.nextInt());
     }
 
-    static ModeSpecificContext create(CandidateTrackingMode mode, int bucketId, int totalColumns,
+    static ModeSpecificContext init(CandidateTrackingMode mode, int bucketId, int totalColumns,
             CandidateDomain candidateDomain) {
         return switch (mode) {
             case COUNT -> new CountContext(new CountCandidateTracker());
@@ -100,16 +110,47 @@ public sealed interface ModeSpecificContext
         };
     }
 
-    record CountContext(CountCandidateTracker tracker) implements ModeSpecificContext {
+    final class CountContext implements ModeSpecificContext {
+
+        private final CountCandidateTracker tracker;
+
+        CountContext(CountCandidateTracker tracker) {
+            this.tracker = tracker;
+        }
+
+        @Override
+        public CountCandidateTracker tracker() {
+            return tracker;
+        }
     }
 
-    record WitnessContext(WitnessCandidateTracker tracker) implements ModeSpecificContext {
+    final class WitnessContext implements ModeSpecificContext {
+
+        private final WitnessCandidateTracker tracker;
+
+        WitnessContext(WitnessCandidateTracker tracker) {
+            this.tracker = tracker;
+        }
+
+        @Override
+        public WitnessCandidateTracker tracker() {
+            return tracker;
+        }
     }
+
+    // record CountContext(CountCandidateTracker tracker) implements
+    // ModeSpecificContext {
+    // }
+
+    // record WitnessContext(WitnessCandidateTracker tracker) implements
+    // ModeSpecificContext {
+    // }
 
     final class ExactContext implements ModeSpecificContext {
 
         private final ValueOwnerClusterIndex clusters;
         private final ExactCandidateTracker tracker;
+        private final PruneMetricsCollector metrics;
 
         private final BitSet beforeSignature;
         private final BitSet afterSignature;
@@ -118,6 +159,7 @@ public sealed interface ModeSpecificContext
 
         private ExactContext(int bucketId, int totalColumns) {
             clusters = new ValueOwnerClusterIndex(bucketId, totalColumns, UserConfig.CLUSTER_VALIDATION_STRATEGY);
+            metrics = new PruneMetricsCollector(totalColumns);
             beforeSignature = new BitSet(totalColumns);
             afterSignature = new BitSet(totalColumns);
             candidateIndex = new CandidateIndex(totalColumns);
@@ -125,7 +167,7 @@ public sealed interface ModeSpecificContext
                     ? new RowBitSetCandidateSet(totalColumns)
                     : CandidateSetFactory.create(totalColumns, candidateIndex.capacity());
             tracker = new ExactCandidateTracker(clusters, candidateIndex, locallyRejectedCandidates,
-                    UserConfig.EXACT_DIRECT_VIOLATION_ENABLED);
+                    UserConfig.EXACT_DIRECT_VIOLATION_ENABLED, metrics);
 
         }
 
@@ -156,8 +198,50 @@ public sealed interface ModeSpecificContext
 
         @Override
         public void removeLocallyRejected(int lhsCol, BitSet candidates) {
-            if (UserConfig.EXACT_EVENT_FILTERING_ENABLED)
-                ((RowBitSetCandidateSet) locallyRejectedCandidates).removeRowFrom(lhsCol, candidates);
+            if (UserConfig.EXACT_EVENT_FILTERING_ENABLED) {
+                int removed = ((RowBitSetCandidateSet) locallyRejectedCandidates).removeRowFrom(lhsCol, candidates);
+                metrics.lhsInsertionInvalidSkipped(lhsCol, removed);
+            }
+        }
+
+        @Override
+        public void rhsDeletionInvalidSkipped(int lhsCol) {
+            metrics.rhsDeletionInvalidSkipped(lhsCol);
+        }
+
+        @Override
+        public void lhsDeletionValidSkipped(int lhsCol) {
+            metrics.lhsDeletionValidSkipped(lhsCol);
+        }
+
+        @Override
+        public void mixedUpdateSkipped(int lhsCol) {
+            metrics.mixedUpdateSkipped(lhsCol);
+        }
+
+        @Override
+        public void lhsInsertionInvalidSkipped(int lhsCol) {
+            metrics.lhsInsertionInvalidSkipped(lhsCol);
+        }
+
+        @Override
+        public void rhsInsertionValidSkipped(int lhsCol) {
+            metrics.rhsInsertionValidSkipped(lhsCol);
+        }
+
+        @Override
+        public void sameBatchRejectedCandidateSkipped(int lhsCol) {
+            metrics.sameBatchRejectedCandidateSkipped(lhsCol);
+        }
+
+        @Override
+        public void sameBatchRejectedCandidateSkipped(int lhsCol, long count) {
+            metrics.sameBatchRejectedCandidateSkipped(lhsCol, count);
+        }
+
+        @Override
+        public PruneMetrics metricsFor(int lhsCol) {
+            return metrics.snapshot(lhsCol);
         }
 
         @Override
@@ -286,7 +370,7 @@ public sealed interface ModeSpecificContext
         @Override
         public void removeLocallyRejected(int lhsCol, BitSet candidates) {
             int removed = ((RowBitSetCandidateSet) locallyRejectedCandidates).removeRowFrom(lhsCol, candidates);
-            metrics.invalidLhsSkipped(lhsCol, removed);
+            metrics.lhsInsertionInvalidSkipped(lhsCol, removed);
         }
 
         @Override
@@ -308,23 +392,38 @@ public sealed interface ModeSpecificContext
         }
 
         @Override
-        public void invalidLhsSkipped(int lhsCol) {
-            metrics.invalidLhsSkipped(lhsCol);
+        public void rhsDeletionInvalidSkipped(int lhsCol) {
+            metrics.rhsDeletionInvalidSkipped(lhsCol);
         }
 
         @Override
-        public void validRhsSkipped(int lhsCol) {
-            metrics.validRhsSkipped(lhsCol);
+        public void lhsDeletionValidSkipped(int lhsCol) {
+            metrics.lhsDeletionValidSkipped(lhsCol);
         }
 
         @Override
-        public void sameBatchSkipped(int lhsCol) {
-            metrics.sameBatchSkipped(lhsCol);
+        public void mixedUpdateSkipped(int lhsCol) {
+            metrics.mixedUpdateSkipped(lhsCol);
         }
 
         @Override
-        public void sameBatchSkipped(int lhsCol, long count) {
-            metrics.sameBatchSkipped(lhsCol, count);
+        public void lhsInsertionInvalidSkipped(int lhsCol) {
+            metrics.lhsInsertionInvalidSkipped(lhsCol);
+        }
+
+        @Override
+        public void rhsInsertionValidSkipped(int lhsCol) {
+            metrics.rhsInsertionValidSkipped(lhsCol);
+        }
+
+        @Override
+        public void sameBatchRejectedCandidateSkipped(int lhsCol) {
+            metrics.sameBatchRejectedCandidateSkipped(lhsCol);
+        }
+
+        @Override
+        public void sameBatchRejectedCandidateSkipped(int lhsCol, long count) {
+            metrics.sameBatchRejectedCandidateSkipped(lhsCol, count);
         }
 
         @Override

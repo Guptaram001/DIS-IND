@@ -82,6 +82,10 @@ public final class MembershipUpdater {
                         record.put(columnId, updatedCount);
                 }
             }
+            // Now if filters update them too with their state like in prune, exact mode
+            // except count witness.
+            // Memb added, removed, changed -> not relevant to Count, Witness mode.
+            // Memb changed to update the cluster in exact mode. and all needed for prune.
             if (addedColumns != null) {
                 addedColumnsByValue.put(valueId, addedColumns);
                 long filterStarted = System.nanoTime();

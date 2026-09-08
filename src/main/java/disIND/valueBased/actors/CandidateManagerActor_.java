@@ -46,7 +46,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         int finalRound = -1;
         boolean finishedReported;
         long exactComparisonsWithoutPruning;
-        long candidateEvaluationsWithoutPruning;
+
         PruneMetrics pruneMetrics = PruneMetrics.empty();
         long activeClusterEntriesAcrossBuckets;
         final Set<BitSet> distinctActiveClusterSignatures = new HashSet<>();
@@ -145,8 +145,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         state.finalRound = msg.finalRound();
         state.expectedValueOwnerDrains = msg.expectedBuckets();
         if (!state.drainedValueOwners.contains(msg.bucketId())) {
-            state.candidateEvaluationsWithoutPruning = Math.addExact(state.candidateEvaluationsWithoutPruning,
-                    msg.candidateEvaluationsWithoutPruning());
             state.exactComparisonsWithoutPruning = Math.addExact(state.exactComparisonsWithoutPruning,
                     msg.exactValueProbesWithoutPruning());
             state.pruneMetrics = state.pruneMetrics.plus(msg.pruneMetrics());
@@ -205,7 +203,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             }
             onValueOwnerDrained(record.lhsCol(), new CMCommand.ValueOwnerDrained(record.finalRound(), record.bucketId(),
                     record.expectedBuckets(), record.locallyRejectedRhs(),
-                    record.candidateEvaluationsWithoutPruning(), record.exactValueProbesWithoutPruning(),
+                    record.exactValueProbesWithoutPruning(),
                     record.pruneMetrics(), record.activeClusterSignatures()));
         }
         batch.replyTo().tell(new disIND.valueBased.protocol.DrainProtocol.BatchAcknowledged(
@@ -230,7 +228,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         rcRef.tell(new RCCommand.CmDiscoveryComplete(state.lhsCol, state.finalRound,
                 List.copyOf(clean), List.<NaryPair>of(),
-                state.candidateEvaluationsWithoutPruning, state.exactComparisonsWithoutPruning, state.pruneMetrics,
+                state.exactComparisonsWithoutPruning, state.pruneMetrics,
                 state.activeClusterEntriesAcrossBuckets,
                 state.distinctActiveClusterSignatures.stream()
                         .map(BitSet::toLongArray)

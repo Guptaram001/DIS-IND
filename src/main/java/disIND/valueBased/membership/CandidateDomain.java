@@ -21,8 +21,8 @@ public final class CandidateDomain {
             BitSet candidates = new BitSet(totalColumns);
 
             if (!useTypeCompatibility) {
-                candidates.set(0, totalColumns);
-                candidates.clear(lhs);
+                candidates.set(0, totalColumns); // Sets all columns to compatible.
+                candidates.clear(lhs); // Removes its own column to avoid same comparisons.
             } else {
                 ColType lhsType = metadata.typeOf(lhs);
                 for (int rhs = 0; rhs < totalColumns; rhs++) {
@@ -31,35 +31,33 @@ public final class CandidateDomain {
                     }
                 }
             }
-
             compatibleRhsByLhs[lhs] = candidates;
         }
     }
 
-    public boolean isCompatible(int lhs, int rhs) {
-        return compatibleRhsByLhs[lhs].get(rhs);
-    }
+    // public boolean isCompatible(int lhs, int rhs) {
+    // return compatibleRhsByLhs[lhs].get(rhs);
+    // }
 
-    public int firstCompatibleRhs(int lhs) {
-        return compatibleRhsByLhs[lhs].nextSetBit(0);
-    }
+    // public int firstCompatibleRhs(int lhs) {
+    // return compatibleRhsByLhs[lhs].nextSetBit(0);
+    // }
 
-    public int nextCompatibleRhs(int lhs, int currentRhs) {
-        return compatibleRhsByLhs[lhs].nextSetBit(currentRhs + 1);
-    }
+    // public int nextCompatibleRhs(int lhs, int currentRhs) {
+    // return compatibleRhsByLhs[lhs].nextSetBit(currentRhs + 1);
+    // }
 
-    /** Returns a mutable copy; callers cannot alter the shared candidate domain. */
     public BitSet compatibleRhsSnapshot(int lhs) {
         return (BitSet) compatibleRhsByLhs[lhs].clone();
     }
 
-    /** Copies the compatible RHS columns into caller-owned reusable storage. */
     public void copyCompatibleRhs(int lhs, BitSet destination) {
+        // Does not create new copies instead mutate the destination
         destination.clear();
         destination.or(compatibleRhsByLhs[lhs]);
     }
 
-    /** Copies the compatible LHS columns into caller-owned reusable storage. */
+    // For a particular rhs, which lhs is compatible with it.
     public void copyCompatibleLhs(int rhs, BitSet destination) {
         ensureReverseCompatibility();
         destination.clear();

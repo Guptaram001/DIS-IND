@@ -45,9 +45,9 @@ import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.InFlightWrite;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.PreparedWriteBatch;
 import disIND.valueBased.structures.WorkerValueIdStore;
-import disIND.valueBased.tracking.CandidateViolationAfterApplyingUpdates;
 import disIND.valueBased.tracking.CandidateEvaluator;
 import disIND.valueBased.tracking.TrackingResult;
+import disIND.valueBased.tracking.ViolationHandler;
 import disIND.valueBased.tracking.ModeSpecificContext;
 import disIND.valueBased.utility.Debug;
 import disIND.valueBased.utility.UserConfig;
@@ -168,7 +168,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.recentBatchLimit = UserConfig.DEFAULT_VO_BATCH_EVICTION_LIMIT;
         this.orientation = orientation;
         this.batchProcessor = newProcessor(orientation);
-        this.modeSpecificContext = ModeSpecificContext.create(candidateTrackingMode, bucketId, metadata.totalCols(),
+        this.modeSpecificContext = ModeSpecificContext.init(candidateTrackingMode, bucketId, metadata.totalCols(),
                 candidateDomain);
 
         ColumnSetFactory columnSets = new ColumnSetFactory(metadata.totalCols());
@@ -259,16 +259,16 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         MembershipBatchResult membership = membershipUpdater.apply(updates);
 
         // Selects the specific mode changes to handle the violation further.
-        CandidateViolationAfterApplyingUpdates candidateViolationAfterApplyingUpdates = modeSpecificContext
-                .tracker().newChanges(bucketId);
+        ViolationHandler violationHandler = modeSpecificContext.tracker().createViolationHandler(bucketId);
+
         // Find which IND pairs might have been changed.
         long started = System.nanoTime();
         candidateEvaluator.evaluate(membership.updatedRecordsByValue(), membership.newlyAddedColumnsByValue(),
-                membership.newlyRemovedColumnsByValue(), candidateViolationAfterApplyingUpdates);
+                membership.newlyRemovedColumnsByValue(), violationHandler);
         phaseMetrics.record(Phase.CANDIDATE_EVALUATION, System.nanoTime() - started);
 
         started = System.nanoTime();
-        TrackingResult trackingResult = modeSpecificContext.tracker().apply(candidateViolationAfterApplyingUpdates,
+        TrackingResult trackingResult = modeSpecificContext.tracker().apply(violationHandler,
                 membership.updatedRecordsByValue(), membershipStore);
         phaseMetrics.record(Phase.VALIDATION, System.nanoTime() - started);
 
@@ -448,7 +448,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         for (int lhs = nextDrainPartition; lhs < finalization.totalColumns(); lhs += UserConfig.DEFAULT_CM_PARTITIONS) {
             records.add(new DrainProtocol.DrainRecord(
                     finalization.finalRound(), lhs, bucketId, finalization.expectedBuckets(), new RoaringBitmap(),
-                    candidateEvaluator.candidateEvaluationsFor(lhs), candidateEvaluator.exactComparisonsFor(lhs),
+                    candidateEvaluator.exactComparisonsFor(lhs),
                     modeSpecificContext.metricsFor(lhs),
                     lhs == 0 ? modeSpecificContext.activeClusterSignatures() : List.of()));
         }

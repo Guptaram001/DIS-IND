@@ -2,7 +2,7 @@ package disIND.valueBased.membership;
 
 public final class CandidateSetFactory {
 
-    private static final int BITSET_MAX_COLUMNS = 2_000;
+    private static final int BITSET_MAX_COLUMNS = 4_000;
 
     private CandidateSetFactory() {
     }

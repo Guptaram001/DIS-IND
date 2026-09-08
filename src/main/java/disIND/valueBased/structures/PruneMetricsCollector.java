@@ -3,9 +3,9 @@ package disIND.valueBased.structures;
 import disIND.valueBased.model.SharedModel.PruneMetrics;
 
 public final class PruneMetricsCollector {
-    private static final int INVALID_LHS = 0;
-    private static final int VALID_RHS = 1;
-    private static final int SAME_BATCH = 2;
+    private static final int LHS_INSERTION_INVALID = 0;
+    private static final int RHS_INSERTION_VALID = 1;
+    private static final int SAME_BATCH_REJECTED_CANDIDATE = 2;
     private static final int DIRECT_LHS = 3;
     private static final int WHOLE_COUNT = 4;
     private static final int PARTITION_COUNT = 5;
@@ -20,7 +20,10 @@ public final class PruneMetricsCollector {
     private static final int PARTITION_4_COMPARISONS = 14;
     private static final int PARTITION_16_COMPARISONS = 15;
     private static final int PARTITION_FINE_COMPARISONS = 16;
-    private static final int METRIC_COUNT = 17;
+    private static final int RHS_DELETION_INVALID = 17;
+    private static final int LHS_DELETION_VALID = 18;
+    private static final int MIXED_UPDATE = 19;
+    private static final int METRIC_COUNT = 20;
 
     private final long[] counts;
 
@@ -28,24 +31,36 @@ public final class PruneMetricsCollector {
         counts = new long[Math.multiplyExact(totalColumns, METRIC_COUNT)];
     }
 
-    public void invalidLhsSkipped(int lhs) {
-        increment(lhs, INVALID_LHS);
+    public void lhsInsertionInvalidSkipped(int lhs) {
+        increment(lhs, LHS_INSERTION_INVALID);
     }
 
-    public void invalidLhsSkipped(int lhs, long count) {
-        add(lhs, INVALID_LHS, count);
+    public void lhsInsertionInvalidSkipped(int lhs, long count) {
+        add(lhs, LHS_INSERTION_INVALID, count);
     }
 
-    public void validRhsSkipped(int lhs) {
-        increment(lhs, VALID_RHS);
+    public void rhsInsertionValidSkipped(int lhs) {
+        increment(lhs, RHS_INSERTION_VALID);
     }
 
-    public void sameBatchSkipped(int lhs) {
-        increment(lhs, SAME_BATCH);
+    public void sameBatchRejectedCandidateSkipped(int lhs) {
+        increment(lhs, SAME_BATCH_REJECTED_CANDIDATE);
     }
 
-    public void sameBatchSkipped(int lhs, long count) {
-        add(lhs, SAME_BATCH, count);
+    public void sameBatchRejectedCandidateSkipped(int lhs, long count) {
+        add(lhs, SAME_BATCH_REJECTED_CANDIDATE, count);
+    }
+
+    public void rhsDeletionInvalidSkipped(int lhs) {
+        increment(lhs, RHS_DELETION_INVALID);
+    }
+
+    public void lhsDeletionValidSkipped(int lhs) {
+        increment(lhs, LHS_DELETION_VALID);
+    }
+
+    public void mixedUpdateSkipped(int lhs) {
+        increment(lhs, MIXED_UPDATE);
     }
 
     public void directLhsRejected(int lhs) {
@@ -95,13 +110,14 @@ public final class PruneMetricsCollector {
     public PruneMetrics snapshot(int lhs) {
         int base = lhs * METRIC_COUNT;
 
-        return new PruneMetrics(counts[base + INVALID_LHS], counts[base + VALID_RHS], counts[base + SAME_BATCH],
+        return new PruneMetrics(counts[base + LHS_INSERTION_INVALID], counts[base + RHS_INSERTION_VALID], counts[base + SAME_BATCH_REJECTED_CANDIDATE],
                 counts[base + DIRECT_LHS], counts[base + WHOLE_COUNT], counts[base + PARTITION_COUNT],
                 counts[base + CQF], counts[base + TRANSITIVELY_VALIDATED], counts[base + EXACT_TESTED],
                 counts[base + EXACT_REJECTED], counts[base + EXACT_VALIDATED],
                 counts[base + PARTITION_4_PRUNED], counts[base + PARTITION_16_PRUNED],
                 counts[base + PARTITION_FINE_PRUNED], counts[base + PARTITION_4_COMPARISONS],
-                counts[base + PARTITION_16_COMPARISONS], counts[base + PARTITION_FINE_COMPARISONS]);
+                counts[base + PARTITION_16_COMPARISONS], counts[base + PARTITION_FINE_COMPARISONS], counts[base + RHS_DELETION_INVALID],
+                counts[base + LHS_DELETION_VALID], counts[base + MIXED_UPDATE]);
     }
 
     private void increment(int lhs, int metric) {

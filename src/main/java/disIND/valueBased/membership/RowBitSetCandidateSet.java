@@ -2,11 +2,7 @@ package disIND.valueBased.membership;
 
 import java.util.BitSet;
 
-/**
- * Candidate set stored as one RHS bitmap per LHS. Besides ordinary candidate
- * lookups, this representation can subtract an entire rejected LHS row from a
- * candidate bitmap without visiting candidates individually.
- */
+//this can subtract an entire rejected LHS row from a candidate bitmap without visiting candidates individually.
 public final class RowBitSetCandidateSet implements CandidateSet {
     private final CandidateIndex index;
     private final BitSet[] rhsByLhs;
@@ -21,8 +17,8 @@ public final class RowBitSetCandidateSet implements CandidateSet {
 
     @Override
     public boolean add(int candidateIndex) {
-        BitSet row = rhsByLhs[index.lhs(candidateIndex)];
-        int rhs = index.rhs(candidateIndex);
+        BitSet row = rhsByLhs[index.getLhs(candidateIndex)];
+        int rhs = index.getRhs(candidateIndex);
         if (row.get(rhs))
             return false;
         row.set(rhs);
@@ -32,13 +28,13 @@ public final class RowBitSetCandidateSet implements CandidateSet {
 
     @Override
     public boolean contains(int candidateIndex) {
-        return rhsByLhs[index.lhs(candidateIndex)].get(index.rhs(candidateIndex));
+        return rhsByLhs[index.getLhs(candidateIndex)].get(index.getRhs(candidateIndex));
     }
 
     @Override
     public boolean remove(int candidateIndex) {
-        BitSet row = rhsByLhs[index.lhs(candidateIndex)];
-        int rhs = index.rhs(candidateIndex);
+        BitSet row = rhsByLhs[index.getLhs(candidateIndex)];
+        int rhs = index.getRhs(candidateIndex);
         if (!row.get(rhs))
             return false;
         row.clear(rhs);
@@ -58,7 +54,6 @@ public final class RowBitSetCandidateSet implements CandidateSet {
         return size;
     }
 
-    /** Removes this set's rejected RHS row and returns the number removed. */
     public int removeRowFrom(int lhs, BitSet candidates) {
         int before = candidates.cardinality();
         candidates.andNot(rhsByLhs[lhs]);

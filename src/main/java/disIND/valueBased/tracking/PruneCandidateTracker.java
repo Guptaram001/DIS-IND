@@ -1,7 +1,6 @@
 package disIND.valueBased.tracking;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -11,13 +10,11 @@ import java.util.Set;
 import java.util.BitSet;
 
 import disIND.valueBased.model.SharedModel.CandidateLocalStatus;
-import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.structures.PruneMetricsCollector;
 import disIND.valueBased.structures.ValueOwnerClusterIndex;
 import disIND.valueBased.structures.ValueOwnerCqf;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
-import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.PruneState;
 import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.membership.CandidateIndex;
@@ -63,13 +60,13 @@ public final class PruneCandidateTracker implements CandidateTracker {
         }
     }
 
-    private static final class PruneChanges implements CandidateViolationAfterApplyingUpdates {
+    private static final class PruneViolationHandler implements ViolationHandler {
         private final int bucketId;
         private static final byte REPAIRED_ONLY = 0;
         private static final byte VIOLATION_CREATED = 1;
         private final Long2ByteOpenHashMap deltas = new Long2ByteOpenHashMap();
 
-        private PruneChanges(int bucketId) {
+        private PruneViolationHandler(int bucketId) {
             deltas.defaultReturnValue(REPAIRED_ONLY);
             this.bucketId = bucketId;
         }
@@ -90,26 +87,26 @@ public final class PruneCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public CandidateViolationAfterApplyingUpdates newChanges(int bucketId) {
-        return new PruneChanges(bucketId);
+    public ViolationHandler createViolationHandler(int bucketId) {
+        return new PruneViolationHandler(bucketId);
     }
 
     @Override
-    public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
+    public TrackingResult apply(ViolationHandler changes,
             Int2ObjectMap<Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
         Objects.requireNonNull(updatedMembership, "updatedMembership");
         Objects.requireNonNull(store, "store");
 
-        if (!(changes instanceof PruneChanges pruneChanges))
+        if (!(changes instanceof PruneViolationHandler pruneViolationHandler))
             throw new IllegalArgumentException("Prune tracker received incompatible changes");
 
-        BitSet[] affectedRhsByLhs = transitiveEnabled ? buildAffectedCandidates(pruneChanges) : null;
-        Set<CandidateKey> keys = new HashSet<>(pruneChanges.deltas.size());
-        LongIterator keyIterator = pruneChanges.deltas.keySet().iterator();
+        BitSet[] affectedRhsByLhs = transitiveEnabled ? buildAffectedCandidates(pruneViolationHandler) : null;
+        Set<CandidateKey> keys = new HashSet<>(pruneViolationHandler.deltas.size());
+        LongIterator keyIterator = pruneViolationHandler.deltas.keySet().iterator();
         while (keyIterator.hasNext()) {
             long compactKey = keyIterator.nextLong();
-            keys.add(new CandidateKey(pruneChanges.bucketId, lhsColumn(compactKey), rhsColumn(compactKey)));
+            keys.add(new CandidateKey(pruneViolationHandler.bucketId, lhsColumn(compactKey), rhsColumn(compactKey)));
         }
         if (keys.isEmpty())
             return new TrackingResult(Map.of(), new Int2ObjectOpenHashMap<>());
@@ -122,14 +119,14 @@ public final class PruneCandidateTracker implements CandidateTracker {
         Set<CandidateKey> unresolved = new LinkedHashSet<>();
         for (CandidateKey key : keys) {
             long compactKey = CandidateEvaluator.candidateKey(key.lhsCol(), key.rhsCol());
-            byte delta = pruneChanges.deltas.get(compactKey);
+            byte delta = pruneViolationHandler.deltas.get(compactKey);
             // PruneState before = (PruneState) previousStates.get(key);
             PruneState before = previousState(key);
             // if (before == null)
             // throw new IllegalStateException("No previous prune state for candidate " +
             // key);
 
-            if (delta == PruneChanges.VIOLATION_CREATED) {
+            if (delta == PruneViolationHandler.VIOLATION_CREATED) {
                 setTransitiveValid(key.lhsCol(), key.rhsCol(), false);
                 PruneState after = PruneState.rejectedByCluster();
                 metrics.directLhsRejected(key.lhsCol());
@@ -242,7 +239,7 @@ public final class PruneCandidateTracker implements CandidateTracker {
         return locallyRejectedCandidates.contains(index) ? PruneState.rejectedByCluster() : PruneState.valid();
     }
 
-    private BitSet[] buildAffectedCandidates(PruneChanges changes) {
+    private BitSet[] buildAffectedCandidates(PruneViolationHandler changes) {
 
         BitSet[] affected = new BitSet[localDistinctCounts.length];
         LongIterator iterator = changes.deltas.keySet().iterator();

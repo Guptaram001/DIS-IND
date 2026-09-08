@@ -23,26 +23,29 @@ import it.unimi.dsi.fastutil.objects.ObjectIterator;
 
 public final class CountCandidateTracker implements CandidateTracker {
 
-    private static final class CountChanges implements CandidateViolationAfterApplyingUpdates {
+    private static final class CountViolationHandler implements ViolationHandler {
         private final int bucketId;
-        private final Long2IntOpenHashMap deltas = new Long2IntOpenHashMap();
+        private final Long2IntOpenHashMap deltas = new Long2IntOpenHashMap(); // key(lhs,rhs) -> violation
 
-        private CountChanges(int bucketId) {
+        private CountViolationHandler(int bucketId) {
             this.bucketId = bucketId;
             deltas.defaultReturnValue(0);
         }
 
         @Override
         public void violationCreated(int lhsCol, int rhsCol, int valueId) {
+            // adds the violation count by 1, since the valueid is a witness for that.
             merge(lhsCol, rhsCol, 1);
         }
 
         @Override
         public void violationRepaired(int lhsCol, int rhsCol, int valueId) {
+            // decreases the violation count by 1, since the violation is now repaired.
             merge(lhsCol, rhsCol, -1);
         }
 
         private void merge(int lhsCol, int rhsCol, int delta) {
+            // For a lhs, rhs, find the total violations.
             long key = CandidateEvaluator.candidateKey(lhsCol, rhsCol);
             int previous = deltas.get(key);
             int next = Math.addExact(previous, delta);
@@ -54,25 +57,25 @@ public final class CountCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public CandidateViolationAfterApplyingUpdates newChanges(int bucketId) {
-        return new CountChanges(bucketId);
+    public ViolationHandler createViolationHandler(int bucketId) {
+        return new CountViolationHandler(bucketId);
     }
 
     @Override
-    public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
+    public TrackingResult apply(ViolationHandler changes,
             Int2ObjectMap<Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
-        if (!(changes instanceof CountChanges countChanges))
+        if (!(changes instanceof CountViolationHandler countViolationHandler))
             throw new IllegalArgumentException("Count tracker received incompatible changes");
 
-        Set<CandidateKey> keys = new HashSet<>(countChanges.deltas.size());
-        ObjectIterator<Long2IntMap.Entry> iterator = Long2IntMaps.fastIterator(countChanges.deltas);
+        Set<CandidateKey> keys = new HashSet<>(countViolationHandler.deltas.size());
+        ObjectIterator<Long2IntMap.Entry> iterator = Long2IntMaps.fastIterator(countViolationHandler.deltas);
 
         while (iterator.hasNext()) {
             long compactKey = iterator.next().getLongKey();
             int lhsCol = lhsColumn(compactKey);
             int rhsCol = rhsColumn(compactKey);
-            keys.add(new CandidateKey(countChanges.bucketId, lhsCol, rhsCol));
+            keys.add(new CandidateKey(countViolationHandler.bucketId, lhsCol, rhsCol));
         }
 
         if (keys.isEmpty()) {
@@ -85,7 +88,7 @@ public final class CountCandidateTracker implements CandidateTracker {
 
         for (CandidateKey key : keys) {
             long compactKey = CandidateEvaluator.candidateKey(key.lhsCol(), key.rhsCol());
-            int delta = countChanges.deltas.get(compactKey);
+            int delta = countViolationHandler.deltas.get(compactKey);
             CountState before = (CountState) previousStates.get(key);
             if (before == null)
                 throw new IllegalStateException("No previous count state for candidate " + key);

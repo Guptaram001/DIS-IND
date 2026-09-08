@@ -23,11 +23,11 @@ public final class CandidateIndex {
         return lhs * totalColumns + rhs;
     }
 
-    public int lhs(int index) {
+    public int getLhs(int index) {
         return index / totalColumns;
     }
 
-    public int rhs(int index) {
+    public int getRhs(int index) {
         return index % totalColumns;
     }
 }

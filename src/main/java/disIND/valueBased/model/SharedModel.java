@@ -141,22 +141,24 @@ public final class SharedModel {
     public record CandidateLocalStatus(int rhsCol, boolean valid) implements AkkaSerializable {
     }
 
-    public record PruneMetrics(long invalidLhsSkips, long validRhsSkips, long sameBatchSkips, long directLhsRejections,
+    public record PruneMetrics(long lhsInsertionInvalidSkips, long rhsInsertionValidSkips,
+            long sameBatchRejectedCandidateSkips, long directLhsRejections,
             long wholeCountPruned, long partitionCountPruned, long cqfPruned, long transitivelyValidated,
             long exactTested, long exactRejected, long exactValidated,
             long partition4Pruned, long partition16Pruned, long partitionFinePruned,
-            long partition4Comparisons, long partition16Comparisons, long partitionFineComparisons)
+            long partition4Comparisons, long partition16Comparisons, long partitionFineComparisons,
+            long rhsDeletionInvalidSkips, long lhsDeletionValidSkips, long mixedUpdateSkips)
             implements AkkaSerializable {
 
         public static PruneMetrics empty() {
-            return new PruneMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new PruneMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         public PruneMetrics plus(PruneMetrics other) {
             Objects.requireNonNull(other, "other");
-            return new PruneMetrics(Math.addExact(invalidLhsSkips, other.invalidLhsSkips),
-                    Math.addExact(validRhsSkips, other.validRhsSkips),
-                    Math.addExact(sameBatchSkips, other.sameBatchSkips),
+            return new PruneMetrics(Math.addExact(lhsInsertionInvalidSkips, other.lhsInsertionInvalidSkips),
+                    Math.addExact(rhsInsertionValidSkips, other.rhsInsertionValidSkips),
+                    Math.addExact(sameBatchRejectedCandidateSkips, other.sameBatchRejectedCandidateSkips),
                     Math.addExact(directLhsRejections, other.directLhsRejections),
                     Math.addExact(wholeCountPruned, other.wholeCountPruned),
                     Math.addExact(partitionCountPruned, other.partitionCountPruned),
@@ -169,7 +171,10 @@ public final class SharedModel {
                     Math.addExact(partitionFinePruned, other.partitionFinePruned),
                     Math.addExact(partition4Comparisons, other.partition4Comparisons),
                     Math.addExact(partition16Comparisons, other.partition16Comparisons),
-                    Math.addExact(partitionFineComparisons, other.partitionFineComparisons));
+                    Math.addExact(partitionFineComparisons, other.partitionFineComparisons),
+                    Math.addExact(rhsDeletionInvalidSkips, other.rhsDeletionInvalidSkips),
+                    Math.addExact(lhsDeletionValidSkips, other.lhsDeletionValidSkips),
+                    Math.addExact(mixedUpdateSkips, other.mixedUpdateSkips));
         }
     }
 
@@ -286,7 +291,7 @@ public final class SharedModel {
         }
 
         record ValueOwnerDrained(int finalRound, int bucketId, int expectedBuckets, RoaringBitmap locallyRejectedRhs,
-                long candidateEvaluationsWithoutPruning, long exactValueProbesWithoutPruning,
+                long exactValueProbesWithoutPruning,
                 PruneMetrics pruneMetrics, List<long[]> activeClusterSignatures) implements CMCommand {
             public ValueOwnerDrained {
                 locallyRejectedRhs = locallyRejectedRhs.clone();
@@ -351,7 +356,7 @@ public final class SharedModel {
         }
 
         record CmDiscoveryComplete(int lhsOwnerCol, int round, List<UnaryPair> unaryPairs,
-                List<NaryPair> naryPairs, long candidateEvaluationsWithoutPruning,
+                List<NaryPair> naryPairs,
                 long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics,
                 long activeClusterEntriesAcrossBuckets,
                 List<long[]> distinctActiveClusterSignatures) implements RCCommand {

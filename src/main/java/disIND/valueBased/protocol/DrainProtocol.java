@@ -21,7 +21,7 @@ public final class DrainProtocol {
     }
 
     public record DrainRecord(int finalRound, int lhsCol, int bucketId, int expectedBuckets,
-            RoaringBitmap locallyRejectedRhs, long candidateEvaluationsWithoutPruning,
+            RoaringBitmap locallyRejectedRhs,
             long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics,
             List<long[]> activeClusterSignatures) implements AkkaSerializable {
         public DrainRecord {

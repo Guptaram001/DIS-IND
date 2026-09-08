@@ -42,11 +42,11 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         private final IntOpenHashSet repaired = new IntOpenHashSet();
     }
 
-    private final class WitnessChanges implements CandidateViolationAfterApplyingUpdates {
+    private final class WitnessViolationHandler implements ViolationHandler {
         private final int bucketId;
         private final Long2ObjectOpenHashMap<WitnessDelta> deltas = new Long2ObjectOpenHashMap<>();
 
-        private WitnessChanges(int bucketId) {
+        private WitnessViolationHandler(int bucketId) {
             this.bucketId = bucketId;
         }
 
@@ -75,26 +75,26 @@ public final class WitnessCandidateTracker implements CandidateTracker {
     }
 
     @Override
-    public CandidateViolationAfterApplyingUpdates newChanges(int bucketId) {
-        return new WitnessChanges(bucketId);
+    public ViolationHandler createViolationHandler(int bucketId) {
+        return new WitnessViolationHandler(bucketId);
     }
 
     @Override
-    public TrackingResult apply(CandidateViolationAfterApplyingUpdates changes,
+    public TrackingResult apply(ViolationHandler changes,
             Int2ObjectMap<Int2IntMap> updatedMembership,
             ValueOwnerMembershipStore store) {
-        if (!(changes instanceof WitnessChanges witnessChanges))
+        if (!(changes instanceof WitnessViolationHandler witnessViolationHandler))
             throw new IllegalArgumentException("Witness tracker received incompatible changes");
 
-        if (witnessChanges.deltas.isEmpty())
+        if (witnessViolationHandler.deltas.isEmpty())
             return new TrackingResult(Map.of(), new Int2ObjectOpenHashMap<>());
 
-        Set<CandidateKey> keys = new ObjectOpenHashSet<>(witnessChanges.deltas.size());
+        Set<CandidateKey> keys = new ObjectOpenHashSet<>(witnessViolationHandler.deltas.size());
         ObjectIterator<Long2ObjectMap.Entry<WitnessDelta>> iterator = Long2ObjectMaps
-                .fastIterator(witnessChanges.deltas);
+                .fastIterator(witnessViolationHandler.deltas);
         while (iterator.hasNext()) {
             long compactKey = iterator.next().getLongKey();
-            keys.add(new CandidateKey(witnessChanges.bucketId, lhsColumn(compactKey), rhsColumn(compactKey)));
+            keys.add(new CandidateKey(witnessViolationHandler.bucketId, lhsColumn(compactKey), rhsColumn(compactKey)));
         }
         Map<CandidateKey, CandidateState> previousStates = store.loadCandidates(keys, CandidateTrackingMode.WITNESS);
         Map<CandidateKey, CandidateState> changedStates = new HashMap<>(keys.size());
@@ -102,12 +102,13 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         Int2ObjectMap<List<CandidateLocalStatus>> transitionsByLhs = new Int2ObjectOpenHashMap<>();
         Long2ObjectOpenHashMap<WitnessState> preliminaryStates = new Long2ObjectOpenHashMap<>(keys.size());
         LongSet needsRecovery = new LongOpenHashSet();
-        iterator = Long2ObjectMaps.fastIterator(witnessChanges.deltas);
+        iterator = Long2ObjectMaps.fastIterator(witnessViolationHandler.deltas);
 
         while (iterator.hasNext()) {
             Long2ObjectMap.Entry<WitnessDelta> entry = iterator.next();
             long compactKey = entry.getLongKey();
-            CandidateKey key = new CandidateKey(witnessChanges.bucketId, lhsColumn(compactKey), rhsColumn(compactKey));
+            CandidateKey key = new CandidateKey(witnessViolationHandler.bucketId, lhsColumn(compactKey),
+                    rhsColumn(compactKey));
             WitnessState before = (WitnessState) previousStates.get(key);
             if (before == null)
                 throw new IllegalStateException("No previous witness state for " + key);
@@ -119,13 +120,14 @@ public final class WitnessCandidateTracker implements CandidateTracker {
         }
 
         Long2ObjectMap<int[]> recovered = store.findWitnessesBatch(
-                witnessChanges.bucketId, needsRecovery, witnessLimit, updatedMembership);
+                witnessViolationHandler.bucketId, needsRecovery, witnessLimit, updatedMembership);
 
-        iterator = Long2ObjectMaps.fastIterator(witnessChanges.deltas);
+        iterator = Long2ObjectMaps.fastIterator(witnessViolationHandler.deltas);
         while (iterator.hasNext()) {
             Long2ObjectMap.Entry<WitnessDelta> entry = iterator.next();
             long compactKey = entry.getLongKey();
-            CandidateKey key = new CandidateKey(witnessChanges.bucketId, lhsColumn(compactKey), rhsColumn(compactKey));
+            CandidateKey key = new CandidateKey(witnessViolationHandler.bucketId, lhsColumn(compactKey),
+                    rhsColumn(compactKey));
             WitnessState before = (WitnessState) previousStates.get(key);
             WitnessState after = needsRecovery.contains(compactKey)
                     ? new WitnessState(recovered.get(compactKey))

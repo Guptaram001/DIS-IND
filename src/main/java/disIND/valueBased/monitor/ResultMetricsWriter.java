@@ -19,23 +19,19 @@ public final class ResultMetricsWriter {
                                 "diagnostics"));
         }
 
-        public void writeAll(long candidateEvaluationsWithoutPruning, long exactValueProbesWithoutPruning,
+        public void writeAll(long exactValueProbesWithoutPruning,
                         int finalRound, PruneMetrics pruneMetrics, long activeClusterEntriesAcrossBuckets,
                         long distinctActiveClusterSignatures) {
                 Objects.requireNonNull(pruneMetrics, "pruneMetrics");
-                writeComparisonMetrics(candidateEvaluationsWithoutPruning, exactValueProbesWithoutPruning, finalRound);
+                writeComparisonMetrics(exactValueProbesWithoutPruning, finalRound);
                 writePruneMetrics(pruneMetrics);
                 writeClusterMetrics(activeClusterEntriesAcrossBuckets, distinctActiveClusterSignatures);
         }
 
-        private void writeComparisonMetrics(long candidateEvaluations, long exactValueProbes,
+        private void writeComparisonMetrics(long exactValueProbes,
                         int finalRound) {
 
                 String contents = "metric\tcount\tunit\n"
-
-                                + "candidate_evaluations_without_pruning\t"
-                                + candidateEvaluations
-                                + "\tcandidates\n"
 
                                 + "exact_value_probes_without_pruning\t"
                                 + exactValueProbes
@@ -55,20 +51,31 @@ public final class ResultMetricsWriter {
 
                 String contents = "metric\tcount\tunit\n"
 
-                                // Candidate checks skipped because the LHS candidate was already known to
-                                // be invalid.
-                                + "invalid_lhs_skips\t"
-                                + metrics.invalidLhsSkips()
+                                // LHS insertion checks skipped for already rejected candidates.
+                                + "lhs_insertion_invalid_skips\t"
+                                + metrics.lhsInsertionInvalidSkips()
                                 + "\tcandidate_value_checks\n"
 
                                 // Adding on rhs for valid - skip
-                                + "valid_rhs_skips\t"
-                                + metrics.validRhsSkips()
+                                + "rhs_insertion_valid_skips\t"
+                                + metrics.rhsInsertionValidSkips()
+                                + "\tcandidate_value_checks\n"
+
+                                + "rhs_deletion_invalid_skips\t"
+                                + metrics.rhsDeletionInvalidSkips()
+                                + "\tcandidate_value_checks\n"
+
+                                + "lhs_deletion_valid_skips\t"
+                                + metrics.lhsDeletionValidSkips()
+                                + "\tcandidate_value_checks\n"
+
+                                + "mixed_update_skips\t"
+                                + metrics.mixedUpdateSkips()
                                 + "\tcandidate_value_checks\n"
 
                                 // Skips same batch changes
-                                + "same_batch_skips\t"
-                                + metrics.sameBatchSkips()
+                                + "same_batch_rejected_candidate_skips\t"
+                                + metrics.sameBatchRejectedCandidateSkips()
                                 + "\tcandidate_value_checks\n"
 
                                 // Skips further iterations due to some counterexample

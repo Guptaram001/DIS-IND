@@ -5,10 +5,10 @@ import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 
 public interface CandidateTracker {
-    CandidateViolationAfterApplyingUpdates newChanges(int bucketId);
+    ViolationHandler createViolationHandler(int bucketId);
 
-    TrackingResult apply(CandidateViolationAfterApplyingUpdates candidateViolationAfterApplyingUpdates,
-            Int2ObjectMap<Int2IntMap> updatedMembership, ValueOwnerMembershipStore store);
+    TrackingResult apply(ViolationHandler changedViolation, Int2ObjectMap<Int2IntMap> updatedMembership,
+            ValueOwnerMembershipStore store);
 
     default boolean persistsCandidateState() {
         return true;
