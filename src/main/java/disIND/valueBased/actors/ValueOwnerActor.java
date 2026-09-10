@@ -137,10 +137,11 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             ValueOwnerMembershipStore membershipStore, WorkerValueIdStore valueIdStore, DataOrientation orientation,
             CandidateTrackingMode candidateTracking, ActorRef<DrainProtocol.Command> drainDispatcher,
             ActorRef<MembershipWriteProtocol.Command> membershipWriter,
-            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics) {
+            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
+            disIND.valueBased.model.ClusterOptions clusterOptions) {
         return Behaviors.withTimers(timers -> Behaviors.setup(ctx -> new ValueOwnerActor(
                 ctx, entityId, sharding, metadata, membershipStore, valueIdStore, orientation,
-                candidateTracking, drainDispatcher, membershipWriter, timers, candidateDomain, phaseMetrics)));
+                candidateTracking, drainDispatcher, membershipWriter, timers, candidateDomain, phaseMetrics, clusterOptions)));
     }
 
     private ValueOwnerActor(ActorContext<Command> context, String entityId, ClusterSharding sharding,
@@ -148,7 +149,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             DataOrientation orientation, CandidateTrackingMode candidateTrackingMode,
             ActorRef<DrainProtocol.Command> drainDispatcher,
             ActorRef<MembershipWriteProtocol.Command> membershipWriter, TimerScheduler<Command> timers,
-            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics) {
+            CandidateDomain candidateDomain, WorkerPhaseMetrics phaseMetrics,
+            disIND.valueBased.model.ClusterOptions clusterOptions) {
         super(context);
         this.entityId = entityId;
         this.bucketId = Integer.parseInt(entityId.substring("value-bucket-".length()));
@@ -169,13 +171,14 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.orientation = orientation;
         this.batchProcessor = newProcessor(orientation);
         this.modeSpecificContext = ModeSpecificContext.init(candidateTrackingMode, bucketId, metadata.totalCols(),
-                candidateDomain);
+                candidateDomain, clusterOptions);
 
         ColumnSetFactory columnSets = new ColumnSetFactory(metadata.totalCols());
         this.phaseMetrics = phaseMetrics;
         this.membershipUpdater = new MembershipUpdater(bucketId, membershipStore, columnSets, modeSpecificContext,
                 phaseMetrics);
-        this.candidateEvaluator = new CandidateEvaluator(metadata, columnSets, modeSpecificContext, candidateDomain);
+        this.candidateEvaluator = modeSpecificContext.clusterBased() ? null
+                : new CandidateEvaluator(metadata, columnSets, modeSpecificContext, candidateDomain);
 
         this.resolvedBatches = new Long2BooleanLinkedOpenHashMap(recentBatchLimit);
         for (int partition = 0; partition < UserConfig.DEFAULT_CM_PARTITIONS; partition++)
@@ -257,6 +260,23 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         // Applies the updates to the store and obtains the final changes merging to
         // previous records with added/removed columns
         MembershipBatchResult membership = membershipUpdater.apply(updates);
+
+        if (modeSpecificContext.clusterBased()) {
+            TrackingResult result = null;
+            if (!modeSpecificContext.derivesAtDrain()) {
+                long started = System.nanoTime();
+                result = modeSpecificContext.finishBatch();
+                phaseMetrics.record(Phase.VALIDATION, System.nanoTime() - started);
+            }
+            long started = System.nanoTime();
+            membershipStore.stage(bucketId, membership.updatedRecordsByValue(), Map.of());
+            phaseMetrics.record(Phase.ROCKSDB_WRITE, System.nanoTime() - started);
+            tryStartMembershipWrite();
+            if (result != null)
+                sendCandidateStatusTransitions(message, result.transitionsByLhs(), 0);
+            return;
+        }
+
 
         // Selects the specific mode changes to handle the violation further.
         ViolationHandler violationHandler = modeSpecificContext.tracker().createViolationHandler(bucketId);
@@ -435,6 +455,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         if (finalization == null)
             return;
         if (nextDrainPartition >= UserConfig.DEFAULT_CM_PARTITIONS) {
+            recordDerivationMetrics();
             if (Debug.INTERNAL)
                 getContext().getLog().info(
                         "[VO] bucket={} finalRound={} queuedCmPartitions={} localRejectedCandidates={}",
@@ -446,11 +467,15 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         awaitingPartitionFinalSequence = statusSequenceByPartition[nextDrainPartition];
         List<DrainProtocol.DrainRecord> records = new ArrayList<>();
         for (int lhs = nextDrainPartition; lhs < finalization.totalColumns(); lhs += UserConfig.DEFAULT_CM_PARTITIONS) {
+            long started = System.nanoTime();
+            RoaringBitmap validRhs = modeSpecificContext.derivesAtDrain()
+                    ? modeSpecificContext.validRhsSnapshot(lhs) : null;
+            if (validRhs != null) phaseMetrics.record(Phase.VALIDATION, System.nanoTime() - started);
             records.add(new DrainProtocol.DrainRecord(
                     finalization.finalRound(), lhs, bucketId, finalization.expectedBuckets(), new RoaringBitmap(),
-                    candidateEvaluator.exactComparisonsFor(lhs),
+                    candidateEvaluator == null ? 0L : candidateEvaluator.exactComparisonsFor(lhs),
                     modeSpecificContext.metricsFor(lhs),
-                    lhs == 0 ? modeSpecificContext.activeClusterSignatures() : List.of()));
+                    lhs == 0 ? modeSpecificContext.activeClusterSignatures() : List.of(), validRhs));
         }
 
         if (records.isEmpty()) {
@@ -461,6 +486,14 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         awaitingPartitionDrain = List.copyOf(records);
         awaitingPartitionReady = true;
         probeAwaitingPartition();
+    }
+
+    private boolean derivationMetricsRecorded;
+
+    private void recordDerivationMetrics() {
+        if (derivationMetricsRecorded) return;
+        derivationMetricsRecorded = true;
+        phaseMetrics.addDerivationMetrics(modeSpecificContext.derivationMetrics());
     }
 
     private void probeAwaitingPartition() {

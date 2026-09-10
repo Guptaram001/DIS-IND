@@ -11,10 +11,8 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.typed.Cluster;
-import akka.cluster.typed.ClusterSingleton;
-import akka.cluster.typed.ClusterSingletonSettings;
-import akka.cluster.typed.SingletonActor;
 import disIND.valueBased.membership.CandidateDomain;
+import disIND.valueBased.model.ClusterOptions;
 import disIND.valueBased.model.SharedModel.*;
 import disIND.valueBased.protocol.ValueOwnerProtocol.FinalizeMembership;
 import disIND.valueBased.protocol.DrainProtocol;
@@ -42,11 +40,16 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private static final String DISPATCHER_CPU_INTENSIVE = "akka.actor.cpu-intensive-dispatcher";
 
     public record Config(int numCols, int maxArity, int maxConcurrentNra, int cleanThreshold, DatasetMetadata metadata,
-            DataOrientation orientation, CandidateTrackingMode candidateTracking) {
+            DataOrientation orientation, CandidateTrackingMode candidateTracking, ClusterOptions clusterOptions) {
 
         public static Config withAll(DatasetMetadata metadata, DataOrientation orientation,
                 CandidateTrackingMode candidateTracking) {
-            return new Config(metadata.totalCols(), 3, 32, 1, metadata, orientation, candidateTracking);
+            return withAll(metadata, orientation, candidateTracking, ClusterOptions.configured());
+        }
+
+        public static Config withAll(DatasetMetadata metadata, DataOrientation orientation,
+                CandidateTrackingMode candidateTracking, ClusterOptions options) {
+            return new Config(metadata.totalCols(), 3, 32, 1, metadata, orientation, candidateTracking, options);
         }
     }
 
@@ -65,18 +68,24 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
     private final AtomicBoolean storesClosed = new AtomicBoolean();
 
     public static Behavior<BDCommand> create(Config cfg) {
-        return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg));
+        return create(cfg, null);
     }
 
-    private INDGuardian(ActorContext<BDCommand> ctx, Config cfg) {
+    public static Behavior<BDCommand> create(Config cfg, ActorRef<RCCommand> collector) {
+        return Behaviors.setup(ctx -> new INDGuardian(ctx, cfg, collector));
+    }
+
+    private INDGuardian(ActorContext<BDCommand> ctx, Config cfg, ActorRef<RCCommand> collector) {
         super(ctx);
         DatasetMetadata metadata = cfg.metadata();
         this.metadata = metadata;
-        ClusterSingleton singletons = ClusterSingleton.get(ctx.getSystem());
-
-        this.rcRef = singletons.init(SingletonActor.of(ResultCollectorActor.create(metadata), "result-collector")
-                .withSettings(ClusterSingletonSettings.create(ctx.getSystem()).withRole("coordinator"))
-                .withProps(Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT)));
+        if (collector == null && !Cluster.get(ctx.getSystem()).selfMember().hasRole("coordinator"))
+            throw new IllegalStateException("Workers require the coordinator-owned result collector");
+        this.rcRef = collector != null ? collector : ctx.spawn(ResultCollectorActor.create(metadata),
+                "result-collector", Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT));
+        if (collector == null)
+            ctx.getLog().info("IND settings: mode={} calculation={} clusterChangeDetection={} validation=lhs-intersection",
+                    cfg.candidateTracking(), cfg.clusterOptions().calculation(), cfg.clusterOptions().changeDetection());
 
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         this.sharding = sharding;
@@ -92,7 +101,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
             return ValueOwnerActor.create(entityCtx.getEntityId(),
                     sharding, metadata, worker.membershipStore(), worker.valueIdStore(), cfg.orientation(),
                     cfg.candidateTracking(), worker.drainDispatcher(), worker.membershipWriter(),
-                    worker.candidateDomain(), worker.phaseMetrics());
+                    worker.candidateDomain(), worker.phaseMetrics(), cfg.clusterOptions());
         }).withRole("worker").withEntityProps(Props.empty().withDispatcherFromConfig(DISPATCHER_VO)));
 
         sharding.init(Entity.of(DirectBatchAggregatorActor.TYPE_KEY, entityCtx -> DirectBatchAggregatorActor.create())

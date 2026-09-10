@@ -5,6 +5,16 @@ import java.util.concurrent.atomic.LongAdder;
 
 public final class WorkerPhaseMetrics {
 
+    public enum DerivationWork { DIRTY_LHS, INTERSECTIONS, SIGNATURE_VISITS, EMITTED_TRANSITIONS }
+    private final LongAdder[] derivation = java.util.stream.IntStream.range(0, 4)
+            .mapToObj(i -> new LongAdder()).toArray(LongAdder[]::new);
+
+    public void addDerivationMetrics(long[] values) {
+        for (int i = 0; i < derivation.length; i++) derivation[i].add(values[i]);
+    }
+
+    public long derivationCount(DerivationWork work) { return derivation[work.ordinal()].sum(); }
+
     public enum Phase {
         BATCH_PREPARATION, MEMBERSHIP_LOAD, MEMBERSHIP_UPDATE, CANDIDATE_EVALUATION,
         FILTER_UPDATE, VALIDATION, ROCKSDB_WRITE

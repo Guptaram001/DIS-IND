@@ -6,7 +6,7 @@ import java.util.Map;
 import disIND.valueBased.model.SharedModel.DataOrientation;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.IngestionMode;
-import disIND.valueBased.structures.ClusterValidationStrategy;
+import disIND.valueBased.model.ClusterOptions.IndCalculation;
 
 public final class UserConfig {
     public static boolean inputFileHasHeader;
@@ -51,9 +51,6 @@ public final class UserConfig {
     public static final boolean DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_TRANSITIVE_ENABLED = false;
-    public static final boolean DEFAULT_EXACT_EVENT_FILTERING_ENABLED = true;
-    public static final boolean DEFAULT_EXACT_DIRECT_VIOLATION_ENABLED = true;
-    public static final ClusterValidationStrategy DEFAULT_CLUSTER_VALIDATION_STRATEGY = ClusterValidationStrategy.SCAN;
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
     public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 100_000;
@@ -90,9 +87,6 @@ public final class UserConfig {
     public static boolean PRUNE_PARTITION_COUNTS_ENABLED = DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED;
     public static boolean PRUNE_PARTITION_HIERARCHY_ENABLED = DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED;
     public static boolean PRUNE_TRANSITIVE_ENABLED = DEFAULT_PRUNE_TRANSITIVE_ENABLED;
-    public static boolean EXACT_EVENT_FILTERING_ENABLED = DEFAULT_EXACT_EVENT_FILTERING_ENABLED;
-    public static boolean EXACT_DIRECT_VIOLATION_ENABLED = DEFAULT_EXACT_DIRECT_VIOLATION_ENABLED;
-    public static ClusterValidationStrategy CLUSTER_VALIDATION_STRATEGY = DEFAULT_CLUSTER_VALIDATION_STRATEGY;
     public static int PRUNE_COUNT_PARTITIONS = DEFAULT_PRUNE_COUNT_PARTITIONS;
     public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
     public static int VALUE_OWNER_HOT_ENTRIES = DEFAULT_VALUE_OWNER_HOT_ENTRIES;
@@ -101,6 +95,9 @@ public final class UserConfig {
     public static String VALUE_OWNER_DISK_DIR = DEFAULT_VALUE_OWNER_DISK_DIR;
     public static DataOrientation DATA_ORIENTATION = DEFAULT_DATA_ORIENTATION;
     public static CandidateTrackingMode CANDIDATE_TRACKING = DEFAULT_CANDIDATE_TRACKING;
+    public static IndCalculation IND_CALCULATION = IndCalculation.BATCH;
+    public static boolean CLUSTER_CHANGE_DETECTION = true;
+
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
     static {
@@ -127,9 +124,6 @@ public final class UserConfig {
         CLI_PROPERTIES.put("prune-partition-counts-enabled", "dis.ind.prune-partition-counts-enabled");
         CLI_PROPERTIES.put("prune-partition-hierarchy-enabled", "dis.ind.prune-partition-hierarchy-enabled");
         CLI_PROPERTIES.put("prune-count-partitions", "dis.ind.prune-count-partitions");
-        CLI_PROPERTIES.put("cluster-validation", "dis.ind.cluster-validation");
-        CLI_PROPERTIES.put("exact-event-filtering-enabled", "dis.ind.exact-event-filtering-enabled");
-        CLI_PROPERTIES.put("exact-direct-violation-enabled", "dis.ind.exact-direct-violation-enabled");
         CLI_PROPERTIES.put("value-id-hot-entries", "dis.ind.value-id-hot-entries");
         CLI_PROPERTIES.put("value-id-disk-dir", "dis.ind.value-id-disk-dir");
         CLI_PROPERTIES.put("value-to-rows-disk-dir", "dis.ind.value-to-rows-disk-dir");
@@ -137,6 +131,9 @@ public final class UserConfig {
         CLI_PROPERTIES.put("value-owner-disk-dir", "dis.ind.value-owner-disk-dir");
         CLI_PROPERTIES.put("data-orientation", "dis.ind.data-orientation");
         CLI_PROPERTIES.put("candidate-tracking", "dis.ind.candidate-tracking");
+        CLI_PROPERTIES.put("ind-calculation", "dis.ind.ind-calculation");
+        CLI_PROPERTIES.put("cluster-change-detection", "dis.ind.cluster-change-detection");
+        CLI_PROPERTIES.put("prune-transitive-enabled", "dis.ind.prune-transitive-enabled");
     }
 
     /**
@@ -194,12 +191,9 @@ public final class UserConfig {
                 "dis.ind.prune-transitive-enabled", DEFAULT_PRUNE_TRANSITIVE_ENABLED);
         PRUNE_COUNT_PARTITIONS = powerOfTwoSetting("DIS_IND_PRUNE_COUNT_PARTITIONS",
                 "dis.ind.prune-count-partitions", DEFAULT_PRUNE_COUNT_PARTITIONS);
-        CLUSTER_VALIDATION_STRATEGY = clusterValidationStrategySetting("DIS_IND_CLUSTER_VALIDATION",
-                "dis.ind.cluster-validation", DEFAULT_CLUSTER_VALIDATION_STRATEGY);
-        EXACT_EVENT_FILTERING_ENABLED = booleanSetting("DIS_IND_EXACT_EVENT_FILTERING_ENABLED",
-                "dis.ind.exact-event-filtering-enabled", DEFAULT_EXACT_EVENT_FILTERING_ENABLED);
-        EXACT_DIRECT_VIOLATION_ENABLED = booleanSetting("DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED",
-                "dis.ind.exact-direct-violation-enabled", DEFAULT_EXACT_DIRECT_VIOLATION_ENABLED);
+        IND_CALCULATION = indCalculationSetting("DIS_IND_IND_CALCULATION", "dis.ind.ind-calculation");
+        CLUSTER_CHANGE_DETECTION = booleanSetting("DIS_IND_CLUSTER_CHANGE_DETECTION",
+                "dis.ind.cluster-change-detection", true);
         VALUE_ID_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
                 "dis.ind.value-id-hot-entries", DEFAULT_VALUE_ID_HOT_ENTRIES);
         VALUE_ID_DISK_DIR = stringSetting("DIS_IND_VALUE_ID_DISK_DIR",
@@ -358,17 +352,13 @@ public final class UserConfig {
         };
     }
 
-    private static ClusterValidationStrategy clusterValidationStrategySetting(String environmentName,
-            String propertyName, ClusterValidationStrategy fallback) {
-        String value = stringSetting(environmentName, propertyName, null);
-        if (value == null)
-            return fallback;
-
-        return switch (value.trim().toLowerCase()) {
-            case "scan", "current" -> ClusterValidationStrategy.SCAN;
-            case "lhs-cache", "lhs_cache", "cache", "cached" -> ClusterValidationStrategy.LHS_CACHE;
+    private static IndCalculation indCalculationSetting(String environmentName, String propertyName) {
+        String value = stringSetting(environmentName, propertyName, "batch");
+        return switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "batch" -> IndCalculation.BATCH;
+            case "final" -> IndCalculation.FINAL;
             default -> throw new IllegalArgumentException(settingName(environmentName, propertyName)
-                    + " must be scan or lhs-cache: " + value);
+                    + " must be batch or final: " + value);
         };
     }
 

@@ -23,9 +23,16 @@ public final class DrainProtocol {
     public record DrainRecord(int finalRound, int lhsCol, int bucketId, int expectedBuckets,
             RoaringBitmap locallyRejectedRhs,
             long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics,
-            List<long[]> activeClusterSignatures) implements AkkaSerializable {
+            List<long[]> activeClusterSignatures, RoaringBitmap validRhsSnapshot) implements AkkaSerializable {
+        public DrainRecord(int finalRound, int lhsCol, int bucketId, int expectedBuckets,
+                RoaringBitmap locallyRejectedRhs, long exactValueProbesWithoutPruning,
+                PruneMetrics pruneMetrics, List<long[]> activeClusterSignatures) {
+            this(finalRound, lhsCol, bucketId, expectedBuckets, locallyRejectedRhs,
+                    exactValueProbesWithoutPruning, pruneMetrics, activeClusterSignatures, null);
+        }
         public DrainRecord {
             locallyRejectedRhs = locallyRejectedRhs.clone();
+            validRhsSnapshot = validRhsSnapshot == null ? null : validRhsSnapshot.clone();
             Objects.requireNonNull(pruneMetrics, "pruneMetrics");
             Objects.requireNonNull(activeClusterSignatures, "activeClusterSignatures");
             activeClusterSignatures = activeClusterSignatures.stream()

@@ -10,6 +10,7 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.typed.Cluster;
 import disIND.valueBased.model.SharedModel.BDCommand;
+import disIND.valueBased.model.SharedModel.RCCommand;
 import disIND.valueBased.protocol.StartProtocol;
 import disIND.valueBased.protocol.StartProtocol.ConfigServiceListing;
 import disIND.valueBased.protocol.StartProtocol.DatasetConfig;
@@ -53,6 +54,8 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
     private final String workerId;
     private final Set<String> readyWorkers = new HashSet<>();
     private ActorRef<BDCommand> indGuardian;
+    private ActorRef<RCCommand> resultCollector;
+    private INDGuardian.Config installedConfig;
     private ActorRef<StartProtocol.Command> coordinator;
 
     private StartGuardian(ActorContext<StartProtocol.Command> context,
@@ -65,8 +68,7 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
 
         if (settings.nodeRole().equals("coordinator")) {
             indGuardian = context.spawn(INDGuardian.create(settings.coordinatorConfig()), "ind-guardian");
-            context.getSystem().receptionist().tell(Receptionist.register(CONFIG_SERVICE, context.getSelf()));
-            completeCoordinatorWhenReady();
+            requestCollector();
         } else {
             ActorRef<Receptionist.Listing> adapter = context.messageAdapter(Receptionist.Listing.class,
                     listing -> new ConfigServiceListing(listing));
@@ -77,6 +79,7 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
     @Override
     public Receive<StartProtocol.Command> createReceive() {
         return newReceiveBuilder()
+                .onMessage(StartProtocol.CollectorReady.class, this::onCollectorReady)
                 .onMessage(ConfigServiceListing.class, this::onListing)
                 .onMessage(RequestConfig.class, this::onRequestConfig)
                 .onMessage(InstallConfig.class, this::onInstallConfig)
@@ -101,7 +104,7 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
         INDGuardian.Config config = settings.coordinatorConfig();
 
         message.replyTo().tell(new InstallConfig(new DatasetConfig(
-                config.metadata(), config.orientation(), config.candidateTracking())));
+                config.metadata(), config.orientation(), config.candidateTracking(), config.clusterOptions()), resultCollector));
         return this;
     }
 
@@ -112,15 +115,15 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
         DatasetConfig received = message.config();
 
         INDGuardian.Config config = INDGuardian.Config.withAll(
-                received.metadata(), received.orientation(), received.candidateTracking());
-        indGuardian = getContext().spawn(INDGuardian.create(config), "ind-guardian");
+                received.metadata(), received.orientation(), received.candidateTracking(), received.clusterOptions());
+        installedConfig = config;
+        indGuardian = getContext().spawn(INDGuardian.create(config, message.resultCollector()), "ind-guardian");
 
         if (coordinator == null) {
             ready.completeExceptionally(new IllegalStateException("Coordinator unavailable while installing config"));
             return this;
         }
-        coordinator.tell(new WorkerReady(workerId));
-        ready.complete(new RuntimeHandle(indGuardian, config));
+        requestCollector();
 
         getContext().getLog().info("Worker runtime initialized from coordinator metadata: worker={}", workerId);
 
@@ -137,8 +140,26 @@ public final class StartGuardian extends AbstractBehavior<StartProtocol.Command>
         return this;
     }
 
+    private void requestCollector() {
+        ActorRef<ActorRef<RCCommand>> adapter = getContext().messageAdapter(
+                (Class<ActorRef<RCCommand>>) (Class<?>) ActorRef.class, StartProtocol.CollectorReady::new);
+        indGuardian.tell(new BDCommand.GetResultCollector(adapter));
+    }
+
+    private Behavior<StartProtocol.Command> onCollectorReady(StartProtocol.CollectorReady message) {
+        resultCollector = message.resultCollector();
+        if (settings.nodeRole().equals("coordinator")) {
+            getContext().getSystem().receptionist().tell(Receptionist.register(CONFIG_SERVICE, getContext().getSelf()));
+            completeCoordinatorWhenReady();
+        } else {
+            coordinator.tell(new WorkerReady(workerId));
+            ready.complete(new RuntimeHandle(indGuardian, installedConfig));
+        }
+        return this;
+    }
+
     private void completeCoordinatorWhenReady() {
-        if (settings.nodeRole().equals("coordinator") && readyWorkers.size() >= settings.expectedWorkers()) {
+        if (settings.nodeRole().equals("coordinator") && resultCollector != null && readyWorkers.size() >= settings.expectedWorkers()) {
             ready.complete(new RuntimeHandle(indGuardian, settings.coordinatorConfig()));
         }
     }

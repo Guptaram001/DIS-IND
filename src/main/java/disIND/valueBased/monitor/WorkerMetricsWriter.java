@@ -36,6 +36,11 @@ public final class WorkerMetricsWriter {
                 writeValueIdMetrics(valueId);
                 writeMembershipMetrics(membership);
                 writeBatchPhaseMetrics(phaseMetrics);
+                StringBuilder derivation = new StringBuilder("metric\tcount\n");
+                for (WorkerPhaseMetrics.DerivationWork work : WorkerPhaseMetrics.DerivationWork.values())
+                        derivation.append(work.name().toLowerCase(java.util.Locale.ROOT)).append('\t')
+                                .append(phaseMetrics.derivationCount(work)).append('\n');
+                write("cluster-validation-metrics.tsv", derivation.toString(), "CLUSTER-VALIDATION");
         }
 
         public void writeAuxiliaryStorage(WorkerValueIdStore.DBSnapshot valueIds,

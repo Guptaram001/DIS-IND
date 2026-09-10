@@ -107,6 +107,13 @@ public final class PruneMetricsCollector {
         increment(lhs, EXACT_VALIDATED);
     }
 
+    public void exactResults(int lhs, long tested, long validated) {
+        if (validated < 0 || validated > tested) throw new IllegalArgumentException("Invalid result counts");
+        add(lhs, EXACT_TESTED, tested);
+        add(lhs, EXACT_VALIDATED, validated);
+        add(lhs, EXACT_REJECTED, tested - validated);
+    }
+
     public PruneMetrics snapshot(int lhs) {
         int base = lhs * METRIC_COUNT;
 

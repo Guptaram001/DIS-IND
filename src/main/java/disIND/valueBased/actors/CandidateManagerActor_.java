@@ -40,7 +40,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
     private static final class LhsState {
         final int lhsCol;
-        final short[] violationCountByRhs;
+        int[] violationCountByRhs;
+        RoaringBitmap validRhsSnapshot;
         final RoaringBitmap drainedValueOwners = new RoaringBitmap();
         int expectedValueOwnerDrains = -1;
         int finalRound = -1;
@@ -53,7 +54,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
 
         LhsState(int lhsCol, int totalCols) {
             this.lhsCol = lhsCol;
-            this.violationCountByRhs = new short[totalCols];
+
         }
     }
 
@@ -103,6 +104,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             if (CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS) != partitionId)
                 throw new IllegalArgumentException("LHS " + lhsCol + " does not belong to cm partition " + partitionId);
             LhsState state = stateFor(lhsCol);
+            if (state.violationCountByRhs == null) state.violationCountByRhs = new int[metadata.totalCols()];
 
             int start = msg.offsets()[lhsIndex];
             int end = msg.offsets()[lhsIndex + 1];
@@ -135,7 +137,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         return this;
     }
 
-    private void onValueOwnerDrained(int lhsCol, CMCommand.ValueOwnerDrained msg) {
+    private void onValueOwnerDrained(int lhsCol, CMCommand.ValueOwnerDrained msg, RoaringBitmap snapshot) {
         LhsState state = stateFor(lhsCol);
         if (state.finalRound >= 0 && msg.finalRound() != state.finalRound) {
             getContext().getLog().warn("Ignoring stale VO drain round={} currentFinalRound={} bucket={}",
@@ -145,6 +147,10 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         state.finalRound = msg.finalRound();
         state.expectedValueOwnerDrains = msg.expectedBuckets();
         if (!state.drainedValueOwners.contains(msg.bucketId())) {
+            if (snapshot != null) {
+                if (state.validRhsSnapshot == null) state.validRhsSnapshot = snapshot.clone();
+                else state.validRhsSnapshot.and(snapshot);
+            }
             state.exactComparisonsWithoutPruning = Math.addExact(state.exactComparisonsWithoutPruning,
                     msg.exactValueProbesWithoutPruning());
             state.pruneMetrics = state.pruneMetrics.plus(msg.pruneMetrics());
@@ -204,7 +210,7 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             onValueOwnerDrained(record.lhsCol(), new CMCommand.ValueOwnerDrained(record.finalRound(), record.bucketId(),
                     record.expectedBuckets(), record.locallyRejectedRhs(),
                     record.exactValueProbesWithoutPruning(),
-                    record.pruneMetrics(), record.activeClusterSignatures()));
+                    record.pruneMetrics(), record.activeClusterSignatures()), record.validRhsSnapshot());
         }
         batch.replyTo().tell(new disIND.valueBased.protocol.DrainProtocol.BatchAcknowledged(
                 batch.batchId(), partitionId));
@@ -217,11 +223,13 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         state.finishedReported = true;
 
         List<UnaryPair> clean = new ArrayList<>();
-        for (int rhsCol = 0; rhsCol < state.violationCountByRhs.length; rhsCol++) {
+        for (int rhsCol = 0; rhsCol < metadata.totalCols(); rhsCol++) {
             boolean compatible = !UserConfig.TYPE_COMPATIBILITY_ENABLED || testCompatibility(
                     metadata.typeOf(state.lhsCol), metadata.typeOf(rhsCol));
 
-            if (rhsCol != state.lhsCol && compatible && state.violationCountByRhs[rhsCol] == 0) {
+            boolean valid = state.validRhsSnapshot != null ? state.validRhsSnapshot.contains(rhsCol)
+                    : state.violationCountByRhs == null || state.violationCountByRhs[rhsCol] == 0;
+            if (rhsCol != state.lhsCol && compatible && valid) {
                 clean.add(new UnaryPair(state.lhsCol, rhsCol));
             }
         }
