@@ -26,7 +26,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
 
     private PruneMetrics pruneMetrics = PruneMetrics.empty();
     private long activeClusterEntriesAcrossBuckets;
-    private final Set<BitSet> distinctActiveClusterSignatures = new HashSet<>();
+    private long distinctActiveClusterSignatureCount;
     private final ResultMetricsWriter metricsWriter;
 
     public static Behavior<RCCommand> create(DatasetMetadata metadata) {
@@ -51,6 +51,8 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
     }
 
     private Behavior<RCCommand> onCmDiscoveryComplete(RCCommand.CmDiscoveryComplete msg) {
+        if (finishedCms.get(msg.lhsOwnerCol()))
+            return this;
         unaryResults.put(msg.lhsOwnerCol(), msg.unaryPairs());
         naryResults.put(msg.lhsOwnerCol(), msg.naryPairs());
         finishedCms.set(msg.lhsOwnerCol());
@@ -59,8 +61,9 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
         pruneMetrics = pruneMetrics.plus(msg.pruneMetrics());
         activeClusterEntriesAcrossBuckets = Math.addExact(activeClusterEntriesAcrossBuckets,
                 msg.activeClusterEntriesAcrossBuckets());
-        for (long[] words : msg.distinctActiveClusterSignatures())
-            distinctActiveClusterSignatures.add(BitSet.valueOf(words));
+        // Only LHS 0 contributes signatures, already deduplicated across all VOs.
+        distinctActiveClusterSignatureCount = Math.addExact(distinctActiveClusterSignatureCount,
+                msg.distinctActiveClusterSignatureCount());
 
         if (Debug.MESSAGE)
             formLog(getContext().getLog(), String.valueOf(Debug.LogType.MESSAGE), Debug.rc(),
@@ -115,7 +118,7 @@ public class ResultCollectorActor extends AbstractBehavior<RCCommand> {
 
         discoveryFinished = true;
         metricsWriter.writeAll(exactComparisonsWithoutPruning,
-                finalRound, pruneMetrics, activeClusterEntriesAcrossBuckets, distinctActiveClusterSignatures.size());
+                finalRound, pruneMetrics, activeClusterEntriesAcrossBuckets, distinctActiveClusterSignatureCount);
         finishReplyTo.tell(new BDReply.DiscoveryFinished(finalRound));
         IndReport report = buildReport();
         for (ActorRef<IndReport> replyTo : pendingReportReplies)

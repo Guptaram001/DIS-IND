@@ -359,13 +359,7 @@ public final class SharedModel {
                 List<NaryPair> naryPairs,
                 long exactValueProbesWithoutPruning, PruneMetrics pruneMetrics,
                 long activeClusterEntriesAcrossBuckets,
-                List<long[]> distinctActiveClusterSignatures) implements RCCommand {
-            public CmDiscoveryComplete {
-                Objects.requireNonNull(distinctActiveClusterSignatures, "distinctActiveClusterSignatures");
-                distinctActiveClusterSignatures = distinctActiveClusterSignatures.stream()
-                        .map(long[]::clone)
-                        .toList();
-            }
+                long distinctActiveClusterSignatureCount) implements RCCommand {
         }
     }
 

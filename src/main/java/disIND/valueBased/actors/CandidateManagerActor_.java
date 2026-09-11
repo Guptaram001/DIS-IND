@@ -234,13 +234,12 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             }
         }
 
+        // All VOs route signatures to LHS 0, so its set is already globally distinct.
         rcRef.tell(new RCCommand.CmDiscoveryComplete(state.lhsCol, state.finalRound,
                 List.copyOf(clean), List.<NaryPair>of(),
                 state.exactComparisonsWithoutPruning, state.pruneMetrics,
                 state.activeClusterEntriesAcrossBuckets,
-                state.distinctActiveClusterSignatures.stream()
-                        .map(BitSet::toLongArray)
-                        .toList()));
+                state.distinctActiveClusterSignatures.size()));
 
         if (Debug.INTERNAL) {
             getContext().getLog().info(
