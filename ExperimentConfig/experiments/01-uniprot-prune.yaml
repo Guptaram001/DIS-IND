@@ -18,7 +18,7 @@ application:
   prune_partition_hierarchy_enabled: true
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  ind_calculation: final
+  ind_calculation: batch
   cluster_change_detection: true
 
 resources:
