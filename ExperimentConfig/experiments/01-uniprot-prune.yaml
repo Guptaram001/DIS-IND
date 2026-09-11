@@ -11,7 +11,7 @@ dataset:
 application:
   data_orientation: value
   candidate_tracking: exact
-  ingestion_mode: delete
+  ingestion_mode: insert
   chunk_size: 5000000
   prune_cqf_enabled: false
   prune_partition_counts_enabled: true
