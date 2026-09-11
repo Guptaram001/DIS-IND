@@ -43,9 +43,8 @@ DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED="${DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED
 DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED="${DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED:-true}"
 DIS_IND_PRUNE_TRANSITIVE_ENABLED="${DIS_IND_PRUNE_TRANSITIVE_ENABLED:-false}"
 DIS_IND_PRUNE_COUNT_PARTITIONS="${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
-DIS_IND_CLUSTER_VALIDATION="${DIS_IND_CLUSTER_VALIDATION:-scan}"
-DIS_IND_EXACT_EVENT_FILTERING_ENABLED="${DIS_IND_EXACT_EVENT_FILTERING_ENABLED:-true}"
-DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED="${DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED:-true}"
+DIS_IND_IND_CALCULATION="${DIS_IND_IND_CALCULATION:-batch}"
+DIS_IND_CLUSTER_CHANGE_DETECTION="${DIS_IND_CLUSTER_CHANGE_DETECTION:-true}"
 EXPECTED_WORKERS="${#WORKER_HOSTS[@]}"
 EXPECTED_MEMBERS="$((EXPECTED_WORKERS + 1))"
 
@@ -133,8 +132,8 @@ start_node() {
         "$DIS_IND_CANDIDATE_TRACKING" "$DIS_IND_DATASET_NAME" "$DIS_IND_INGESTION_MODE" \
         "$DIS_IND_PRUNE_CQF_ENABLED" "$DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED" \
         "$DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED" "$DIS_IND_PRUNE_TRANSITIVE_ENABLED" \
-        "$DIS_IND_PRUNE_COUNT_PARTITIONS" "$DIS_IND_CLUSTER_VALIDATION" \
-        "$DIS_IND_EXACT_EVENT_FILTERING_ENABLED" "$DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED" \
+        "$DIS_IND_PRUNE_COUNT_PARTITIONS" "$DIS_IND_IND_CALCULATION" \
+        "$DIS_IND_CLUSTER_CHANGE_DETECTION" \
         "$AKKA_MAXIMUM_FRAME_SIZE" "$AKKA_BUFFER_POOL_SIZE" <<'REMOTE_START'
 set -euo pipefail
 project_dir="$1"
@@ -162,11 +161,10 @@ prune_partition_counts_enabled="${22}"
 prune_partition_hierarchy_enabled="${23}"
 prune_transitive_enabled="${24}"
 prune_count_partitions="${25}"
-cluster_validation="${26}"
-exact_event_filtering_enabled="${27}"
-exact_direct_violation_enabled="${28}"
-maximum_frame_size="${29}"
-buffer_pool_size="${30}"
+ind_calculation="${26}"
+cluster_change_detection="${27}"
+maximum_frame_size="${28}"
+buffer_pool_size="${29}"
 
 if [[ -e "$state_dir" ]]; then
     echo "Run-state directory already exists; refusing to reuse it: $state_dir" >&2
@@ -206,9 +204,8 @@ common_env=(
     "DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED=$prune_partition_hierarchy_enabled"
     "DIS_IND_PRUNE_TRANSITIVE_ENABLED=$prune_transitive_enabled"
     "DIS_IND_PRUNE_COUNT_PARTITIONS=$prune_count_partitions"
-    "DIS_IND_CLUSTER_VALIDATION=$cluster_validation"
-    "DIS_IND_EXACT_EVENT_FILTERING_ENABLED=$exact_event_filtering_enabled"
-    "DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED=$exact_direct_violation_enabled"
+    "DIS_IND_IND_CALCULATION=$ind_calculation"
+    "DIS_IND_CLUSTER_CHANGE_DETECTION=$cluster_change_detection"
     "DIS_IND_DIAGNOSTICS_DIR=$state_dir/diagnostics"
     "DIS_IND_VALUE_ID_DISK_DIR=$state_dir/value-ids"
     "DIS_IND_VALUE_TO_ROWS_DISK_DIR=$state_dir/value-to-rows"

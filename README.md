@@ -156,6 +156,52 @@ All nodes mount the input directory because each must discover identical
 dataset metadata before registering its shard behavior. Only the coordinator
 streams the rows.
 
+## Exact and prune calculation options
+
+The value-based pipeline supports `count`, `witness`, `exact`, and `prune`.
+Count and witness retain their existing incremental processing. Exact and prune
+share one validation engine: cached LHS bitmap intersections of active attribute
+clusters. The former separate Shaabani mode and `--cluster-validation scan|lhs-cache`
+selector have been removed, along with the exact candidate-event flags.
+
+```bash
+./scripts/run.sh valuebased --candidate-tracking exact \
+  --ind-calculation batch --cluster-change-detection true
+```
+
+Use the same flags with `--candidate-tracking prune`. Set `--ind-calculation final`
+to defer all IND calculation until finalization. The environment equivalents are
+`DIS_IND_IND_CALCULATION=batch|final` (default `batch`) and
+`DIS_IND_CLUSTER_CHANGE_DETECTION=true|false` (default `true`). Docker and remote
+launchers forward these settings; the coordinator distributes resolved cluster
+options to workers.
+
+In `batch` mode each local value-owner batch updates the clusters, recomputes
+eligible LHS results, and sends only validity transitions to CMs. Final drain
+waits for all acknowledged sequences, then writes the maintained result once.
+There is no global synchronization/report after every input batch. Change
+detection limits work to LHSs in signatures that appeared or disappeared; when
+disabled, every LHS is considered and its intersection cache is invalidated at
+each batch boundary. Frequency-only changes do not change cluster signatures.
+
+Prune retains conservative LHS/RHS insertion/deletion validity skips in batch
+mode. Mixed batches only skip a pair when no change on either side can reverse
+its previous status. Enabled whole/partition cardinality, CQF, and transitivity
+checks resolve candidates before the shared intersection. In `final` mode it
+maintains summaries but performs no intermediate validity calculation or
+validity-based skips. Final transitivity uses only relationships already proven
+at that final boundary. Final snapshots are intersected across all buckets;
+empty local LHSs impose no restriction. Both paths exclude self and incompatible
+pairs and write the final file only once.
+
+The coordinator's `INDGuardian` owns `result-collector` as a child and shares its
+reference with worker guardians; the collector is not a cluster singleton.
+Diagnostics record the calculation settings. `cluster-validation-metrics.tsv`
+records dirty LHS counts, intersection rebuilds, signature visits, and emitted
+transitions. Cluster validation and result comparison are timed under
+`VALIDATION`; candidate-event timing remains for count/witness. Skip counters
+now count candidate decisions at batch boundaries, not per-value event skips.
+
 ## Important environment variables
 
 | Variable | Meaning | Default |

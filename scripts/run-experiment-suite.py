@@ -136,25 +136,23 @@ APPLICATION_VARIABLES = {
     "chunk_size": "DIS_IND_CHUNK_SIZE",
     "data_orientation": "DIS_IND_DATA_ORIENTATION",
     "candidate_tracking": "DIS_IND_CANDIDATE_TRACKING",
+    "ind_calculation": "DIS_IND_IND_CALCULATION",
+    "cluster_change_detection": "DIS_IND_CLUSTER_CHANGE_DETECTION",
     "ingestion_mode": "DIS_IND_INGESTION_MODE",
     "prune_cqf_enabled": "DIS_IND_PRUNE_CQF_ENABLED",
     "prune_partition_counts_enabled": "DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED",
     "prune_partition_hierarchy_enabled": "DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED",
     "prune_transitive_enabled": "DIS_IND_PRUNE_TRANSITIVE_ENABLED",
     "prune_count_partitions": "DIS_IND_PRUNE_COUNT_PARTITIONS",
-    "cluster_validation": "DIS_IND_CLUSTER_VALIDATION",
-    "exact_event_filtering_enabled": "DIS_IND_EXACT_EVENT_FILTERING_ENABLED",
-    "exact_direct_violation_enabled": "DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED",
 }
 
 
 BOOLEAN_APPLICATION_SETTINGS = {
+    "cluster_change_detection",
     "prune_cqf_enabled",
     "prune_partition_counts_enabled",
     "prune_partition_hierarchy_enabled",
     "prune_transitive_enabled",
-    "exact_event_filtering_enabled",
-    "exact_direct_violation_enabled",
 }
 
 

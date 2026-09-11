@@ -154,6 +154,8 @@ export_docker_application_arguments() {
         case "$option" in
             --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
             --candidate-tracking) export DIS_IND_CANDIDATE_TRACKING="$value" ;;
+            --ind-calculation) export DIS_IND_IND_CALCULATION="$value" ;;
+            --cluster-change-detection) export DIS_IND_CLUSTER_CHANGE_DETECTION="$value" ;;
             --prune-cqf-enabled) export DIS_IND_PRUNE_CQF_ENABLED="$value" ;;
             --ingestion-mode) export DIS_IND_INGESTION_MODE="$value" ;;
             --delete-percent) export DIS_IND_DELETE_PERCENT="$value" ;;
@@ -162,9 +164,6 @@ export_docker_application_arguments() {
             --prune-partition-hierarchy-enabled) export DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED="$value" ;;
             --prune-transitive-enabled) export DIS_IND_PRUNE_TRANSITIVE_ENABLED="$value" ;;
             --prune-count-partitions) export DIS_IND_PRUNE_COUNT_PARTITIONS="$value" ;;
-            --cluster-validation) export DIS_IND_CLUSTER_VALIDATION="$value" ;;
-            --exact-event-filtering-enabled) export DIS_IND_EXACT_EVENT_FILTERING_ENABLED="$value" ;;
-            --exact-direct-violation-enabled) export DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED="$value" ;;
             --input-dir) export DIS_IND_INPUT_DIR="$value" ;;
             --output-file) export DIS_IND_OUTPUT_FILE="$value" ;;
             --batch-size) export DIS_IND_BATCH_SIZE="$value" ;;
@@ -340,15 +339,15 @@ run_distributed_docker() {
         echo "prune_partition_hierarchy_enabled=${DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED:-true}"
         echo "prune_transitive_enabled=${DIS_IND_PRUNE_TRANSITIVE_ENABLED:-false}"
         echo "prune_count_partitions=${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
-        echo "cluster_validation=${DIS_IND_CLUSTER_VALIDATION:-scan}"
-        echo "exact_event_filtering_enabled=${DIS_IND_EXACT_EVENT_FILTERING_ENABLED:-true}"
-        echo "exact_direct_violation_enabled=${DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED:-true}"
         echo "value_id_disk_dir=$DIS_IND_VALUE_ID_DISK_DIR"
         echo "value_to_rows_disk_dir=$DIS_IND_VALUE_TO_ROWS_DISK_DIR"
         echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
         echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES:-UserConfig default}"
         echo "data_orientation=${DIS_IND_DATA_ORIENTATION:-value}"
         echo "candidate_tracking=${DIS_IND_CANDIDATE_TRACKING:-count}"
+        echo "ind_calculation=${DIS_IND_IND_CALCULATION:-batch}"
+        echo "cluster_change_detection=${DIS_IND_CLUSTER_CHANGE_DETECTION:-true}"
+        echo "validation=lhs-intersection"
         echo "ingestion_mode=${DIS_IND_INGESTION_MODE:-insert-only}"
         echo "delete_percent=${DIS_IND_DELETE_PERCENT:-0}"
         echo "dataset_name=${DIS_IND_DATASET_NAME:-UserConfig default}"
@@ -735,9 +734,6 @@ fi
     echo "prune_partition_hierarchy_enabled=${DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED:-true}"
     echo "prune_transitive_enabled=${DIS_IND_PRUNE_TRANSITIVE_ENABLED:-false}"
     echo "prune_count_partitions=${DIS_IND_PRUNE_COUNT_PARTITIONS:-64}"
-    echo "cluster_validation=${DIS_IND_CLUSTER_VALIDATION:-scan}"
-    echo "exact_event_filtering_enabled=${DIS_IND_EXACT_EVENT_FILTERING_ENABLED:-true}"
-    echo "exact_direct_violation_enabled=${DIS_IND_EXACT_DIRECT_VIOLATION_ENABLED:-true}"
     echo "started_at=$(timestamp)"
     echo "sample_interval_seconds=$SAMPLE_INTERVAL"
     echo "thread_dump_interval_seconds=$THREAD_DUMP_INTERVAL"

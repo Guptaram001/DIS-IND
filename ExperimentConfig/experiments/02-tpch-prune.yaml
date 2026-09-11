@@ -5,8 +5,8 @@ experiment:
   timeout_seconds: 3600
 
 dataset:
-  name: imdb
-  input_dir: /home/node/DIS-IND/data/imdb
+  name: mb
+  input_dir: /home/node/DIS-IND/data/mb
 
 application:
   data_orientation: value
@@ -18,9 +18,8 @@ application:
   prune_partition_hierarchy_enabled: true
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  cluster_validation: scan
-  exact_event_filtering_enabled: true
-  exact_direct_violation_enabled: true
+  ind_calculation: final
+  cluster_change_detection: true
 
 resources:
   coordinator_java_xmx: 8g
