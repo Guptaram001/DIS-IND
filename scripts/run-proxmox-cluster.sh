@@ -80,7 +80,7 @@ else
     cd "$project_dir"
 fi
 
-mvn -DskipTests package
+mvn -DskipTests package clean package
 test -s target/dis-ind-1.0.0.jar
 REMOTE_BUILD
 }
