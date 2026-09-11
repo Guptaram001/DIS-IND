@@ -247,8 +247,8 @@ public final class DataLoader {
             for (int i = 0; i < n; i++) {
                 if (nCols.get(i) == 0)
                     continue;
-                // batchSize[i] = Math.max(1, chunkSize / nCols.get(i));
-                batchSize[i] = UserConfig.BATCH_SIZE;
+                batchSize[i] = Math.max(1, chunkSize / nCols.get(i));
+                // batchSize[i] = UserConfig.BATCH_SIZE;
                 CSVParser parser = openCSVParser(files.get(i), UserConfig.separator.charAt(0),
                         UserConfig.inputFileHasHeader);
                 parsers[i] = parser;
