@@ -40,7 +40,7 @@ public final class UserConfig {
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_CM_PARTITIONS = 128;
     public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
-    public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
+    public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 240;
     public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
     public static final int DEFAULT_DRAIN_MAX_IN_FLIGHT = 128;
     public static final int DEFAULT_DRAIN_BATCH_SIZE = 16;
