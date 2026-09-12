@@ -35,6 +35,7 @@ public final class MembershipUpdater {
         Int2ObjectMap<ColumnSet> addedColumnsByValue = new Int2ObjectOpenHashMap<>(); // ValueId to columns added.
         Int2ObjectMap<ColumnSet> removedColumnsByValue = new Int2ObjectOpenHashMap<>(); // ValueId to columns removed.
         long filterUpdateNanos = 0L;
+        long clusterUpdateNanos = 0L;
         boolean useFilterUpdates = modeSpecificContext.usesAuxiliaryFilters();
 
         for (Int2ObjectMap.Entry<Int2IntMap> valueEntry : updatesByValue.int2ObjectEntrySet()) {
@@ -82,41 +83,37 @@ public final class MembershipUpdater {
                         record.put(columnId, updatedCount);
                 }
             }
-            // Now if filters update them too with their state like in prune, exact mode
-            // except count witness.
-            // Memb added, removed, changed -> not relevant to Count, Witness mode.
-            // Memb changed to update the cluster in exact mode. and all needed for prune.
-            if (addedColumns != null) {
-                addedColumnsByValue.put(valueId, addedColumns);
-                long filterStarted = System.nanoTime();
-                for (int columnId = addedColumns.nextSetBit(0); columnId >= 0; columnId = addedColumns
-                        .nextSetBit(columnId + 1)) {
-                    modeSpecificContext.membershipAdded(columnId, valueId);
-                }
-                if (useFilterUpdates)
-                    filterUpdateNanos += System.nanoTime() - filterStarted;
-            }
-
-            if (removedColumns != null) {
-                removedColumnsByValue.put(valueId, removedColumns);
-                long filterStarted = System.nanoTime();
-                for (int columnId = removedColumns.nextSetBit(0); columnId >= 0; columnId = removedColumns
-                        .nextSetBit(columnId + 1))
-                    modeSpecificContext.membershipRemoved(columnId, valueId);
-                if (useFilterUpdates)
-                    filterUpdateNanos += System.nanoTime() - filterStarted;
-            }
+            if (addedColumns != null) addedColumnsByValue.put(valueId, addedColumns);
+            if (removedColumns != null) removedColumnsByValue.put(valueId, removedColumns);
             if (addedColumns != null || removedColumns != null) {
-                // When added or removed, still call membership changed.
-                long filterStarted = System.nanoTime();
-                modeSpecificContext.membershipChanged(record, addedColumns, removedColumns);
-                if (useFilterUpdates)
+                if (modeSpecificContext.clusterBased()) {
+                    long clusterStarted = System.nanoTime();
+                    if (addedColumns != null)
+                        for (int col = addedColumns.nextSetBit(0); col >= 0; col = addedColumns.nextSetBit(col + 1))
+                            modeSpecificContext.membershipAdded(col, valueId);
+                    if (removedColumns != null)
+                        for (int col = removedColumns.nextSetBit(0); col >= 0; col = removedColumns.nextSetBit(col + 1))
+                            modeSpecificContext.membershipRemoved(col, valueId);
+                    modeSpecificContext.membershipChanged(record, addedColumns, removedColumns);
+                    clusterUpdateNanos += System.nanoTime() - clusterStarted;
+                }
+                if (useFilterUpdates) {
+                    long filterStarted = System.nanoTime();
+                    if (addedColumns != null)
+                        for (int col = addedColumns.nextSetBit(0); col >= 0; col = addedColumns.nextSetBit(col + 1))
+                            modeSpecificContext.auxiliaryMembershipAdded(col, valueId);
+                    if (removedColumns != null)
+                        for (int col = removedColumns.nextSetBit(0); col >= 0; col = removedColumns.nextSetBit(col + 1))
+                            modeSpecificContext.auxiliaryMembershipRemoved(col, valueId);
                     filterUpdateNanos += System.nanoTime() - filterStarted;
+                }
             }
         }
 
         long updateNanos = System.nanoTime() - started;
-        phaseMetrics.record(Phase.MEMBERSHIP_UPDATE, Math.max(0L, updateNanos - filterUpdateNanos));
+        phaseMetrics.record(Phase.MEMBERSHIP_UPDATE, Math.max(0L, updateNanos - filterUpdateNanos - clusterUpdateNanos));
+        if (modeSpecificContext.clusterBased())
+            phaseMetrics.record(Phase.CLUSTER_MAINTENANCE, clusterUpdateNanos);
         if (useFilterUpdates)
             phaseMetrics.record(Phase.FILTER_UPDATE, filterUpdateNanos);
 

@@ -22,7 +22,7 @@ public sealed interface ModeSpecificContext
     default boolean derivesAtDrain() { return false; }
     default TrackingResult finishBatch() { throw new UnsupportedOperationException(); }
     default org.roaringbitmap.RoaringBitmap validRhsSnapshot(int lhs) { return null; }
-    default long[] derivationMetrics() { return new long[4]; }
+    default long[] derivationMetrics() { return new long[disIND.valueBased.monitor.WorkerPhaseMetrics.DerivationWork.values().length]; }
 
 
     default boolean pruningEnabled() {
@@ -42,6 +42,10 @@ public sealed interface ModeSpecificContext
 
     default void membershipRemoved(int columnId, int valueId) {
     }
+
+    default void auxiliaryMembershipAdded(int columnId, int valueId) {}
+
+    default void auxiliaryMembershipRemoved(int columnId, int valueId) {}
 
     default void membershipChanged(Int2IntMap membershipAfter, ColumnSet addedColumns, ColumnSet removedColumns) {
     }

@@ -270,7 +270,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             }
             long started = System.nanoTime();
             membershipStore.stage(bucketId, membership.updatedRecordsByValue(), Map.of());
-            phaseMetrics.record(Phase.ROCKSDB_WRITE, System.nanoTime() - started);
+            phaseMetrics.record(Phase.MEMBERSHIP_STAGE, System.nanoTime() - started);
             tryStartMembershipWrite();
             if (result != null)
                 sendCandidateStatusTransitions(message, result.transitionsByLhs(), 0);
@@ -298,7 +298,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 .persistsCandidateState() ? trackingResult.changedStates() : Map.of();
 
         membershipStore.stage(bucketId, membership.updatedRecordsByValue(), candidatesToPersist);
-        phaseMetrics.record(Phase.ROCKSDB_WRITE, System.nanoTime() - started);
+        phaseMetrics.record(Phase.MEMBERSHIP_STAGE, System.nanoTime() - started);
         tryStartMembershipWrite();
 
         modeSpecificContext.candidateStatesChanged(trackingResult.changedStates());

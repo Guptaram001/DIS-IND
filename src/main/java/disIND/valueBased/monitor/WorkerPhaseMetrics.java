@@ -5,8 +5,8 @@ import java.util.concurrent.atomic.LongAdder;
 
 public final class WorkerPhaseMetrics {
 
-    public enum DerivationWork { DIRTY_LHS, INTERSECTIONS, SIGNATURE_VISITS, EMITTED_TRANSITIONS }
-    private final LongAdder[] derivation = java.util.stream.IntStream.range(0, 4)
+    public enum DerivationWork { AFFECTED_LHS, INTERSECTIONS, SIGNATURE_VISITS, EMITTED_TRANSITIONS, DERIVED_LHS }
+    private final LongAdder[] derivation = java.util.stream.IntStream.range(0, DerivationWork.values().length)
             .mapToObj(i -> new LongAdder()).toArray(LongAdder[]::new);
 
     public void addDerivationMetrics(long[] values) {
@@ -17,7 +17,7 @@ public final class WorkerPhaseMetrics {
 
     public enum Phase {
         BATCH_PREPARATION, MEMBERSHIP_LOAD, MEMBERSHIP_UPDATE, CANDIDATE_EVALUATION,
-        FILTER_UPDATE, VALIDATION, ROCKSDB_WRITE
+        CLUSTER_MAINTENANCE, FILTER_UPDATE, VALIDATION, MEMBERSHIP_STAGE, ROCKSDB_WRITE_EXECUTION
     }
 
     public record PhaseSnapshot(long calls, long totalNanos, long maxNanos) {

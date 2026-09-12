@@ -11,17 +11,23 @@ import disIND.valueBased.protocol.ValueOwnerProtocol.MembershipWriteAcknowledged
 import disIND.valueBased.protocol.ValueOwnerProtocol.MembershipWriteFailed;
 import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.utility.Debug;
+import disIND.valueBased.monitor.WorkerPhaseMetrics;
+import disIND.valueBased.monitor.WorkerPhaseMetrics.Phase;
+import java.util.Objects;
 
 public final class MembershipWriterActor extends AbstractBehavior<Command> {
 
     private final ValueOwnerMembershipStore store;
-    public static Behavior<Command> create(ValueOwnerMembershipStore store) {
-        return Behaviors.setup(ctx -> new MembershipWriterActor(ctx, store));
+    private final WorkerPhaseMetrics phaseMetrics;
+    public static Behavior<Command> create(ValueOwnerMembershipStore store, WorkerPhaseMetrics phaseMetrics) {
+        return Behaviors.setup(ctx -> new MembershipWriterActor(ctx, store, phaseMetrics));
     }
 
-    private MembershipWriterActor(ActorContext<Command> context, ValueOwnerMembershipStore store) {
+    private MembershipWriterActor(ActorContext<Command> context, ValueOwnerMembershipStore store,
+            WorkerPhaseMetrics phaseMetrics) {
         super(context);
         this.store = store;
+        this.phaseMetrics = Objects.requireNonNull(phaseMetrics);
     }
 
     @Override
@@ -34,7 +40,12 @@ public final class MembershipWriterActor extends AbstractBehavior<Command> {
     private Behavior<Command> onEncodedWriteBatch(EncodedWriteBatch message) {
         long started = System.nanoTime();
         try {
-            store.writeEncodedBatch(message);
+            try {
+                store.writeEncodedBatch(message);
+            } finally {
+                phaseMetrics.record(Phase.ROCKSDB_WRITE_EXECUTION,
+                        System.nanoTime() - started);
+            }
             message.replyTo().tell(new MembershipWriteAcknowledged(message.bucketId(), message.batchId()));
             if (Debug.INTERNAL) {
                 getContext().getLog().info(

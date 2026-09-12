@@ -1,5 +1,6 @@
 package disIND.valueBased.structures;
 
+import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 
@@ -34,7 +35,6 @@ import disIND.valueBased.membership.AdaptiveColumnCounts;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.utility.UserConfig;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
-import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
@@ -45,7 +45,6 @@ import it.unimi.dsi.fastutil.ints.IntArrayFIFOQueue;
 import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
-import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import disIND.valueBased.monitor.WorkerMembershipMetrics;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
@@ -82,7 +81,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private static final byte EXACT_STATE_TYPE = 4;
 
     public static final int MAX_WITNESSES = UserConfig.MAX_VALUE_OWNER_WITNESSES;
-    private static final int MAX_MEMBERSHIP_CACHE_BYTES = 512 * 1024 * 1024;
+    private final long maximumMembershipCacheBytes;
+    private final CacheMode membershipCacheMode;
     private static final int CANDIDATE_CACHE_BASE_WEIGHT = 10;
 
     public record CandidateKey(int bucketId, int lhsCol, int rhsCol) {
@@ -216,9 +216,6 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             return dirty || inFlight;
         }
 
-        private boolean removeable() {
-            return !mutated();
-        }
     }
 
     private static final class CandidateWriteBackEntry {
@@ -259,35 +256,33 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     private final class BucketMembershipCache {
-
-        private final Int2ObjectLinkedOpenHashMap<MembershipCacheEntry> entries = new Int2ObjectLinkedOpenHashMap<>();
+        // Only dirty/in-flight entries live here. They cannot be evicted.
+        private final Int2ObjectOpenHashMap<MembershipCacheEntry> entries = new Int2ObjectOpenHashMap<>();
+        private final HotCache<Integer, Int2IntMap> clean;
         private final IntOpenHashSet overlayValueIds = new IntOpenHashSet();
         private final IntArrayFIFOQueue dirtyValueIds = new IntArrayFIFOQueue();
         private final long maxWeight;
-        private long currentWeight;
+        private long currentWeight; // mutated membership bytes only
 
         private BucketMembershipCache(long maxWeight) {
             this.maxWeight = maxWeight;
+            clean = new HotCache<>(membershipCacheMode, maxWeight,
+                    membership -> Math.toIntExact(weight(membership)), metrics::cacheEviction);
         }
 
         Int2IntMap takeForUpdate(int valueId) {
-            // Returns the membership anyway, either a copy for mutated else removed from
-            // cache without copy creating to save unnecessary temp object.
             MembershipCacheEntry entry = entries.get(valueId);
-            if (entry == null)
-                return null;
-            // dirty or inflight entries must be back into the cache after membershipupdate
-            // hence move to last and copy it instead
-            if (entry.mutated()) {
-                entries.getAndMoveToLast(valueId); // move to the last in the cache as recently used.
-                return new AdaptiveColumnCounts(entry.membership); // returns a copy of membership.
+            if (entry != null) {
+                metrics.pinnedHit();
+                return new AdaptiveColumnCounts(entry.membership);
             }
-
-            // Clean entry removed for update without creating copy.
-            entries.remove(valueId);
-            currentWeight -= weight(entry.membership);
-
-            return entry.membership;
+            // Record an access before removing ownership from the clean cache.
+            Int2IntMap membership = clean.get(valueId);
+            if (membership != null) {
+                metrics.cleanHit();
+                clean.remove(valueId);
+            }
+            return membership;
         }
 
         MembershipCacheEntry peek(int valueId) {
@@ -300,30 +295,27 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
         void clear() {
             entries.clear();
+            clean.clear();
             overlayValueIds.clear();
             dirtyValueIds.clear();
             currentWeight = 0;
         }
 
         void putOwned(int valueId, Int2IntMap membership) {
-            MembershipCacheEntry entry = entries.remove(valueId);
+            clean.remove(valueId);
+            MembershipCacheEntry entry = entries.get(valueId);
             long previousWeight = entry == null ? 0L : weight(entry.membership);
-            if (entry != null)
-                currentWeight -= previousWeight;
-
-            // No map copy. The caller must never mutate membership again.
-            boolean wasmutated = entry != null && entry.mutated();
-            if (entry == null)
+            if (entry == null) {
                 entry = new MembershipCacheEntry(membership, true, false);
-            else {
+                entries.put(valueId, entry);
+            } else {
                 entry.membership = membership;
                 entry.dirty = true;
             }
-            entries.putAndMoveToLast(valueId, entry);
-            long updatedWeight = weight(membership);
-            currentWeight += updatedWeight;
+            long delta = weight(membership) - previousWeight;
+            currentWeight += delta;
+            pinnedEstimatedBytes.addAndGet(delta);
             overlayValueIds.add(valueId);
-            pinnedEstimatedBytes.addAndGet(wasmutated ? updatedWeight - previousWeight : updatedWeight);
             enqueueDirty(valueId, entry);
             evictCleanEntriesIfNecessary();
         }
@@ -335,31 +327,31 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             dirtyValueIds.enqueue(valueId);
         }
 
-        private void evictCleanEntriesIfNecessary() {
-            while (currentWeight > maxWeight && evictOneCleanEntry()) {
-                // Continue until the soft limit is met or every remaining entry is pinned.
-            }
+        private void releaseClean(int valueId, MembershipCacheEntry entry) {
+            entries.remove(valueId);
+            currentWeight -= weight(entry.membership);
+            evictCleanEntriesIfNecessary();
+            clean.put(valueId, entry.membership);
         }
 
-        private boolean evictOneCleanEntry() {
-            ObjectIterator<Int2ObjectMap.Entry<MembershipCacheEntry>> iterator = Int2ObjectMaps.fastIterator(entries);
-            while (iterator.hasNext()) {
-                Int2ObjectMap.Entry<MembershipCacheEntry> mapEntry = iterator.next();
-                MembershipCacheEntry entry = mapEntry.getValue();
-                if (!entry.removeable())
-                    continue;
-                currentWeight -= weight(entry.membership);
-                iterator.remove();
-                metrics.cacheEviction();
-                return true;
-            }
-            return false;
+        private void evictCleanEntriesIfNecessary() {
+            clean.maximum(Math.max(0, maxWeight - currentWeight));
         }
     }
 
     public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
             int bucketCount, WorkerMembershipMetrics metrics) {
 
+        this(directory, hotEntries, trackingMode, bucketCount, metrics,
+                UserConfig.MEMBERSHIP_CACHE_MODE, UserConfig.MEMBERSHIP_CACHE_BYTES);
+    }
+
+    public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
+            int bucketCount, WorkerMembershipMetrics metrics, CacheMode policy, long cacheBytes) {
+        if (cacheBytes < 0)
+            throw new IllegalArgumentException("Negative membership cache budget");
+        this.maximumMembershipCacheBytes = cacheBytes;
+        this.membershipCacheMode = Objects.requireNonNull(policy);
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.directory = Objects.requireNonNull(directory, "directory");
         if (bucketCount <= 0)
@@ -394,7 +386,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             throw new IllegalArgumentException("Invalid bucketId: " + bucketId);
         BucketMembershipCache cache = bucketMembershipCaches[bucketId];
         if (cache == null) {
-            long bytesPerBucket = MAX_MEMBERSHIP_CACHE_BYTES / bucketMembershipCaches.length;
+            long bytesPerBucket = maximumMembershipCacheBytes / bucketMembershipCaches.length
+                    + (bucketId < maximumMembershipCacheBytes % bucketMembershipCaches.length ? 1 : 0);
             cache = new BucketMembershipCache(bytesPerBucket);
             bucketMembershipCaches[bucketId] = cache;
         }
@@ -578,11 +571,12 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             if (cache == null)
                 continue;
             activeBuckets = Math.incrementExact(activeBuckets);
-            currentEntries = Math.addExact(currentEntries, cache.entries.size());
-            currentEstimatedBytes = Math.addExact(currentEstimatedBytes, cache.currentWeight);
+            currentEntries = Math.addExact(currentEntries, cache.entries.size() + cache.clean.size());
+            currentEstimatedBytes = Math.addExact(currentEstimatedBytes, cache.currentWeight + cache.clean.weight());
         }
 
-        return metrics.snapshot(currentEntries, currentEstimatedBytes, MAX_MEMBERSHIP_CACHE_BYTES, activeBuckets);
+        return metrics.snapshot(currentEntries, currentEstimatedBytes, maximumMembershipCacheBytes, activeBuckets,
+                pinnedEstimatedBytes.get());
     }
 
     private static CandidateState validCandidateState(CandidateTrackingMode trackingMode) {
@@ -799,6 +793,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             else {
                 cache.overlayValueIds.remove(valueId);
                 pinnedEstimatedBytes.addAndGet(-BucketMembershipCache.weight(entry.membership));
+                cache.releaseClean(valueId, entry);
             }
         }
         CandidateWriteBackCache candidates = candidateWriteBack(bucketId);

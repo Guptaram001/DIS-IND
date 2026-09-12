@@ -138,7 +138,7 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         WorkerValueIdStore valueIdStore = new WorkerValueIdStore(Path.of(UserConfig.VALUE_ID_DISK_DIR, nodeId),
                 UserConfig.VALUE_ID_HOT_ENTRIES, UserConfig.VALUE_OWNER_BUCKETS, valueIdMetrics);
         ActorRef<MembershipWriteProtocol.Command> membershipWriter = ctx.spawn(
-                MembershipWriterActor.create(membershipStore), "membership-writer",
+                MembershipWriterActor.create(membershipStore, phaseMetrics), "membership-writer",
                 Props.empty().withDispatcherFromConfig(DISPATCHER_IO));
         ActorRef<DrainProtocol.Command> drainDispatcher = ctx.spawn(DrainDispatcherActor.create(sharding), "drainer",
                 Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT));

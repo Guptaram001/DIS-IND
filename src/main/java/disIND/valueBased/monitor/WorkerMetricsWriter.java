@@ -39,7 +39,7 @@ public final class WorkerMetricsWriter {
                 StringBuilder derivation = new StringBuilder("metric\tcount\n");
                 for (WorkerPhaseMetrics.DerivationWork work : WorkerPhaseMetrics.DerivationWork.values())
                         derivation.append(work.name().toLowerCase(java.util.Locale.ROOT)).append('\t')
-                                .append(phaseMetrics.derivationCount(work)).append('\n');
+                                        .append(phaseMetrics.derivationCount(work)).append('\n');
                 write("cluster-validation-metrics.tsv", derivation.toString(), "CLUSTER-VALIDATION");
         }
 
@@ -70,6 +70,10 @@ public final class WorkerMetricsWriter {
         private void writeValueIdMetrics(WorkerValueIdMetrics.Snapshot metrics) {
 
                 String contents = "metric\tvalue\tunit\n"
+                                + "cache_policy\t" + (disIND.valueBased.utility.UserConfig.VALUE_ID_HOT_ENTRIES == 0
+                                                ? "disabled"
+                                                : disIND.valueBased.utility.UserConfig.VALUE_ID_CACHE_MODE)
+                                + "\tpolicy\n"
                                 + "cache_hits\t"
                                 + metrics.hits()
                                 + "\trequests\n"
@@ -94,7 +98,7 @@ public final class WorkerMetricsWriter {
                                 + metrics.currentEntries()
                                 + "\tentries\n"
 
-                                + "cache_maximum_entries_per_owner\t"
+                                + "cache_maximum_entries_per_worker\t"
                                 + metrics.maximumEntries()
                                 + "\tentries\n"
 
@@ -115,7 +119,7 @@ public final class WorkerMetricsWriter {
 
                                 + "rocksdb_average_read_in_sec_per_key\t"
                                 + metrics.averageReadInSecsPerKey()
-                                + "\tmicroseconds_per_key\n"
+                                + "\tseconds_per_key\n"
 
                                 // total number of batch write operation , can contain 100 records
                                 + "rocksdb_write_calls\t"
@@ -132,7 +136,7 @@ public final class WorkerMetricsWriter {
 
                                 + "rocksdb_average_write_time_sec\t"
                                 + metrics.averageWriteInSec()
-                                + "\tmilliseconds\n";
+                                + "\tseconds\n";
 
                 write("value-id-cache-metrics.tsv", contents, "VALUE-ID-CACHE-METRICS");
         }
@@ -140,6 +144,12 @@ public final class WorkerMetricsWriter {
         private void writeMembershipMetrics(WorkerMembershipMetrics.Snapshot metrics) {
 
                 String contents = "metric\tvalue\tunit\n"
+                                + "cache_policy\t" + disIND.valueBased.utility.UserConfig.MEMBERSHIP_CACHE_MODE
+                                + "\tpolicy\n"
+                                + "cache_clean_hits\t" + metrics.cleanHits() + "\trequests\n"
+                                + "cache_pinned_hits\t" + metrics.mutatedHits() + "\trequests\n"
+                                + "cache_current_estimated_bytes\t" + metrics.currentEstimatedBytes() + "\tbytes\n"
+                                + "pinned_estimated_bytes\t" + metrics.pinnedEstimatedBytes() + "\tbytes\n"
 
                                 + "cache_hits\t"
                                 + metrics.cacheHits()
@@ -188,8 +198,8 @@ public final class WorkerMetricsWriter {
                                 + "\tseconds\n"
 
                                 + "rocksdb_average_read_in_sec_per_key\t"
-                                + metrics.averageReadMicrosPerKey()
-                                + "\tmicroseconds_per_key\n"
+                                + metrics.averageReadSecsPerKey()
+                                + "\tseconds_per_key\n"
 
                                 + "rocksdb_write_calls\t"
                                 + metrics.rocksWriteCalls()

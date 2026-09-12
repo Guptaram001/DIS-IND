@@ -4,6 +4,18 @@ import java.util.concurrent.atomic.LongAdder;
 
 public final class WorkerMembershipMetrics {
 
+        private final LongAdder mutatedHits = new LongAdder(); // For storing the dirty and inflights entries from cache
+                                                               // for differentiation
+        private final LongAdder cleanHits = new LongAdder();
+
+        public void pinnedHit() {
+                mutatedHits.increment();
+        }
+
+        public void cleanHit() {
+                cleanHits.increment();
+        }
+
         private final LongAdder cacheHits = new LongAdder();
         private final LongAdder cacheMisses = new LongAdder();
         private final LongAdder cacheEvictions = new LongAdder();
@@ -46,10 +58,11 @@ public final class WorkerMembershipMetrics {
         }
 
         public Snapshot snapshot(long currentEntries, long currentEstimatedBytes,
-                        long maximumEstimatedBytes, long activeBuckets) {
+                        long maximumEstimatedBytes, long activeBuckets, long pinnedEstimatedBytes) {
 
                 return new Snapshot(cacheHits.sum(), cacheMisses.sum(), cacheEvictions.sum(),
-                                currentEntries, maximumEstimatedBytes,
+                                currentEntries, currentEstimatedBytes, pinnedEstimatedBytes, mutatedHits.sum(),
+                                cleanHits.sum(), maximumEstimatedBytes,
                                 activeBuckets, rocksReadCalls.sum(), rocksReadKeys.sum(),
                                 rocksReadNanos.sum(), rocksWriteCalls.sum(), rocksWriteNanos.sum(),
                                 logicalBytesWritten.sum(), membershipRecordsWritten.sum(),
@@ -63,6 +76,7 @@ public final class WorkerMembershipMetrics {
         }
 
         public record Snapshot(long cacheHits, long cacheMisses, long cacheEvictions, long currentEntries,
+                        long currentEstimatedBytes, long pinnedEstimatedBytes, long mutatedHits, long cleanHits,
                         long maximumEstimatedBytes, long activeBuckets, long rocksReadCalls,
                         long rocksReadKeys, long rocksReadNanos, long rocksWriteCalls, long rocksWriteNanos,
                         long logicalBytesWritten, long membershipRecordsWritten, long candidateRecordsWritten,
@@ -81,8 +95,8 @@ public final class WorkerMembershipMetrics {
                         return rocksReadNanos / 1_000_000_000.0;
                 }
 
-                public double averageReadMicrosPerKey() {
-                        return rocksReadKeys == 0L ? 0.0 : (rocksReadNanos / 1_000.0) / rocksReadKeys;
+                public double averageReadSecsPerKey() {
+                        return rocksReadKeys == 0L ? 0.0 : (rocksReadNanos / 1_000_000_000.0) / rocksReadKeys;
                 }
 
                 public double rocksWriteSecs() {

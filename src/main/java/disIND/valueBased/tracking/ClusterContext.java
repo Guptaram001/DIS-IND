@@ -29,7 +29,7 @@ public final class ClusterContext implements ModeSpecificContext {
     private final BitSet addedColumns = new BitSet(), removedColumns = new BitSet();
     private final BitSet before = new BitSet(), after = new BitSet();
     private boolean finalStarted;
-    private long dirtyLhsCount, transitionsCount;
+    private long affectedLhsCount, derivedLhsCount, transitionsCount;
 
     public ClusterContext(CandidateTrackingMode mode, int bucketId, int columns,
             CandidateDomain domain, ClusterOptions options) {
@@ -43,7 +43,7 @@ public final class ClusterContext implements ModeSpecificContext {
         clusters = new ValueOwnerClusterIndex(bucketId, columns);
         metrics = new PruneMetricsCollector(columns);
         results = new BitSet[columns];
-        distinct = prune ? new int[columns] : null;
+        distinct = prune && options.wholeCounts() ? new int[columns] : null;
         partitions = prune && options.partitionCounts()
                 ? new PartitionCountHierarchy(columns, options.partitions(), options.partitionHierarchy())
                 : null;
@@ -64,7 +64,7 @@ public final class ClusterContext implements ModeSpecificContext {
 
     @Override
     public boolean usesAuxiliaryFilters() {
-        return prune;
+        return distinct != null || partitions != null || cqf != null;
     }
 
     @Override
@@ -76,7 +76,11 @@ public final class ClusterContext implements ModeSpecificContext {
     public void membershipAdded(int column, int value) {
         if (!derivesAtDrain())
             addedColumns.set(column);
-        if (prune)
+    }
+
+    @Override
+    public void auxiliaryMembershipAdded(int column, int value) {
+        if (distinct != null)
             distinct[column] = Math.incrementExact(distinct[column]);
         if (partitions != null)
             partitions.add(column, value);
@@ -88,7 +92,11 @@ public final class ClusterContext implements ModeSpecificContext {
     public void membershipRemoved(int column, int value) {
         if (!derivesAtDrain())
             removedColumns.set(column);
-        if (prune) {
+    }
+
+    @Override
+    public void auxiliaryMembershipRemoved(int column, int value) {
+        if (distinct != null) {
             if (distinct[column] <= 0)
                 throw new IllegalStateException("Removing absent membership");
             distinct[column]--;
@@ -131,7 +139,7 @@ public final class ClusterContext implements ModeSpecificContext {
         if (derivesAtDrain())
             throw new IllegalStateException("Final mode must not derive during ingestion");
         BitSet dirty = clusters.takeAffectedLhs();
-        dirtyLhsCount += dirty.cardinality();
+        affectedLhsCount += dirty.cardinality();
         if (!options.changeDetection()) {
             dirty.set(0, columns);
             clusters.invalidateAll();
@@ -160,6 +168,7 @@ public final class ClusterContext implements ModeSpecificContext {
     }
 
     private BitSet derive(int lhs, BitSet previous) {
+        derivedLhsCount++;
         BitSet unresolved = eligible(lhs);
         BitSet valid = new BitSet(columns);
         if (prune) {
@@ -182,7 +191,7 @@ public final class ClusterContext implements ModeSpecificContext {
                         metrics.rhsDeletionInvalidSkipped(lhs);
                     continue;
                 }
-                if (distinct[lhs] > distinct[rhs]) {
+                if (distinct != null && distinct[lhs] > distinct[rhs]) {
                     metrics.wholeCountPruned(lhs);
                     unresolved.clear(rhs);
                     continue;
@@ -230,7 +239,7 @@ public final class ClusterContext implements ModeSpecificContext {
         if (derivesAtDrain()) {
             if (!finalStarted) {
                 finalStarted = true;
-                dirtyLhsCount += clusters.takeAffectedLhs().cardinality();
+                affectedLhsCount += clusters.takeAffectedLhs().cardinality();
                 if (!options.changeDetection())
                     clusters.invalidateAll();
             }
@@ -256,6 +265,6 @@ public final class ClusterContext implements ModeSpecificContext {
 
     @Override
     public long[] derivationMetrics() {
-        return new long[] { dirtyLhsCount, clusters.intersections(), clusters.signatureVisits(), transitionsCount };
+        return new long[] { affectedLhsCount, clusters.intersections(), clusters.signatureVisits(), transitionsCount, derivedLhsCount };
     }
 }

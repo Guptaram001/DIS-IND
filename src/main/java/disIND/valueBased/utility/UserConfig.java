@@ -1,5 +1,6 @@
 package disIND.valueBased.utility;
 
+import disIND.valueBased.structures.CacheMode;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -48,6 +49,7 @@ public final class UserConfig {
     public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
+    public static final boolean DEFAULT_PRUNE_WHOLE_COUNTS_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_TRANSITIVE_ENABLED = false;
@@ -84,6 +86,7 @@ public final class UserConfig {
     public static int CHECKPOINT_WRITERS_PER_NODE = DEFAULT_CHECKPOINT_WRITERS_PER_NODE;
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static boolean PRUNE_CQF_ENABLED = DEFAULT_PRUNE_CQF_ENABLED;
+    public static boolean PRUNE_WHOLE_COUNTS_ENABLED = DEFAULT_PRUNE_WHOLE_COUNTS_ENABLED;
     public static boolean PRUNE_PARTITION_COUNTS_ENABLED = DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED;
     public static boolean PRUNE_PARTITION_HIERARCHY_ENABLED = DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED;
     public static boolean PRUNE_TRANSITIVE_ENABLED = DEFAULT_PRUNE_TRANSITIVE_ENABLED;
@@ -97,10 +100,17 @@ public final class UserConfig {
     public static CandidateTrackingMode CANDIDATE_TRACKING = DEFAULT_CANDIDATE_TRACKING;
     public static IndCalculation IND_CALCULATION = IndCalculation.BATCH;
     public static boolean CLUSTER_CHANGE_DETECTION = true;
+    public static CacheMode VALUE_ID_CACHE_MODE = CacheMode.LRU;
+    public static CacheMode MEMBERSHIP_CACHE_MODE = CacheMode.LRU;
+    public static final long DEFAULT_MEMBERSHIP_CACHE_BYTES = 512L * 1024 * 1024;
+    public static long MEMBERSHIP_CACHE_BYTES = DEFAULT_MEMBERSHIP_CACHE_BYTES;
 
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
     static {
+        CLI_PROPERTIES.put("value-id-cache-policy", "dis.ind.value-id-cache-policy");
+        CLI_PROPERTIES.put("membership-cache-policy", "dis.ind.membership-cache-policy");
+        CLI_PROPERTIES.put("membership-cache-bytes", "dis.ind.membership-cache-bytes");
         CLI_PROPERTIES.put("input-dir", "dis.ind.input-dir");
         CLI_PROPERTIES.put("output-file", "dis.ind.output-file");
         CLI_PROPERTIES.put("batch-size", "dis.ind.batch-size");
@@ -121,6 +131,7 @@ public final class UserConfig {
         CLI_PROPERTIES.put("checkpoint-writers-per-node", "dis.ind.checkpoint-writers-per-node");
         CLI_PROPERTIES.put("store-value-strings", "dis.ind.store-value-strings");
         CLI_PROPERTIES.put("prune-cqf-enabled", "dis.ind.prune-cqf-enabled");
+        CLI_PROPERTIES.put("prune-whole-counts-enabled", "dis.ind.prune-whole-counts-enabled");
         CLI_PROPERTIES.put("prune-partition-counts-enabled", "dis.ind.prune-partition-counts-enabled");
         CLI_PROPERTIES.put("prune-partition-hierarchy-enabled", "dis.ind.prune-partition-hierarchy-enabled");
         CLI_PROPERTIES.put("prune-count-partitions", "dis.ind.prune-count-partitions");
@@ -143,6 +154,14 @@ public final class UserConfig {
      */
     public static void init(String[] args) {
         applyCommandLine(args);
+        VALUE_ID_CACHE_MODE = CacheMode.parse(stringSetting(
+                "DIS_IND_VALUE_ID_CACHE_MODE", "dis.ind.value-id-cache-policy", "lru"));
+        MEMBERSHIP_CACHE_MODE = CacheMode.parse(stringSetting(
+                "DIS_IND_MEMBERSHIP_CACHE_MODE", "dis.ind.membership-cache-policy", "lru"));
+        MEMBERSHIP_CACHE_BYTES = longSetting("DIS_IND_MEMBERSHIP_CACHE_BYTES", "dis.ind.membership-cache-bytes",
+                DEFAULT_MEMBERSHIP_CACHE_BYTES);
+        if (MEMBERSHIP_CACHE_BYTES < 0)
+            throw new IllegalArgumentException("membership-cache-bytes must be nonnegative");
 
         INPUT_DIR = stringSetting("DIS_IND_INPUT_DIR", "dis.ind.input-dir", DEFAULT_INPUT_DIR);
         OUTPUT_DIR = stringSetting("DIS_IND_OUTPUT_FILE", "dis.ind.output-file", DEFAULT_OUTPUT_FILE);
@@ -183,6 +202,8 @@ public final class UserConfig {
                 "dis.ind.store-value-strings", DEFAULT_STORE_VALUE_STRINGS);
         PRUNE_CQF_ENABLED = booleanSetting("DIS_IND_PRUNE_CQF_ENABLED",
                 "dis.ind.prune-cqf-enabled", DEFAULT_PRUNE_CQF_ENABLED);
+        PRUNE_WHOLE_COUNTS_ENABLED = booleanSetting("DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED",
+                "dis.ind.prune-whole-counts-enabled", DEFAULT_PRUNE_WHOLE_COUNTS_ENABLED);
         PRUNE_PARTITION_COUNTS_ENABLED = booleanSetting("DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED",
                 "dis.ind.prune-partition-counts-enabled", DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED);
         PRUNE_PARTITION_HIERARCHY_ENABLED = booleanSetting("DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED",
@@ -194,7 +215,7 @@ public final class UserConfig {
         IND_CALCULATION = indCalculationSetting("DIS_IND_IND_CALCULATION", "dis.ind.ind-calculation");
         CLUSTER_CHANGE_DETECTION = booleanSetting("DIS_IND_CLUSTER_CHANGE_DETECTION",
                 "dis.ind.cluster-change-detection", true);
-        VALUE_ID_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
+        VALUE_ID_HOT_ENTRIES = nonNegativeIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
                 "dis.ind.value-id-hot-entries", DEFAULT_VALUE_ID_HOT_ENTRIES);
         VALUE_ID_DISK_DIR = stringSetting("DIS_IND_VALUE_ID_DISK_DIR",
                 "dis.ind.value-id-disk-dir", DEFAULT_VALUE_ID_DISK_DIR);
@@ -255,6 +276,20 @@ public final class UserConfig {
         }
         String environment = System.getenv(environmentName);
         return environment == null || environment.isBlank() ? fallback : environment;
+    }
+
+    private static int nonNegativeIntSetting(String environmentName, String propertyName, int fallback) {
+        String value = stringSetting(environmentName, propertyName, Integer.toString(fallback));
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed < 0)
+                throw new IllegalArgumentException(
+                        settingName(environmentName, propertyName) + " must be zero or greater: " + value);
+            return parsed;
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(
+                    settingName(environmentName, propertyName) + " must be an integer: " + value, exception);
+        }
     }
 
     private static int positiveIntSetting(String environmentName, String propertyName, int fallback) {

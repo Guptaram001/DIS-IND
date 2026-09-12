@@ -20,7 +20,6 @@ import java.util.Objects;
 import java.util.Arrays;
 import disIND.valueBased.protocol.ValueOwnerProtocol.ValueData;
 import disIND.valueBased.utility.UserConfig;
-import it.unimi.dsi.fastutil.objects.Object2IntLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
@@ -28,7 +27,7 @@ import disIND.valueBased.monitor.WorkerValueIdMetrics;
 import disIND.valueBased.monitor.WorkerValueIdMetrics.Snapshot;
 
 /**
- * One RocksDB db with one bounded LRU cache for each VOs.
+ * One RocksDB database with one bounded, selectable hot cache per value owner.
  */
 public final class WorkerValueIdStore implements AutoCloseable {
     private static final byte VALUE_PREFIX = 0;
@@ -58,21 +57,27 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private final RocksDB database;
     private volatile boolean closed;
     private final int maxHotEntries;
-    private final int maxEntriesPerOwner;
     private final WorkerValueIdMetrics metrics;
 
-    private static final class OwnerCache {
-        // Cache for value id, like String -> int
-        private final Object2IntLinkedOpenHashMap<String> values;
+    private final CacheMode cacheMode;
 
-        private OwnerCache(int initialCapacity) {
-            values = new Object2IntLinkedOpenHashMap<>(initialCapacity);
-            values.defaultReturnValue(UNRESOLVED);
+    private final class OwnerCache {
+        private final HotCache<String, Integer> values;
+
+        private OwnerCache(int ownerId) {
+            long capacity = maxHotEntries / ownerCount + (ownerId < maxHotEntries % ownerCount ? 1 : 0);
+            values = new HotCache<>(cacheMode, capacity, value -> 1, metrics::cacheEviction);
         }
     }
 
     public WorkerValueIdStore(Path databasePath, int maxHotEntries, int ownerCount,
             WorkerValueIdMetrics metrics) {
+        this(databasePath, maxHotEntries, ownerCount, metrics, UserConfig.VALUE_ID_CACHE_MODE);
+    }
+
+    public WorkerValueIdStore(Path databasePath, int maxHotEntries, int ownerCount,
+            WorkerValueIdMetrics metrics, CacheMode cacheMode) {
+        this.cacheMode = Objects.requireNonNull(cacheMode);
         if (maxHotEntries < 0)
             throw new IllegalArgumentException("maxHotEntries must be zero or greater");
         if (ownerCount <= 0)
@@ -83,7 +88,6 @@ public final class WorkerValueIdStore implements AutoCloseable {
         Arrays.fill(nextIds, -1);
         this.nextIdKeys = new byte[ownerCount][];
         this.maxHotEntries = maxHotEntries;
-        this.maxEntriesPerOwner = Math.max(1, maxHotEntries / ownerCount);
         this.ownerCaches = new OwnerCache[ownerCount];
         this.metrics = metrics;
         // Stores the nextidkeys metadata precomputed once.
@@ -114,10 +118,10 @@ public final class WorkerValueIdStore implements AutoCloseable {
         }
     }
 
-    private Object2IntLinkedOpenHashMap<String> getOrCreateOwnerCache(int ownerId) {
+    private HotCache<String, Integer> getOrCreateOwnerCache(int ownerId) {
         OwnerCache cache = ownerCaches[ownerId];
         if (cache == null) {
-            cache = new OwnerCache(Math.min(maxEntriesPerOwner, 1_024));
+            cache = new OwnerCache(ownerId);
             ownerCaches[ownerId] = cache;
         }
         return cache.values;
@@ -137,15 +141,15 @@ public final class WorkerValueIdStore implements AutoCloseable {
 
         List<String> coldValues = new ArrayList<>(values.size()); // Not found in cache
         List<byte[]> coldKeys = new ArrayList<>(values.size());
-        Object2IntLinkedOpenHashMap<String> cache = getOrCreateOwnerCache(ownerId);
+        HotCache<String, Integer> cache = maxHotEntries == 0 ? null : getOrCreateOwnerCache(ownerId);
 
         for (ValueData valueData : values) {
             String value = valueData.value();
             if (resolved.containsKey(value)) // Remove duplicates if any
                 continue;
 
-            int cached = cache.getAndMoveToLast(value); // GEts id
-            if (cached != UNRESOLVED) {
+            Integer cached = cache == null ? null : cache.get(value);
+            if (cached != null) {
                 metrics.cacheHit();
                 resolved.put(value, cached);
             } else {
@@ -230,12 +234,8 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private void cacheValue(int ownerId, String value, int valueId) {
         if (maxHotEntries <= 0)
             return;
-        Object2IntLinkedOpenHashMap<String> cache = getOrCreateOwnerCache(ownerId);
-        cache.putAndMoveToLast(value, valueId);
-        if (cache.size() > maxEntriesPerOwner) {
-            cache.removeFirstInt();
-            metrics.cacheEviction();
-        }
+        HotCache<String, Integer> cache = getOrCreateOwnerCache(ownerId);
+        cache.put(value, valueId);
     }
 
     public Snapshot metricsSnapshot() {
