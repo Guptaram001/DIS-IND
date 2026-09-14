@@ -154,12 +154,16 @@ export_docker_application_arguments() {
         case "$option" in
             --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
             --candidate-tracking) export DIS_IND_CANDIDATE_TRACKING="$value" ;;
+            --value-id-cache-policy) export DIS_IND_VALUE_ID_CACHE_POLICY="$value" ;;
+            --membership-cache-policy) export DIS_IND_MEMBERSHIP_CACHE_POLICY="$value" ;;
+            --membership-cache-bytes) export DIS_IND_MEMBERSHIP_CACHE_BYTES="$value" ;;
             --ind-calculation) export DIS_IND_IND_CALCULATION="$value" ;;
             --cluster-change-detection) export DIS_IND_CLUSTER_CHANGE_DETECTION="$value" ;;
             --prune-cqf-enabled) export DIS_IND_PRUNE_CQF_ENABLED="$value" ;;
             --ingestion-mode) export DIS_IND_INGESTION_MODE="$value" ;;
             --delete-percent) export DIS_IND_DELETE_PERCENT="$value" ;;
             --delete-seed) export DIS_IND_DELETE_SEED="$value" ;;
+            --prune-whole-counts-enabled) export DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED="$value" ;;
             --prune-partition-counts-enabled) export DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED="$value" ;;
             --prune-partition-hierarchy-enabled) export DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED="$value" ;;
             --prune-transitive-enabled) export DIS_IND_PRUNE_TRANSITIVE_ENABLED="$value" ;;
@@ -335,6 +339,7 @@ run_distributed_docker() {
         echo "batch_size=${DIS_IND_BATCH_SIZE:-UserConfig default}"
         echo "chunk_size=${DIS_IND_CHUNK_SIZE:-UserConfig default}"
         echo "prune_cqf_enabled=${DIS_IND_PRUNE_CQF_ENABLED:-true}"
+        echo "prune_whole_counts_enabled=${DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED:-true}"
         echo "prune_partition_counts_enabled=${DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED:-true}"
         echo "prune_partition_hierarchy_enabled=${DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED:-true}"
         echo "prune_transitive_enabled=${DIS_IND_PRUNE_TRANSITIVE_ENABLED:-false}"
@@ -345,6 +350,9 @@ run_distributed_docker() {
         echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES:-UserConfig default}"
         echo "data_orientation=${DIS_IND_DATA_ORIENTATION:-value}"
         echo "candidate_tracking=${DIS_IND_CANDIDATE_TRACKING:-count}"
+        echo "value_id_cache_policy=${DIS_IND_VALUE_ID_CACHE_POLICY:-lru}"
+        echo "membership_cache_policy=${DIS_IND_MEMBERSHIP_CACHE_POLICY:-lru}"
+        echo "membership_cache_bytes=${DIS_IND_MEMBERSHIP_CACHE_BYTES:-536870912}"
         echo "ind_calculation=${DIS_IND_IND_CALCULATION:-batch}"
         echo "cluster_change_detection=${DIS_IND_CLUSTER_CHANGE_DETECTION:-true}"
         echo "validation=lhs-intersection"
@@ -730,6 +738,7 @@ fi
     echo "value_owner_disk_dir=$DIS_IND_VALUE_OWNER_DISK_DIR"
     echo "value_owner_hot_entries=${DIS_IND_VALUE_OWNER_HOT_ENTRIES:-UserConfig default}"
     echo "prune_cqf_enabled=${DIS_IND_PRUNE_CQF_ENABLED:-true}"
+    echo "prune_whole_counts_enabled=${DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED:-true}"
     echo "prune_partition_counts_enabled=${DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED:-true}"
     echo "prune_partition_hierarchy_enabled=${DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED:-true}"
     echo "prune_transitive_enabled=${DIS_IND_PRUNE_TRANSITIVE_ENABLED:-false}"

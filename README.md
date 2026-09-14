@@ -217,7 +217,7 @@ now count candidate decisions at batch boundaries, not per-value event skips.
 | `COORDINATOR_JAVA_XMX` | Maximum coordinator heap | `2g` |
 | `WORKER_CPUS` | Docker CPU quota per worker | `1.0` |
 | `COORDINATOR_CPUS` | Docker CPU quota for the coordinator | `1.0` |
-| `DIS_IND_VALUE_OWNER_HOT_ENTRIES` | Decoded VO membership records cached per worker | `100000` |
+| `DIS_IND_VALUE_OWNER_HOT_ENTRIES` | Candidate-state cache sizing parameter per worker | `100000` |
 | `DIS_IND_DRAIN_MAX_IN_FLIGHT` | Maximum unacknowledged drain batches per worker | `128` |
 | `DIS_IND_DRAIN_BATCH_SIZE` | Value-owner drain records aggregated per CM message | `16` |
 | `DIS_IND_DRAIN_RETRY_SECONDS` | Readiness-probe and unacknowledged-batch retry interval | `2` |
@@ -294,3 +294,86 @@ java -jar target/dis-ind-1.0.0.jar
 ```
 
 The existing diagnostic runner is also available as `scripts/run.sh`.
+
+## Cache ablation (value-based pipeline)
+
+Value-ID and membership caches independently support `lru` (default) and
+`caffeine` (Caffeine 3.2.4 W-TinyLFU, which combines frequency and recency).
+Pass these options to `ValueBasedMain` or `scripts/run.sh`:
+
+```bash
+--value-id-cache-policy caffeine --membership-cache-policy caffeine \
+--value-id-hot-entries 100000 --membership-cache-bytes 536870912
+```
+
+Equivalent environment variables are `DIS_IND_VALUE_ID_CACHE_POLICY`,
+`DIS_IND_MEMBERSHIP_CACHE_POLICY`, `DIS_IND_VALUE_ID_HOT_ENTRIES`, and
+`DIS_IND_MEMBERSHIP_CACHE_BYTES`. JVM properties use `dis.ind.` followed by the
+CLI option name. Configure every worker consistently; Docker Compose and the
+Proxmox experiment launcher forward these settings.
+
+The value-ID limit is an entry budget per worker, divided across configured
+buckets (including the remainder). Membership has a soft estimated-byte budget
+per worker, also divided across buckets; zero disables retention of clean
+membership entries. Dirty/in-flight membership stays pinned outside the
+selectable cache, consumes that same budget, and may exceed it until existing
+write backpressure catches up. Clean entries use the same estimate under both
+policies: `64 + 16 * membership-column-count` bytes. Candidate-state caching,
+RocksDB persistence, and exact/prune derivation are unchanged.
+
+Both policies now use the same clean/pinned ownership lifecycle. The LRU adapter
+uses an access-ordered Java map, replacing the earlier fastutil hot-cache maps;
+compare policies within this revision rather than attributing all differences
+from older revisions solely to eviction policy. Caffeine adds boxing/metadata
+and asynchronous maintenance, so logical budgets are not measured heap limits,
+and instantaneous Caffeine occupancy can temporarily exceed the target.
+
+Run the four combinations `lru/lru`, `caffeine/lru`, `lru/caffeine`, and
+`caffeine/caffeine`, with fixed data order, calculation mode, seeds, batch size,
+buckets, and JVM settings. Use fresh run directories and repeated runs. Repeat
+at several capacities to expose the effect of memory pressure.
+
+Worker cache TSVs include the policy, hits/misses, evictions, occupancy, and
+RocksDB read/write metrics. Membership metrics additionally separate
+`cache_clean_hits` from `cache_pinned_hits`, report current estimated bytes,
+and report pinned bytes (including candidate write-back state). Total cache hit
+rate includes pinned hits; evaluate clean-cache effectiveness using clean hits
+and misses. Occupancy is approximate during concurrent maintenance. Capture JVM
+heap/GC externally when comparing actual memory and runtime overhead.
+
+Disable the value-ID hot cache with `--value-id-hot-entries 0` (or
+`DIS_IND_VALUE_ID_HOT_ENTRIES=0`). No hot-cache instances are created or looked
+up; metrics report policy `disabled`, zero hits, and misses for distinct values
+requested within each batch. RocksDB/OS caching and within-batch deduplication
+still apply. The default remains 100000 entries. To disable both clean hot
+caches, also pass `--membership-cache-bytes 0`.
+
+### Whole-column counts and phase measurements
+
+`--prune-whole-counts-enabled false` disables the bucket-local whole-column
+distinct-count rejection and allocation/maintenance of its count array.
+The default is `true`. The environment variable is
+`DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED`; the JVM property is
+`dis.ind.prune-whole-counts-enabled`. This option applies to prune batch/final
+calculation, independently of partition counts, CQF, and transitive reasoning.
+Previous-result reuse remains active in prune batch mode and is not configurable.
+
+Phase TSVs now separate `membership_stage` (in-memory staging),
+`rocksdb_write_execution` (membership/candidate writer execution, including
+failed attempts, excluding queue wait and reply handling), `cluster_maintenance`
+(cluster signatures and change tracking, in exact and prune), and `filter_update`
+(auxiliary distinct/partition/CQF maintenance). `membership_update` excludes
+both maintenance intervals. These are elapsed times, not CPU times; asynchronous
+phases can overlap. Writer execution includes write-batch assembly and the
+RocksDB write call; it does not include all RocksDB background activity.
+The former `rocksdb_write` phase name is removed. Average database-read timings
+are seconds per key, and average database-write timings are seconds per call
+in both value-ID and membership cache metrics.
+
+`cluster-validation-metrics.tsv` reports `affected_lhs` (formerly `dirty_lhs`)
+and `derived_lhs` separately. The first counts LHSs marked affected when the
+cluster-change set is consumed; the second counts actual derivation calls,
+including all-LHS derivation with change detection disabled and lazy final
+calculation. Re-reading a cached final result does not increase `derived_lhs`.
+Both counts are cumulative per bucket, summed per worker, not unique global
+columns. Final mode consumes its affected set when final derivation begins.

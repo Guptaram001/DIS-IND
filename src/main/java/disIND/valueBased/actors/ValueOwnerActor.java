@@ -141,7 +141,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             disIND.valueBased.model.ClusterOptions clusterOptions) {
         return Behaviors.withTimers(timers -> Behaviors.setup(ctx -> new ValueOwnerActor(
                 ctx, entityId, sharding, metadata, membershipStore, valueIdStore, orientation,
-                candidateTracking, drainDispatcher, membershipWriter, timers, candidateDomain, phaseMetrics, clusterOptions)));
+                candidateTracking, drainDispatcher, membershipWriter, timers, candidateDomain, phaseMetrics,
+                clusterOptions)));
     }
 
     private ValueOwnerActor(ActorContext<Command> context, String entityId, ClusterSharding sharding,
@@ -276,7 +277,6 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
                 sendCandidateStatusTransitions(message, result.transitionsByLhs(), 0);
             return;
         }
-
 
         // Selects the specific mode changes to handle the violation further.
         ViolationHandler violationHandler = modeSpecificContext.tracker().createViolationHandler(bucketId);
@@ -469,8 +469,10 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         for (int lhs = nextDrainPartition; lhs < finalization.totalColumns(); lhs += UserConfig.DEFAULT_CM_PARTITIONS) {
             long started = System.nanoTime();
             RoaringBitmap validRhs = modeSpecificContext.derivesAtDrain()
-                    ? modeSpecificContext.validRhsSnapshot(lhs) : null;
-            if (validRhs != null) phaseMetrics.record(Phase.VALIDATION, System.nanoTime() - started);
+                    ? modeSpecificContext.validRhsSnapshot(lhs)
+                    : null;
+            if (validRhs != null)
+                phaseMetrics.record(Phase.VALIDATION, System.nanoTime() - started);
             records.add(new DrainProtocol.DrainRecord(
                     finalization.finalRound(), lhs, bucketId, finalization.expectedBuckets(), new RoaringBitmap(),
                     candidateEvaluator == null ? 0L : candidateEvaluator.exactComparisonsFor(lhs),
@@ -491,7 +493,8 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private boolean derivationMetricsRecorded;
 
     private void recordDerivationMetrics() {
-        if (derivationMetricsRecorded) return;
+        if (derivationMetricsRecorded)
+            return;
         derivationMetricsRecorded = true;
         phaseMetrics.addDerivationMetrics(modeSpecificContext.derivationMetrics());
     }

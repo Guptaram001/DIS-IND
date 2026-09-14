@@ -132,6 +132,10 @@ def base_environment(cluster_config: dict) -> tuple[dict[str, str], dict]:
 
 
 APPLICATION_VARIABLES = {
+    "value_id_cache_policy": "DIS_IND_VALUE_ID_CACHE_POLICY",
+    "membership_cache_policy": "DIS_IND_MEMBERSHIP_CACHE_POLICY",
+    "membership_cache_bytes": "DIS_IND_MEMBERSHIP_CACHE_BYTES",
+    "value_id_hot_entries": "DIS_IND_VALUE_ID_HOT_ENTRIES",
     "batch_size": "DIS_IND_BATCH_SIZE",
     "chunk_size": "DIS_IND_CHUNK_SIZE",
     "data_orientation": "DIS_IND_DATA_ORIENTATION",
@@ -140,6 +144,7 @@ APPLICATION_VARIABLES = {
     "cluster_change_detection": "DIS_IND_CLUSTER_CHANGE_DETECTION",
     "ingestion_mode": "DIS_IND_INGESTION_MODE",
     "prune_cqf_enabled": "DIS_IND_PRUNE_CQF_ENABLED",
+    "prune_whole_counts_enabled": "DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED",
     "prune_partition_counts_enabled": "DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED",
     "prune_partition_hierarchy_enabled": "DIS_IND_PRUNE_PARTITION_HIERARCHY_ENABLED",
     "prune_transitive_enabled": "DIS_IND_PRUNE_TRANSITIVE_ENABLED",
@@ -148,6 +153,7 @@ APPLICATION_VARIABLES = {
 
 
 BOOLEAN_APPLICATION_SETTINGS = {
+    "prune_whole_counts_enabled",
     "cluster_change_detection",
     "prune_cqf_enabled",
     "prune_partition_counts_enabled",

@@ -169,12 +169,12 @@ public final class WorkerValueIdStore implements AutoCloseable {
             List<byte[]> storedIds;
             try {
                 // test it too
-                // storedIds = database.multiGetAsList(coldKeys);
-                storedIds = new ArrayList<>(coldKeys.size());
+                storedIds = database.multiGetAsList(coldKeys);
+                // storedIds = new ArrayList<>(coldKeys.size());
 
-                for (byte[] key : coldKeys) {
-                    storedIds.add(database.get(key));
-                }
+                // for (byte[] key : coldKeys) {
+                // storedIds.add(database.get(key));
+                // }
             } finally {
                 metrics.rocksRead(coldKeys.size(), System.nanoTime() - readStarted);
             }

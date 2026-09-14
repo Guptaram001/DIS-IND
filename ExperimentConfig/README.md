@@ -38,3 +38,26 @@ RocksDB or another run's process state.
 Requirements on the control machine are Python 3, PyYAML, SSH and SCP. Every
 cluster VM requires Git, Maven and Java 21. Configure SSH key authentication;
 do not put passwords or private keys in YAML.
+
+## Cache ablation
+
+Add these keys under an experiment's `application` mapping:
+
+```yaml
+value_id_cache_policy: caffeine  # lru or caffeine (W-TinyLFU)
+membership_cache_policy: lru     # lru or caffeine
+value_id_hot_entries: 100000     # per-worker total; 0 disables the value-ID hot cache
+membership_cache_bytes: 536870912  # per-worker estimated budget; 0 permits only pinned state
+```
+
+Create four copies using `lru/lru`, `caffeine/lru`, `lru/caffeine`, and
+`caffeine/caffeine`, with unique experiment names and identical remaining
+settings. List them in a suite and set repeated runs. The launcher forwards
+these values to both coordinator and workers; resolved configs and worker cache
+TSVs identify the selected policies. Test exact and prune separately while
+holding `ind_calculation` fixed. See the cache ablation section of the main
+README for memory accounting and metric interpretation.
+
+Set `application.prune_whole_counts_enabled: false` to disable whole-column
+distinct-count pruning and its count-array maintenance (default: true).
+Previous-result reuse remains enabled. All cluster processes receive the option.

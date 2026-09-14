@@ -28,7 +28,7 @@ public final class CandidateEvaluator {
 
     private final CandidateSet affectedCandidatesForValue;
     private final BitSet beforeChangeSet;
-    private final BitSet afterChangeSet;
+    private final BitSet afterChangeSet; // Columns containing v after the batch update
     private final BitSet tempCandiBitSet; // Temp to look into a candidate.
     private final BitSet[] newlyRejectedRhsByLhs; // For a lhs, which rhs is rejected
     private final BitSet touchedNewlyRejectedLhs; // Faster clearing of rejected rhs by lhs
