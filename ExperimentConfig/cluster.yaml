@@ -12,7 +12,6 @@ cluster:
     - {host: 192.168.2.232, advertised_ip: 192.168.2.232}
     - {host: 192.168.2.90, advertised_ip: 192.168.2.90}
     - {host: 192.168.2.138, advertised_ip: 192.168.2.138}
-    - {host: 192.168.2.89, advertised_ip: 192.168.2.89}
     - {host: 192.168.2.157, advertised_ip: 192.168.2.157}
 
   worker_defaults:
