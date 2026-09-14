@@ -1,0 +1,39 @@
+# Edit this file for each experiment; worker addresses live in cluster.yaml.
+# Run: bash scripts/run-worker-scaling.sh
+# Check without contacting nodes: bash scripts/run-worker-scaling.sh --validate-only
+# Workers are selected in inventory order, excluding the addresses below.
+# Results: <output_base>/<dataset>-<count>-workers/<experiment>-run-.../
+# Temporary suite/experiment YAML is generated automatically; no extra files to maintain.
+cluster_config: cluster.yaml
+scaling:
+  worker_counts: all  # all = 1..number of available workers; use [5] for only five
+  modes: [prune, exact]  # Use [prune] or [exact] for one mode
+  repeats: 1
+  timeout_seconds: 3600
+  stop_on_failure: true
+  excluded_workers: [192.168.2.89]
+
+dataset:
+  name: mb  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/mb
+
+application:
+  data_orientation: value
+  ingestion_mode: delete  # insert or delete
+  ind_calculation: batch  # final or batch
+  cluster_change_detection: true
+  chunk_size: 5000000
+  value_id_cache_policy: lru  # lru or caffeine
+  membership_cache_policy: lru  # lru or caffeine
+  value_id_hot_entries: 1000000
+  membership_cache_bytes: 536870912
+  prune_cqf_enabled: false
+  prune_whole_counts_enabled: true
+  prune_partition_counts_enabled: false
+  prune_partition_hierarchy_enabled: false
+  prune_transitive_enabled: false
+  prune_count_partitions: 64
+
+resources:
+  coordinator_java_xmx: 8g
+  worker_java_xmx: 8g
