@@ -135,6 +135,8 @@ APPLICATION_VARIABLES = {
     "value_id_cache_policy": "DIS_IND_VALUE_ID_CACHE_POLICY",
     "membership_cache_policy": "DIS_IND_MEMBERSHIP_CACHE_POLICY",
     "membership_cache_bytes": "DIS_IND_MEMBERSHIP_CACHE_BYTES",
+    "cluster_cache": "DIS_IND_CLUSTER_CACHE",
+    "cluster_cache_bytes": "DIS_IND_CLUSTER_CACHE_BYTES",
     "value_id_hot_entries": "DIS_IND_VALUE_ID_HOT_ENTRIES",
     "batch_size": "DIS_IND_BATCH_SIZE",
     "chunk_size": "DIS_IND_CHUNK_SIZE",

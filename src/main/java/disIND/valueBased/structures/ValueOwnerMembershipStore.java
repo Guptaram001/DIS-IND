@@ -26,6 +26,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Arrays;
+import java.util.BitSet;
+import java.util.ArrayDeque;
+import java.util.function.Predicate;
 import java.util.concurrent.atomic.AtomicLong;
 
 import disIND.valueBased.protocol.MembershipWriteProtocol.CandidateWrite;
@@ -71,7 +74,18 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     private final BucketMembershipCache[] bucketMembershipCaches;
     private final WorkerMembershipMetrics metrics;
 
-    private final AtomicLong pinnedEstimatedBytes = new AtomicLong();
+    private final AtomicLong mutatedEstimatedBytes = new AtomicLong();
+
+    // Nonempty signatures have keys of length 5 + 8*n, distinct from membership
+    // keys.
+    private static final byte CLUSTER_PREFIX = 0x47;
+    private final ClusterCache[] clusterCaches;
+    private final CacheMode clusterCacheMode;
+    private final long maximumClusterCacheBytes;
+    private final AtomicLong clusterHits = new AtomicLong(), clusterMisses = new AtomicLong();
+    private final AtomicLong clusterEvictions = new AtomicLong(), clusterScanned = new AtomicLong();
+    private final AtomicLong clusterReads = new AtomicLong(), clusterReadNanos = new AtomicLong();
+    private final AtomicLong clusterWrites = new AtomicLong(), clusterDeletes = new AtomicLong();
 
     private static final byte CANDIDATE_PREFIX = 0x43;
     private static final byte COUNT_STATE_TYPE = 1;
@@ -242,7 +256,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
     }
 
-    public record InFlightWrite(long batchId, int[] membershipValueIds, long[] candidateKeys, long encodedBytes) {
+    public record InFlightWrite(long batchId, int[] membershipValueIds, long[] candidateKeys, BitSet[] clusterKeys,
+            long encodedBytes) {
     }
 
     public record PreparedWriteBatch(EncodedWriteBatch message, InFlightWrite cleanup) {
@@ -314,7 +329,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             }
             long delta = weight(membership) - previousWeight;
             currentWeight += delta;
-            pinnedEstimatedBytes.addAndGet(delta);
+            mutatedEstimatedBytes.addAndGet(delta);
             overlayValueIds.add(valueId);
             enqueueDirty(valueId, entry);
             evictCleanEntriesIfNecessary();
@@ -339,6 +354,200 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
     }
 
+    private static final class ClusterEntry {
+        final BitSet signature;
+        int count;
+        boolean dirty = true, inFlight, queued;
+
+        ClusterEntry(BitSet signature, int count) {
+            this.signature = BitSet.valueOf(signature.toLongArray());
+            this.count = count;
+        }
+
+        int weight() {
+            return Math.toIntExact(128L + ((signature.length() + 63L) / 64) * Long.BYTES);
+        }
+    }
+
+    private final class ClusterCache {
+        final Map<BitSet, ClusterEntry> pending = new HashMap<>();
+        final ArrayDeque<BitSet> dirty = new ArrayDeque<>();
+        final HotCache<BitSet, ClusterEntry> clean;
+        final long budget;
+        long mutatedBytes;
+
+        ClusterCache(long budget) {
+            this.budget = budget;
+            clean = new HotCache<>(clusterCacheMode, budget, ClusterEntry::weight,
+                    clusterEvictions::incrementAndGet);
+        }
+
+        void enqueue(ClusterEntry entry) {
+            if (!entry.queued) {
+                entry.queued = true;
+                dirty.addLast(entry.signature);
+            }
+        }
+
+        void resize() {
+            clean.maximum(Math.max(0, budget - mutatedBytes));
+        }
+    }
+
+    private ClusterCache clusterCache(int bucketId) {
+        if (bucketId < 0 || bucketId >= clusterCaches.length)
+            throw new IllegalArgumentException("Invalid bucketId: " + bucketId);
+        ClusterCache cache = clusterCaches[bucketId];
+        if (cache == null) {
+            long budget = maximumClusterCacheBytes / clusterCaches.length
+                    + (bucketId < maximumClusterCacheBytes % clusterCaches.length ? 1 : 0);
+            clusterCaches[bucketId] = cache = new ClusterCache(budget);
+        }
+        return cache;
+    }
+
+    private static byte[] clusterPrefix(int bucketId) {
+        return ByteBuffer.allocate(5).put(CLUSTER_PREFIX).putInt(bucketId).array();
+    }
+
+    private static byte[] clusterKey(int bucketId, BitSet signature) {
+        long[] words = signature.toLongArray();
+        ByteBuffer buffer = ByteBuffer.allocate(5 + words.length * Long.BYTES);
+        buffer.put(CLUSTER_PREFIX).putInt(bucketId);
+        for (long word : words)
+            buffer.putLong(word);
+        return buffer.array();
+    }
+
+    private static BitSet decodeClusterKey(byte[] key) {
+        if (key.length < 13 || (key.length - 5) % Long.BYTES != 0 || key[0] != CLUSTER_PREFIX)
+            throw new IllegalStateException("Invalid cluster key");
+        ByteBuffer buffer = ByteBuffer.wrap(key);
+        buffer.position(5);
+        long[] words = new long[buffer.remaining() / Long.BYTES];
+        for (int i = 0; i < words.length; i++)
+            words[i] = buffer.getLong();
+        if (words[words.length - 1] == 0)
+            throw new IllegalStateException("Noncanonical cluster key");
+        return BitSet.valueOf(words);
+    }
+
+    private static int decodeClusterCount(byte[] value) {
+        if (value.length != Integer.BYTES || readInt(value, 0) <= 0)
+            throw new IllegalStateException("Invalid cluster count");
+        return readInt(value, 0);
+    }
+
+    /**
+     * Bucket state is owned by its ValueOwner actor; the writer only receives
+     * encoded copies.
+     */
+    public int clusterCount(int bucketId, BitSet signature) {
+        if (signature.isEmpty())
+            throw new IllegalArgumentException("Empty cluster signature");
+        ClusterCache cache = clusterCache(bucketId);
+        ClusterEntry entry = cache.pending.get(signature);
+        if (entry == null)
+            entry = cache.clean.get(signature);
+        if (entry != null) {
+            clusterHits.incrementAndGet();
+            return entry.count;
+        }
+        clusterMisses.incrementAndGet();
+        long started = System.nanoTime();
+        try {
+            byte[] value = db.get(clusterKey(bucketId, signature));
+            int count = value == null ? 0 : decodeClusterCount(value);
+            ClusterEntry loaded = new ClusterEntry(signature, count);
+            loaded.dirty = false;
+            if (cache.budget > cache.mutatedBytes)
+                cache.clean.put(loaded.signature, loaded);
+            return count;
+        } catch (RocksDBException exception) {
+            throw new IllegalStateException("Unable to read cluster count", exception);
+        } finally {
+            clusterReads.incrementAndGet();
+            clusterReadNanos.addAndGet(System.nanoTime() - started);
+        }
+    }
+
+    public void stageClusterCount(int bucketId, BitSet signature, int count) {
+        if (signature.isEmpty() || count < 0)
+            throw new IllegalArgumentException("Invalid cluster record");
+        ClusterCache cache = clusterCache(bucketId);
+        cache.clean.remove(signature);
+        ClusterEntry entry = cache.pending.get(signature);
+        if (entry == null) {
+            entry = new ClusterEntry(signature, count);
+            cache.pending.put(entry.signature, entry);
+            cache.mutatedBytes += entry.weight();
+            mutatedEstimatedBytes.addAndGet(entry.weight());
+        } else {
+            entry.count = count;
+            entry.dirty = true;
+        }
+        cache.enqueue(entry);
+        cache.resize();
+    }
+
+    public void visitClusterSignatures(int bucketId, Predicate<BitSet> visitor) {
+        ClusterCache cache = clusterCache(bucketId);
+        for (ClusterEntry entry : cache.pending.values())
+            if (entry.count > 0 && !visitor.test((BitSet) entry.signature.clone()))
+                return;
+        byte[] prefix = clusterPrefix(bucketId);
+        long started = System.nanoTime(), scanned = 0;
+        try (RocksIterator iterator = db.newIterator()) {
+            for (iterator.seek(prefix); iterator.isValid() && hasPrefix(iterator.key(), prefix); iterator.next()) {
+                byte[] key = iterator.key();
+                // Membership keys use a different length even if their bucket prefix overlaps.
+                if (key.length == 8)
+                    continue;
+                scanned++;
+                BitSet signature = decodeClusterKey(key);
+                if (!cache.pending.containsKey(signature)) {
+                    decodeClusterCount(iterator.value());
+                    if (!visitor.test(signature))
+                        break;
+                }
+            }
+            iterator.status();
+        } catch (RocksDBException exception) {
+            throw new IllegalStateException("Unable to scan cluster signatures", exception);
+        } finally {
+            clusterScanned.addAndGet(scanned);
+            clusterReadNanos.addAndGet(System.nanoTime() - started);
+        }
+    }
+
+    public record ClusterCacheSnapshot(long hits, long misses, long evictions, long entries,
+            long estimatedBytes, long budgetBytes, long mutatedBytes, long reads, long scannedRecords,
+            long readNanos, long writes, long deletes) {
+    }
+
+    public ClusterCacheSnapshot clusterMetricsSnapshot() {
+        long entries = 0, bytes = 0, pinned = 0;
+        for (ClusterCache cache : clusterCaches) {
+            if (cache == null)
+                continue;
+            entries += cache.pending.size() + cache.clean.size();
+            pinned += cache.mutatedBytes;
+            bytes += cache.mutatedBytes + cache.clean.weight();
+        }
+        return new ClusterCacheSnapshot(clusterHits.get(), clusterMisses.get(), clusterEvictions.get(),
+                entries, bytes, maximumClusterCacheBytes, pinned, clusterReads.get(), clusterScanned.get(),
+                clusterReadNanos.get(), clusterWrites.get(), clusterDeletes.get());
+    }
+
+    public boolean hasPendingWrites(int bucketId) {
+        BucketMembershipCache memberships = bucketMembershipCaches[bucketId];
+        CandidateWriteBackCache candidates = candidateWriteBackByBucket[bucketId];
+        ClusterCache clusters = clusterCaches[bucketId];
+        return memberships != null && !memberships.entries.isEmpty()
+                || candidates != null && !candidates.entries.isEmpty()
+                || clusters != null && !clusters.pending.isEmpty();
+    }
+
     public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
             int bucketCount, WorkerMembershipMetrics metrics) {
 
@@ -348,8 +557,17 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
     public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
             int bucketCount, WorkerMembershipMetrics metrics, CacheMode policy, long cacheBytes) {
-        if (cacheBytes < 0)
-            throw new IllegalArgumentException("Negative membership cache budget");
+        this(directory, hotEntries, trackingMode, bucketCount, metrics, policy, cacheBytes,
+                UserConfig.CLUSTER_CACHE_MODE, UserConfig.CLUSTER_CACHE_BYTES);
+    }
+
+    public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
+            int bucketCount, WorkerMembershipMetrics metrics, CacheMode policy, long cacheBytes,
+            CacheMode clusterPolicy, long clusterBytes) {
+        if (cacheBytes < 0 || clusterBytes < 0)
+            throw new IllegalArgumentException("Negative cache budget");
+        this.clusterCacheMode = Objects.requireNonNull(clusterPolicy);
+        this.maximumClusterCacheBytes = clusterBytes;
         this.maximumMembershipCacheBytes = cacheBytes;
         this.membershipCacheMode = Objects.requireNonNull(policy);
         this.metrics = Objects.requireNonNull(metrics, "metrics");
@@ -359,6 +577,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         try {
             Files.createDirectories(directory);
             this.bucketMembershipCaches = new BucketMembershipCache[bucketCount];
+            this.clusterCaches = new ClusterCache[bucketCount];
             this.candidateWriteBackByBucket = new CandidateWriteBackCache[bucketCount];
             this.bloomFilter = new BloomFilter(BLOOM_FILTER_BITS_PER_KEY, false);
             BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
@@ -576,7 +795,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         return metrics.snapshot(currentEntries, currentEstimatedBytes, maximumMembershipCacheBytes, activeBuckets,
-                pinnedEstimatedBytes.get());
+                mutatedEstimatedBytes.get());
     }
 
     private static CandidateState validCandidateState(CandidateTrackingMode trackingMode) {
@@ -678,12 +897,12 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             if (pending == null) {
                 pending = new CandidateWriteBackEntry(state);
                 writeBack.entries.put(pairKey, pending);
-                pinnedEstimatedBytes.addAndGet(newWeight);
+                mutatedEstimatedBytes.addAndGet(newWeight);
             } else {
                 long previousWeight = candidatePinnedWeight(pending.state);
                 pending.state = state;
                 pending.dirty = true;
-                pinnedEstimatedBytes.addAndGet(newWeight - previousWeight);
+                mutatedEstimatedBytes.addAndGet(newWeight - previousWeight);
             }
             writeBack.enqueueDirty(pairKey, pending);
         }
@@ -693,8 +912,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return 64L + candidateStateWeight(state) * 4L;
     }
 
-    public long pinnedEstimatedBytes() {
-        return pinnedEstimatedBytes.get();
+    public long mutatedEstimatedBytes() {
+        return mutatedEstimatedBytes.get();
     }
 
     public PreparedWriteBatch prepareWriteBatch(int bucketId, long batchId, int maximumEntries,
@@ -708,10 +927,38 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         List<byte[]> membershipValues = new ArrayList<>(initialCapacity);
         LongArrayList candidateKeys = new LongArrayList(initialCapacity);
         List<CandidateWrite> candidateWrites = new ArrayList<>(initialCapacity);
+        List<BitSet> clusterKeys = new ArrayList<>();
+        List<CandidateWrite> clusterRecords = new ArrayList<>();
         long encodedBytes = 0L;
+        ClusterCache clusters = clusterCaches[bucketId];
+        int clustersToInspect = clusters == null ? 0 : clusters.dirty.size();
+        while (clustersToInspect-- > 0 && clusterKeys.size() < maximumEntries) {
+            BitSet signature = clusters.dirty.removeFirst();
+            ClusterEntry entry = clusters.pending.get(signature);
+            entry.queued = false;
+            if (!entry.dirty)
+                continue;
+            if (entry.inFlight) {
+                clusters.enqueue(entry);
+                continue;
+            }
+            byte[] key = clusterKey(bucketId, signature);
+            byte[] value = entry.count == 0 ? null : ByteBuffer.allocate(4).putInt(entry.count).array();
+            long bytes = key.length + (value == null ? 0 : value.length);
+            if (encodedBytes > 0 && encodedBytes + bytes > maximumBytes) {
+                clusters.enqueue(entry);
+                break;
+            }
+            clusterKeys.add((BitSet) signature.clone());
+            clusterRecords.add(new CandidateWrite(key, value, value == null));
+            encodedBytes += bytes;
+            entry.dirty = false;
+            entry.inFlight = true;
+        }
 
         int membershipsToInspect = cache.dirtyValueIds.size();
-        while (membershipsToInspect-- > 0 && membershipIds.size() + candidateKeys.size() < maximumEntries
+        while (membershipsToInspect-- > 0
+                && membershipIds.size() + candidateKeys.size() + clusterKeys.size() < maximumEntries
                 && !cache.dirtyValueIds.isEmpty()) {
             int valueId = cache.dirtyValueIds.dequeueInt();
             MembershipCacheEntry entry = cache.peek(valueId);
@@ -739,7 +986,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
         CandidateWriteBackCache candidateCache = candidateWriteBack(bucketId);
         int candidatesToInspect = candidateCache.dirtyKeys.size();
-        while (candidatesToInspect-- > 0 && membershipIds.size() + candidateKeys.size() < maximumEntries
+        while (candidatesToInspect-- > 0
+                && membershipIds.size() + candidateKeys.size() + clusterKeys.size() < maximumEntries
                 && !candidateCache.dirtyKeys.isEmpty()) {
             long pairKey = candidateCache.dirtyKeys.dequeueLong();
             CandidateWriteBackEntry entry = candidateCache.entries.get(pairKey);
@@ -770,18 +1018,37 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             entry.inFlight = true;
         }
 
-        if (membershipIds.isEmpty() && candidateKeys.isEmpty())
+        if (membershipIds.isEmpty() && candidateKeys.isEmpty() && clusterKeys.isEmpty())
             return PreparedWriteBatch.empty();
 
         int[] ids = membershipIds.toIntArray();
         long[] keys = candidateKeys.toLongArray();
         EncodedWriteBatch message = new EncodedWriteBatch(bucketId, batchId, ids,
                 membershipValues.toArray(byte[][]::new), candidateWrites.toArray(CandidateWrite[]::new),
+                clusterRecords.toArray(CandidateWrite[]::new),
                 encodedBytes, replyTo);
-        return new PreparedWriteBatch(message, new InFlightWrite(batchId, ids, keys, encodedBytes));
+        return new PreparedWriteBatch(message,
+                new InFlightWrite(batchId, ids, keys, clusterKeys.toArray(BitSet[]::new), encodedBytes));
     }
 
     public void acknowledgeWrite(int bucketId, InFlightWrite write) {
+        ClusterCache clusters = clusterCaches[bucketId];
+        for (BitSet signature : write.clusterKeys()) {
+            ClusterEntry entry = clusters.pending.get(signature);
+            if (entry == null || !entry.inFlight)
+                continue;
+            entry.inFlight = false;
+            if (entry.dirty) {
+                clusters.enqueue(entry);
+            } else {
+                clusters.pending.remove(signature);
+                clusters.mutatedBytes -= entry.weight();
+                mutatedEstimatedBytes.addAndGet(-entry.weight());
+                clusters.resize();
+                if (clusters.budget > clusters.mutatedBytes)
+                    clusters.clean.put(entry.signature, entry);
+            }
+        }
         BucketMembershipCache cache = bucketCache(bucketId);
         for (int valueId : write.membershipValueIds()) {
             MembershipCacheEntry entry = cache.peek(valueId);
@@ -792,7 +1059,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 cache.enqueueDirty(valueId, entry);
             else {
                 cache.overlayValueIds.remove(valueId);
-                pinnedEstimatedBytes.addAndGet(-BucketMembershipCache.weight(entry.membership));
+                mutatedEstimatedBytes.addAndGet(-BucketMembershipCache.weight(entry.membership));
                 cache.releaseClean(valueId, entry);
             }
         }
@@ -806,7 +1073,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 candidates.enqueueDirty(pairKey, entry);
                 continue;
             }
-            pinnedEstimatedBytes.addAndGet(-candidatePinnedWeight(entry.state));
+            mutatedEstimatedBytes.addAndGet(-candidatePinnedWeight(entry.state));
             CandidateKey key = candidateKeyObject(bucketId, pairKey);
             if (entry.state.rejected())
                 candidateStateCache.put(key, entry.state);
@@ -818,6 +1085,15 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     }
 
     public void failWrite(int bucketId, InFlightWrite write) {
+        ClusterCache clusters = clusterCaches[bucketId];
+        for (BitSet signature : write.clusterKeys()) {
+            ClusterEntry entry = clusters.pending.get(signature);
+            if (entry != null && entry.inFlight) {
+                entry.inFlight = false;
+                entry.dirty = true;
+                clusters.enqueue(entry);
+            }
+        }
         BucketMembershipCache cache = bucketCache(bucketId);
         for (int valueId : write.membershipValueIds()) {
             MembershipCacheEntry entry = cache.peek(valueId);
@@ -856,8 +1132,20 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                     candidateWrites++;
                 }
             }
+            long puts = 0, deletes = 0;
+            for (CandidateWrite write : encodedBatch.clusterWrites()) {
+                if (write.delete()) {
+                    batch.delete(write.key());
+                    deletes++;
+                } else {
+                    batch.put(write.key(), write.value());
+                    puts++;
+                }
+            }
             long started = System.nanoTime();
             db.write(writeOptions, batch);
+            clusterWrites.addAndGet(puts);
+            clusterDeletes.addAndGet(deletes);
             metrics.rocksWrite(System.nanoTime() - started, encodedBatch.encodedBytes(), membershipWrites,
                     candidateWrites, candidateDeletes);
         } catch (RocksDBException exception) {
@@ -1062,7 +1350,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
     public record DBSnapshot(long membershipRecords, long membershipKeyBytes,
             long membershipValueBytes, long candidateRecords, long candidateKeyBytes,
-            long candidateValueBytes, long physicalDiskBytes) {
+            long candidateValueBytes, long clusterRecords, long clusterKeyBytes,
+            long clusterValueBytes, long physicalDiskBytes) {
         public long membershipBytes() {
             return membershipKeyBytes + membershipValueBytes;
         }
@@ -1072,7 +1361,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         }
 
         public long logicalBytes() {
-            return membershipBytes() + candidateBytes();
+            return membershipBytes() + candidateBytes() + clusterKeyBytes + clusterValueBytes;
         }
     }
 
@@ -1086,13 +1375,18 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
         long membershipRecords = 0, membershipKeyBytes = 0, membershipValueBytes = 0;
         long candidateRecords = 0, candidateKeyBytes = 0, candidateValueBytes = 0;
+        long clusterRecords = 0, clusterKeyBytes = 0, clusterValueBytes = 0;
         try (RocksIterator iterator = db.newIterator()) {
             for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
                 byte[] storedKey = iterator.key();
                 byte[] storedValue = iterator.value();
                 boolean candidate = storedKey.length == 1 + Integer.BYTES * 3
                         && storedKey[0] == CANDIDATE_PREFIX;
-                if (candidate) {
+                if (storedKey.length >= 13 && storedKey[0] == CLUSTER_PREFIX) {
+                    clusterRecords++;
+                    clusterKeyBytes += storedKey.length;
+                    clusterValueBytes += storedValue.length;
+                } else if (candidate) {
                     candidateRecords++;
                     candidateKeyBytes += storedKey.length;
                     candidateValueBytes += storedValue.length;
@@ -1107,10 +1401,14 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             throw new IllegalStateException("Unable to scan ValueOwner membership store", exception);
         }
         return new DBSnapshot(membershipRecords, membershipKeyBytes, membershipValueBytes,
-                candidateRecords, candidateKeyBytes, candidateValueBytes, directoryBytes(directory));
+                candidateRecords, candidateKeyBytes, candidateValueBytes,
+                clusterRecords, clusterKeyBytes, clusterValueBytes, directoryBytes(directory));
     }
 
     private void requireNoPendingWrites() {
+        for (ClusterCache cache : clusterCaches)
+            if (cache != null && !cache.pending.isEmpty())
+                throw new IllegalStateException("Cannot snapshot: cluster writes are still pending");
         for (BucketMembershipCache cache : bucketMembershipCaches) {
             if (cache == null)
                 continue;
@@ -1144,6 +1442,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     @Override
     public void close() {
         candidateStateCache.invalidateAll();
+        for (ClusterCache cache : clusterCaches) {
+            if (cache == null)
+                continue;
+            cache.clean.clear();
+            cache.pending.clear();
+            cache.dirty.clear();
+        }
 
         for (BucketMembershipCache cache : bucketMembershipCaches) {
             if (cache != null)

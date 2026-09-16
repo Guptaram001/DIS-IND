@@ -157,6 +157,8 @@ export_docker_application_arguments() {
             --value-id-cache-policy) export DIS_IND_VALUE_ID_CACHE_POLICY="$value" ;;
             --membership-cache-policy) export DIS_IND_MEMBERSHIP_CACHE_POLICY="$value" ;;
             --membership-cache-bytes) export DIS_IND_MEMBERSHIP_CACHE_BYTES="$value" ;;
+            --cluster-cache-policy) export DIS_IND_CLUSTER_CACHE_POLICY="$value" ;;
+            --cluster-cache-bytes) export DIS_IND_CLUSTER_CACHE_BYTES="$value" ;;
             --ind-calculation) export DIS_IND_IND_CALCULATION="$value" ;;
             --cluster-change-detection) export DIS_IND_CLUSTER_CHANGE_DETECTION="$value" ;;
             --prune-cqf-enabled) export DIS_IND_PRUNE_CQF_ENABLED="$value" ;;
@@ -353,6 +355,8 @@ run_distributed_docker() {
         echo "value_id_cache_policy=${DIS_IND_VALUE_ID_CACHE_POLICY:-lru}"
         echo "membership_cache_policy=${DIS_IND_MEMBERSHIP_CACHE_POLICY:-lru}"
         echo "membership_cache_bytes=${DIS_IND_MEMBERSHIP_CACHE_BYTES:-536870912}"
+        echo "cluster_cache_policy=${DIS_IND_CLUSTER_CACHE_POLICY:-lru}"
+        echo "cluster_cache_bytes=${DIS_IND_CLUSTER_CACHE_BYTES:-134217728}"
         echo "ind_calculation=${DIS_IND_IND_CALCULATION:-batch}"
         echo "cluster_change_detection=${DIS_IND_CLUSTER_CHANGE_DETECTION:-true}"
         echo "validation=lhs-intersection"

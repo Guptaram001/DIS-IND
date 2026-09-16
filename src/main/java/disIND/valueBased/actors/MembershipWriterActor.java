@@ -51,7 +51,7 @@ public final class MembershipWriterActor extends AbstractBehavior<Command> {
                 getContext().getLog().info(
                         "[VO-WRITER] bucket={} batchId={} entries={} bytes={} tookMicros={}",
                         message.bucketId(), message.batchId(),
-                        message.membershipValueIds().length + message.candidateWrites().length,
+                        message.membershipValueIds().length + message.candidateWrites().length + message.clusterWrites().length,
                         message.encodedBytes(), (System.nanoTime() - started) / 1000);
             }
         } catch (RuntimeException exception) {

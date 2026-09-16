@@ -29,6 +29,7 @@ public final class WorkerMetricsFlusher {
             return false;
 
         writer.writeAll(valueIdStore.metricsSnapshot(), membershipStore.metricsSnapshot(), phaseMetrics);
+        writer.writeClusterMetrics(membershipStore.clusterMetricsSnapshot());
         return true;
     }
 }

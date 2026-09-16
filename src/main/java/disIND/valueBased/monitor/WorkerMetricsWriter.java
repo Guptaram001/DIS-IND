@@ -43,6 +43,25 @@ public final class WorkerMetricsWriter {
                 write("cluster-validation-metrics.tsv", derivation.toString(), "CLUSTER-VALIDATION");
         }
 
+        public void writeClusterMetrics(ValueOwnerMembershipStore.ClusterCacheSnapshot metrics) {
+                String contents = "metric\tvalue\tunit\n"
+                                + "cache_policy\t" + disIND.valueBased.utility.UserConfig.CLUSTER_CACHE_MODE
+                                + "\tpolicy\n"
+                                + "cache_hits\t" + metrics.hits() + "\trequests\n"
+                                + "cache_misses\t" + metrics.misses() + "\trequests\n"
+                                + "cache_evictions\t" + metrics.evictions() + "\tentries\n"
+                                + "cache_entries\t" + metrics.entries() + "\tentries\n"
+                                + "cache_estimated_bytes\t" + metrics.estimatedBytes() + "\tbytes\n"
+                                + "cache_budget_bytes\t" + metrics.budgetBytes() + "\tbytes\n"
+                                + "pinned_bytes\t" + metrics.mutatedBytes() + "\tbytes\n"
+                                + "rocksdb_point_reads\t" + metrics.reads() + "\trequests\n"
+                                + "rocksdb_scanned_records\t" + metrics.scannedRecords() + "\trecords\n"
+                                + "rocksdb_read_time_sec\t" + metrics.readNanos() / 1_000_000_000.0 + "\tseconds\n"
+                                + "rocksdb_puts\t" + metrics.writes() + "\trecords\n"
+                                + "rocksdb_deletes\t" + metrics.deletes() + "\trecords\n";
+                write("cluster-cache-metrics.tsv", contents, "CLUSTER-CACHE-METRICS");
+        }
+
         public void writeAuxiliaryStorage(WorkerValueIdStore.DBSnapshot valueIds,
                         ValueOwnerMembershipStore.DBSnapshot membership) {
                 long logicalTotal = Math.addExact(valueIds.logicalBytes(), membership.logicalBytes());
@@ -60,6 +79,9 @@ public final class WorkerMetricsWriter {
                                 + "candidate_records\t" + membership.candidateRecords() + "\trecords\n"
                                 + "candidate_key_bytes\t" + membership.candidateKeyBytes() + "\tbytes\n"
                                 + "candidate_value_bytes\t" + membership.candidateValueBytes() + "\tbytes\n"
+                                + "cluster_records\t" + membership.clusterRecords() + "\trecords\n"
+                                + "cluster_key_bytes\t" + membership.clusterKeyBytes() + "\tbytes\n"
+                                + "cluster_value_bytes\t" + membership.clusterValueBytes() + "\tbytes\n"
                                 + "logical_auxiliary_bytes\t" + logicalTotal + "\tbytes\n"
                                 + "value_id_physical_disk_bytes\t" + valueIds.physicalDiskBytes() + "\tbytes\n"
                                 + "membership_physical_disk_bytes\t" + membership.physicalDiskBytes() + "\tbytes\n"

@@ -105,12 +105,18 @@ public final class UserConfig {
     public static final long DEFAULT_MEMBERSHIP_CACHE_BYTES = 512L * 1024 * 1024;
     public static long MEMBERSHIP_CACHE_BYTES = DEFAULT_MEMBERSHIP_CACHE_BYTES;
 
+    public static CacheMode CLUSTER_CACHE_MODE = CacheMode.LRU;
+    public static final long DEFAULT_CLUSTER_CACHE_BYTES = 128L * 1024 * 1024;
+    public static long CLUSTER_CACHE_BYTES = DEFAULT_CLUSTER_CACHE_BYTES;
+
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
     static {
         CLI_PROPERTIES.put("value-id-cache-policy", "dis.ind.value-id-cache-policy");
         CLI_PROPERTIES.put("membership-cache-policy", "dis.ind.membership-cache-policy");
         CLI_PROPERTIES.put("membership-cache-bytes", "dis.ind.membership-cache-bytes");
+        CLI_PROPERTIES.put("cluster-cache", "dis.ind.cluster-cache");
+        CLI_PROPERTIES.put("cluster-cache", "dis.ind.cluster-cache");
         CLI_PROPERTIES.put("input-dir", "dis.ind.input-dir");
         CLI_PROPERTIES.put("output-file", "dis.ind.output-file");
         CLI_PROPERTIES.put("batch-size", "dis.ind.batch-size");
@@ -162,6 +168,13 @@ public final class UserConfig {
                 DEFAULT_MEMBERSHIP_CACHE_BYTES);
         if (MEMBERSHIP_CACHE_BYTES < 0)
             throw new IllegalArgumentException("membership-cache-bytes must be nonnegative");
+
+        CLUSTER_CACHE_MODE = CacheMode.parse(stringSetting(
+                "DIS_IND_CLUSTER_CACHE", "dis.ind.cluster-cache", "lru"));
+        CLUSTER_CACHE_BYTES = longSetting("DIS_IND_CLUSTER_CACHE_BYTES", "dis.ind.cluster-cache-bytes",
+                DEFAULT_CLUSTER_CACHE_BYTES);
+        if (CLUSTER_CACHE_BYTES < 0)
+            throw new IllegalArgumentException("cluster-cache-bytes must be nonnegative");
 
         INPUT_DIR = stringSetting("DIS_IND_INPUT_DIR", "dis.ind.input-dir", DEFAULT_INPUT_DIR);
         OUTPUT_DIR = stringSetting("DIS_IND_OUTPUT_FILE", "dis.ind.output-file", DEFAULT_OUTPUT_FILE);
@@ -229,14 +242,6 @@ public final class UserConfig {
                 "dis.ind.data-orientation", DEFAULT_DATA_ORIENTATION);
         CANDIDATE_TRACKING = candidateTrackingSetting("DIS_IND_CANDIDATE_TRACKING",
                 "dis.ind.candidate-tracking", DEFAULT_CANDIDATE_TRACKING);
-        // if (CANDIDATE_TRACKING == CandidateTrackingMode.WITNESS &&
-        // MAX_TRACKED_VIOLATIONS > MAX_VALUE_OWNER_WITNESSES) {
-        // throw new IllegalArgumentException("dis.ind.max-tracked-violations / "
-        // + "DIS_IND_MAX_TRACKED_VIOLATIONS must be at most "
-        // + MAX_VALUE_OWNER_WITNESSES
-        // + " when witness candidate tracking is selected: "
-        // + MAX_TRACKED_VIOLATIONS);
-        // }
     }
 
     private static void applyCommandLine(String[] args) {

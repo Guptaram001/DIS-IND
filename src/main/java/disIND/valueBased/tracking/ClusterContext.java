@@ -32,7 +32,7 @@ public final class ClusterContext implements ModeSpecificContext {
     private long affectedLhsCount, derivedLhsCount, transitionsCount;
 
     public ClusterContext(CandidateTrackingMode mode, int bucketId, int columns,
-            CandidateDomain domain, ClusterOptions options) {
+            CandidateDomain domain, ClusterOptions options, ValueOwnerMembershipStore store) {
         if (mode != CandidateTrackingMode.EXACT && mode != CandidateTrackingMode.PRUNE)
             throw new IllegalArgumentException("Cluster context requires exact or prune");
         this.bucketId = bucketId;
@@ -40,7 +40,7 @@ public final class ClusterContext implements ModeSpecificContext {
         this.prune = mode == CandidateTrackingMode.PRUNE;
         this.domain = domain;
         this.options = Objects.requireNonNull(options);
-        clusters = new ValueOwnerClusterIndex(bucketId, columns);
+        clusters = new ValueOwnerClusterIndex(bucketId, columns, store);
         metrics = new PruneMetricsCollector(columns);
         results = new BitSet[columns];
         distinct = prune && options.wholeCounts() ? new int[columns] : null;

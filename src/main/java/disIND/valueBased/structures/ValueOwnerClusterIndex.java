@@ -1,21 +1,24 @@
 package disIND.valueBased.structures;
 
-import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import java.util.BitSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 public final class ValueOwnerClusterIndex {
     private final int totalColumns;
-    private final Object2IntOpenHashMap<BitSet> counts = new Object2IntOpenHashMap<>();
+    private final ValueOwnerMembershipStore store;
+    private final int bucketId;
     private final BitSet[] commonRhs;
     private final BitSet affectedLhs = new BitSet();
     private long intersections;
     private long signatureVisits;
 
-    public ValueOwnerClusterIndex(int bucketId, int totalColumns) {
+    public ValueOwnerClusterIndex(int bucketId, int totalColumns, ValueOwnerMembershipStore store) {
         if (bucketId < 0 || totalColumns <= 0)
             throw new IllegalArgumentException("Invalid cluster dimensions");
+        this.store = Objects.requireNonNull(store, "Cluster modes require the membership store");
+        this.bucketId = bucketId;
         this.totalColumns = totalColumns;
         this.commonRhs = new BitSet[totalColumns];
     }
@@ -28,28 +31,28 @@ public final class ValueOwnerClusterIndex {
         if (before.equals(after))
             return;
         if (!before.isEmpty()) {
-            int previous = counts.getInt(before);
+            int previous = store.clusterCount(bucketId, before);
             if (previous <= 0)
                 throw new IllegalStateException("Missing old cluster");
             if (previous == 1) {
-                counts.removeInt(before);
+                store.stageClusterCount(bucketId, before, 0);
                 affectedLhs.or(before);
                 for (int lhs = before.nextSetBit(0); lhs >= 0; lhs = before.nextSetBit(lhs + 1))
                     commonRhs[lhs] = null; // Removal may restore previously rejected RHSs.
             } else
-                counts.put(before, previous - 1);
+                store.stageClusterCount(bucketId, before, previous - 1);
         }
         if (!after.isEmpty()) {
-            int previous = counts.getInt(after);
+            int previous = store.clusterCount(bucketId, after);
             if (previous == 0) {
                 BitSet signature = (BitSet) after.clone();
-                counts.put(signature, 1);
+                store.stageClusterCount(bucketId, signature, 1);
                 affectedLhs.or(signature);
                 for (int lhs = signature.nextSetBit(0); lhs >= 0; lhs = signature.nextSetBit(lhs + 1))
                     if (commonRhs[lhs] != null)
                         commonRhs[lhs].and(signature);
             } else
-                counts.put(after, Math.incrementExact(previous));
+                store.stageClusterCount(bucketId, after, Math.incrementExact(previous));
         }
     }
 
@@ -75,14 +78,12 @@ public final class ValueOwnerClusterIndex {
             BitSet common = new BitSet(totalColumns);
             common.set(0, totalColumns);
             common.clear(lhs);
-            for (BitSet signature : counts.keySet()) {
+            store.visitClusterSignatures(bucketId, signature -> {
                 signatureVisits++;
-                if (signature.get(lhs)) {
+                if (signature.get(lhs))
                     common.and(signature);
-                    if (common.isEmpty())
-                        break;
-                }
-            }
+                return !common.isEmpty();
+            });
             commonRhs[lhs] = common;
         }
         result.and(commonRhs[lhs]);
@@ -90,7 +91,12 @@ public final class ValueOwnerClusterIndex {
     }
 
     public List<long[]> activeSignaturesSnapshot() {
-        return counts.keySet().stream().map(BitSet::toLongArray).toList();
+        List<long[]> signatures = new ArrayList<>();
+        store.visitClusterSignatures(bucketId, signature -> {
+            signatures.add(signature.toLongArray());
+            return true;
+        });
+        return signatures;
     }
 
     public long intersections() {

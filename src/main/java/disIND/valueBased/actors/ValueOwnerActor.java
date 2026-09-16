@@ -98,6 +98,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private int awaitingPartitionFinalSequence = -1;
     private long nextMembershipBatchId;
     private InFlightWrite inFlightWrite;
+    private boolean finalDrainStarted;
     private static final int MAX_IN_FLIGHT_STATUS_PARTITIONS = 4;
     private static final Duration STATUS_RETRY_DELAY = Duration.ofSeconds(2);
     private final List<ArrayDeque<VOCandidateStatusUpdate>> pendingStatusByPartition = new ArrayList<>();
@@ -172,7 +173,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         this.orientation = orientation;
         this.batchProcessor = newProcessor(orientation);
         this.modeSpecificContext = ModeSpecificContext.init(candidateTrackingMode, bucketId, metadata.totalCols(),
-                candidateDomain, clusterOptions);
+                candidateDomain, clusterOptions, membershipStore);
 
         ColumnSetFactory columnSets = new ColumnSetFactory(metadata.totalCols());
         this.phaseMetrics = phaseMetrics;
@@ -422,8 +423,18 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         finalization = message;
         startMembershipWrite();
         nextDrainPartition = 0;
-        prepareNextPartitionDrain();
+        finalDrainStarted = false;
+        tryStartFinalDrain();
         return this;
+    }
+
+    private void tryStartFinalDrain() {
+        if (finalization == null || finalDrainStarted)
+            return;
+        if (modeSpecificContext.clusterBased() && membershipStore.hasPendingWrites(bucketId))
+            return;
+        finalDrainStarted = true;
+        prepareNextPartitionDrain();
     }
 
     private Behavior<Command> onPartitionDrainQueued(PartitionDrainQueued message) {
@@ -542,6 +553,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         inFlightWrite = null;
         releaseDelayedInputAcknowledgmentIfPossible();
         startMembershipWrite();
+        tryStartFinalDrain();
         return this;
     }
 
@@ -573,7 +585,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
     private void releaseDelayedInputAcknowledgmentIfPossible() {
         if (delayedInputAcknowledgments.isEmpty()
                 || hasPendingCandidateStatusUpdates()
-                || membershipStore.pinnedEstimatedBytes() > UserConfig.DEFAULT_VO_PINNED_LOW_BYTES)
+                || membershipStore.mutatedEstimatedBytes() > UserConfig.DEFAULT_VO_PINNED_LOW_BYTES)
             return;
         delayedInputAcknowledgments.release(bucketId);
     }
@@ -583,7 +595,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             return;
         if (hasPendingCandidateStatusUpdates()
                 || !delayedInputAcknowledgments.isEmpty()
-                || membershipStore.pinnedEstimatedBytes() >= UserConfig.DEFAULT_VO_PINNED_HIGH_BYTES) {
+                || membershipStore.mutatedEstimatedBytes() >= UserConfig.DEFAULT_VO_PINNED_HIGH_BYTES) {
             delayedInputAcknowledgments.add(message);
             timers.startSingleTimer(RetryMembershipWrite.INSTANCE,
                     Duration.ofMillis(UserConfig.DEFAULT_VO_WRITE_RETRY_DELAY_MS));

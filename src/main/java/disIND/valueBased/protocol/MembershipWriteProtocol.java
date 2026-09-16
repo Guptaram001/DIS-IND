@@ -14,7 +14,7 @@ public final class MembershipWriteProtocol {
     }
 
     public record EncodedWriteBatch(int bucketId, long batchId, int[] membershipValueIds, byte[][] membershipValues,
-            CandidateWrite[] candidateWrites, long encodedBytes, ActorRef<ValueOwnerProtocol.Command> replyTo)
+            CandidateWrite[] candidateWrites, CandidateWrite[] clusterWrites, long encodedBytes, ActorRef<ValueOwnerProtocol.Command> replyTo)
             implements Command {
     }
 }

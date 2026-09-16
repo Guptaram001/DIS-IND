@@ -4,6 +4,7 @@ import disIND.valueBased.membership.CandidateDomain;
 import disIND.valueBased.membership.ColumnSet;
 import disIND.valueBased.model.SharedModel.CandidateTrackingMode;
 import disIND.valueBased.model.SharedModel.PruneMetrics;
+import disIND.valueBased.structures.ValueOwnerMembershipStore;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateKey;
 import disIND.valueBased.structures.ValueOwnerMembershipStore.CandidateState;
 import disIND.valueBased.utility.UserConfig;
@@ -100,11 +101,17 @@ public sealed interface ModeSpecificContext
 
     static ModeSpecificContext init(CandidateTrackingMode mode, int bucketId, int totalColumns,
             CandidateDomain candidateDomain, disIND.valueBased.model.ClusterOptions options) {
+        return init(mode, bucketId, totalColumns, candidateDomain, options, null);
+    }
+
+    static ModeSpecificContext init(CandidateTrackingMode mode, int bucketId, int totalColumns,
+            CandidateDomain candidateDomain, disIND.valueBased.model.ClusterOptions options,
+            ValueOwnerMembershipStore store) {
         return switch (mode) {
             case COUNT -> new CountContext(new CountCandidateTracker());
             case WITNESS -> new WitnessContext(
                     new WitnessCandidateTracker(UserConfig.MAX_TRACKED_VIOLATIONS));
-            case PRUNE, EXACT -> new ClusterContext(mode, bucketId, totalColumns, candidateDomain, options);
+            case PRUNE, EXACT -> new ClusterContext(mode, bucketId, totalColumns, candidateDomain, options, store);
         };
     }
 

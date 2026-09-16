@@ -319,7 +319,7 @@ membership entries. Dirty/in-flight membership stays pinned outside the
 selectable cache, consumes that same budget, and may exceed it until existing
 write backpressure catches up. Clean entries use the same estimate under both
 policies: `64 + 16 * membership-column-count` bytes. Candidate-state caching,
-RocksDB persistence, and exact/prune derivation are unchanged.
+and membership persistence retain their existing behavior.
 
 Both policies now use the same clean/pinned ownership lifecycle. The LRU adapter
 uses an access-ordered Java map, replacing the earlier fastutil hot-cache maps;
@@ -336,7 +336,9 @@ at several capacities to expose the effect of memory pressure.
 Worker cache TSVs include the policy, hits/misses, evictions, occupancy, and
 RocksDB read/write metrics. Membership metrics additionally separate
 `cache_clean_hits` from `cache_pinned_hits`, report current estimated bytes,
-and report pinned bytes (including candidate write-back state). Total cache hit
+and report total pinned bytes (including candidate and cluster write-back state).
+The shared RocksDB write durations and encoded-byte totals include cluster writes; record
+counts for clusters are reported separately in `cluster-cache-metrics.tsv`. Total cache hit
 rate includes pinned hits; evaluate clean-cache effectiveness using clean hits
 and misses. Occupancy is approximate during concurrent maintenance. Capture JVM
 heap/GC externally when comparing actual memory and runtime overhead.
@@ -347,6 +349,48 @@ up; metrics report policy `disabled`, zero hits, and misses for distinct values
 requested within each batch. RocksDB/OS caching and within-batch deduplication
 still apply. The default remains 100000 entries. To disable both clean hot
 caches, also pass `--membership-cache-bytes 0`.
+
+### Disk-backed clusters (prune and exact)
+
+Both modes store `(bucket, signature) -> count` in `ValueOwnerMembershipStore`,
+using a separate key namespace in the existing RocksDB database. They reuse the
+membership writer, bounded write batches, retry handling, and backpressure.
+Count and witness modes do not create cluster caches or write cluster records.
+
+```bash
+--candidate-tracking prune --cluster-cache-policy lru --cluster-cache-bytes 134217728
+```
+
+`--cluster-cache-policy` accepts `lru` (default) or `caffeine`. The separate
+`--cluster-cache-bytes` budget defaults to 128 MiB per worker, divided across
+configured buckets; zero disables clean cluster retention. Environment variables
+are `DIS_IND_CLUSTER_CACHE_POLICY` and `DIS_IND_CLUSTER_CACHE_BYTES`; JVM properties
+are `dis.ind.cluster-cache-policy` and `dis.ind.cluster-cache-bytes`. Docker Compose,
+`scripts/run.sh`, and the Proxmox launcher forward these settings. Experiment and
+worker-scaling YAML application settings are `cluster_cache_policy` and
+`cluster_cache_bytes`.
+
+Dirty and in-flight signature counts stay pinned until acknowledged. Their
+estimated size (`128 + 8 * signature-word-count` bytes) reduces the space available
+for clean entries and contributes to existing write backpressure. The budget is
+soft: pending updates can exceed it, and it does not cover RocksDB/native memory,
+OS page cache, result bitmaps, or pruning structures. Reads see pending updates
+before disk values; zero counts delete records. Retries and older acknowledgments
+do not discard newer updates. Final draining waits for pending writes in
+prune/exact modes. This does not add a whole-job crash recovery mechanism.
+
+Count lookups use the cache. Rebuilding an LHS intersection streams signatures
+from disk plus pending updates without collecting all records or populating the
+clean cache. This saves heap, but cache misses and intersection rebuilds add I/O,
+especially with frequent deletions. Existing intersection caching and pruning rules
+remain in place. Final signature reporting still materializes a list, and the
+candidate manager retains distinct signatures; reporting memory is not bounded
+by the cluster cache budget.
+
+`cluster-cache-metrics.tsv` reports hits, misses, evictions, occupancy, pinned bytes,
+point reads, scan records, read time, puts, and deletes. `auxiliary-storage.tsv`
+reports cluster record counts and logical bytes separately. Compare runtime and
+heap/GC on representative datasets before selecting the cache budget.
 
 ### Whole-column counts and phase measurements
 
