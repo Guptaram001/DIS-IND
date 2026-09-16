@@ -272,7 +272,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
             long started = System.nanoTime();
             membershipStore.stage(bucketId, membership.updatedRecordsByValue(), Map.of());
             phaseMetrics.record(Phase.MEMBERSHIP_STAGE, System.nanoTime() - started);
-            tryStartMembershipWrite();
+            startMembershipWrite();
             if (result != null)
                 sendCandidateStatusTransitions(message, result.transitionsByLhs(), 0);
             return;
@@ -299,7 +299,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
         membershipStore.stage(bucketId, membership.updatedRecordsByValue(), candidatesToPersist);
         phaseMetrics.record(Phase.MEMBERSHIP_STAGE, System.nanoTime() - started);
-        tryStartMembershipWrite();
+        startMembershipWrite();
 
         modeSpecificContext.candidateStatesChanged(trackingResult.changedStates());
 
@@ -420,7 +420,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         if (finalization != null && finalization.finalRound() == message.finalRound())
             return this;
         finalization = message;
-        tryStartMembershipWrite();
+        startMembershipWrite();
         nextDrainPartition = 0;
         prepareNextPartitionDrain();
         return this;
@@ -522,7 +522,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         return this;
     }
 
-    private void tryStartMembershipWrite() {
+    private void startMembershipWrite() {
         if (inFlightWrite != null)
             return;
         long batchId = ++nextMembershipBatchId;
@@ -541,7 +541,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
         membershipStore.acknowledgeWrite(bucketId, inFlightWrite);
         inFlightWrite = null;
         releaseDelayedInputAcknowledgmentIfPossible();
-        tryStartMembershipWrite();
+        startMembershipWrite();
         return this;
     }
 
@@ -563,7 +563,7 @@ public final class ValueOwnerActor extends AbstractBehavior<Command> {
 
     private Behavior<Command> onRetryMembershipWrite() {
         releaseDelayedInputAcknowledgmentIfPossible();
-        tryStartMembershipWrite();
+        startMembershipWrite();
         if (!delayedInputAcknowledgments.isEmpty())
             timers.startSingleTimer(RetryMembershipWrite.INSTANCE,
                     Duration.ofMillis(UserConfig.DEFAULT_VO_WRITE_RETRY_DELAY_MS));

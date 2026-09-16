@@ -57,6 +57,7 @@ public final class CandidateEvaluator {
     public void evaluate(Int2ObjectMap<Int2IntMap> updatedRecordsByValue, Int2ObjectMap<ColumnSet> addedColumnsByValue,
             Int2ObjectMap<ColumnSet> removedColumnsByValue, ViolationHandler violationHandler) {
 
+        violationHandler.comparisonRecorder(this::countComparison);
         clearNewlyRejectedRows();
 
         if (removedColumnsByValue.isEmpty()) {
@@ -177,6 +178,9 @@ public final class CandidateEvaluator {
         if (!affectedCandidatesForValue.add(index))
             return;
 
+        if (changes.deferCandidate(lhsCol, rhsCol))
+            return;
+
         boolean lhsBefore = containedBefore(lhsCol, membershipAfter, addedColumns, removedColumns);
         boolean rhsBefore = containedBefore(rhsCol, membershipAfter, addedColumns, removedColumns);
         boolean violatedBefore = lhsBefore && !rhsBefore;
@@ -275,6 +279,8 @@ public final class CandidateEvaluator {
         // For remaining rhs, iterate and generate a violation.
         for (int rhsCol = tempCandiBitSet.nextSetBit(0); rhsCol >= 0; rhsCol = tempCandiBitSet
                 .nextSetBit(rhsCol + 1)) {
+            if (violationHandler.deferCandidate(lhsCol, rhsCol))
+                continue;
             countComparison(lhsCol);
             violationHandler.violationCreated(lhsCol, rhsCol, valueId);
             if (filterEvents)
@@ -303,6 +309,8 @@ public final class CandidateEvaluator {
                     continue;
                 }
             }
+            if (violationHandler.deferCandidate(lhsCol, rhsCol))
+                continue;
             countComparison(lhsCol);
             violationHandler.violationRepaired(lhsCol, rhsCol, valueId);
         }
