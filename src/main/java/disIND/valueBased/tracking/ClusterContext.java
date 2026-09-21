@@ -26,6 +26,8 @@ public final class ClusterContext implements ModeSpecificContext {
     private final TransitiveValidityIndex transitive;
     private final BitSet[] noExcludedEdges;
     private final BitSet[] results;
+    // Allocated only for incremental Prune. Rows exist only for touched candidates.
+    private final Int2ObjectOpenHashMap<BitSet> newViolations, possibleRepairs;
     private final BitSet addedColumns = new BitSet(), removedColumns = new BitSet();
     private final BitSet before = new BitSet(), after = new BitSet();
     private boolean finalStarted;
@@ -43,6 +45,9 @@ public final class ClusterContext implements ModeSpecificContext {
         clusters = new ValueOwnerClusterIndex(bucketId, columns, store);
         metrics = new PruneMetricsCollector(columns);
         results = new BitSet[columns];
+        boolean incremental = prune && options.changeDetection() && options.calculation() == IndCalculation.BATCH;
+        newViolations = incremental ? new Int2ObjectOpenHashMap<>() : null;
+        possibleRepairs = incremental ? new Int2ObjectOpenHashMap<>() : null;
         distinct = prune && options.wholeCounts() ? new int[columns] : null;
         partitions = prune && options.partitionCounts()
                 ? new PartitionCountHierarchy(columns, options.partitions(), options.partitionHierarchy())
@@ -123,6 +128,39 @@ public final class ClusterContext implements ModeSpecificContext {
             for (int column = removed.nextSetBit(0); column >= 0; column = removed.nextSetBit(column + 1))
                 before.set(column);
         clusters.moveMembership(before, after);
+        if (newViolations != null)
+            trackCandidateChanges();
+    }
+
+    private void trackCandidateChanges() {
+        BitSet lhsColumns = (BitSet) before.clone();
+        lhsColumns.or(after);
+        for (int lhs = lhsColumns.nextSetBit(0); lhs >= 0; lhs = lhsColumns.nextSetBit(lhs + 1)) {
+            BitSet created = eligible(lhs);
+            BitSet repaired = (BitSet) created.clone();
+            if (after.get(lhs)) {
+                created.andNot(after);
+                if (before.get(lhs))
+                    created.and(before);
+                mergeCandidates(newViolations, lhs, created);
+            }
+            if (before.get(lhs)) {
+                repaired.andNot(before);
+                if (after.get(lhs))
+                    repaired.and(after);
+                mergeCandidates(possibleRepairs, lhs, repaired);
+            }
+        }
+    }
+
+    private static void mergeCandidates(Int2ObjectOpenHashMap<BitSet> rows, int lhs, BitSet candidates) {
+        if (!candidates.isEmpty()) {
+            BitSet row = rows.get(lhs);
+            if (row == null)
+                rows.put(lhs, candidates);
+            else
+                row.or(candidates);
+        }
     }
 
     private BitSet eligible(int lhs) {
@@ -162,6 +200,10 @@ public final class ClusterContext implements ModeSpecificContext {
             }
             results[lhs] = next;
         }
+        if (newViolations != null) {
+            newViolations.clear();
+            possibleRepairs.clear();
+        }
         addedColumns.clear();
         removedColumns.clear();
         return new TrackingResult(Map.of(), transitions);
@@ -171,6 +213,26 @@ public final class ClusterContext implements ModeSpecificContext {
         derivedLhsCount++;
         BitSet unresolved = eligible(lhs);
         BitSet valid = new BitSet(columns);
+        if (newViolations != null && previous != null) {
+            int eligibleCount = unresolved.cardinality();
+            valid.or(previous);
+            BitSet rejected = newViolations.get(lhs);
+            if (rejected != null)
+                valid.andNot(rejected);
+            BitSet repaired = possibleRepairs.get(lhs);
+            if (repaired == null)
+                unresolved.clear();
+            else
+                unresolved.and(repaired);
+            unresolved.andNot(previous);
+            int repairs = unresolved.cardinality();
+            if (rejected != null)
+                unresolved.andNot(rejected); // A final-state counterexample wins over any repair.
+            int remaining = unresolved.cardinality();
+            int direct = rejected == null ? 0 : rejected.cardinality();
+            metrics.signatureDecisions(lhs, direct, eligibleCount - direct - remaining,
+                    repairs, repairs - remaining);
+        }
         if (prune) {
             for (int rhs = unresolved.nextSetBit(0); rhs >= 0; rhs = unresolved.nextSetBit(rhs + 1)) {
 
@@ -265,6 +327,7 @@ public final class ClusterContext implements ModeSpecificContext {
 
     @Override
     public long[] derivationMetrics() {
-        return new long[] { affectedLhsCount, clusters.intersections(), clusters.signatureVisits(), transitionsCount, derivedLhsCount };
+        return new long[] { affectedLhsCount, clusters.intersections(), clusters.signatureVisits(), transitionsCount,
+                derivedLhsCount };
     }
 }

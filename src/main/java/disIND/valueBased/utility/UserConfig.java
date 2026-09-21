@@ -21,15 +21,13 @@ public final class UserConfig {
     public static final String DEFAULT_OUTPUT_FILE = "output/ind-report.txt";
     public static final IngestionMode DEFAULT_INGESTION_MODE = IngestionMode.INSERT_ONLY;
     public static final double DEFAULT_DELETE_PERCENT = 10.0;
-    public static final long DEFAULT_DELETE_SEED = 12345L; // For reproducibility
-    public static final int DEFAULT_BATCH_SIZE = 2;
+    public static final long DELETE_SEED = 12345L; // For reproducibility
+    public static final int DEFAULT_BATCH_SIZE = 15000;
     public static boolean TYPE_COMPATIBILITY_ENABLED = true;
     public static final int DEFAULT_CHUNK_SIZE = 5_000_000;
     public static final String DEFAULT_DATASET_NAME = "tpch-1";
     public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
-    public static final int MAX_VALUE_OWNER_WITNESSES = 500;
-    public static final double DEFAULT_KMV_PRUNE_THRESHOLD = 0.7;
-    public static final int DEFAULT_CHECKPOINT_INTERVAL = 5;
+    public static final int MAX_VALUE_OWNER_WITNESSES = 10;
     public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 20;
     public static final int DEFAULT_VO_WRITE_BATCH_MAX_ENTRIES = 5_000;
     public static final long DEFAULT_VO_WRITE_BATCH_MAX_BYTES = 512L * 1024L;
@@ -37,16 +35,13 @@ public final class UserConfig {
     public static final long DEFAULT_VO_PINNED_LOW_BYTES = 32L * 1024L * 1024L;
     public static final int DEFAULT_VO_WRITE_RETRY_DELAY_MS = 500;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 2;
-    public static final int DEFAULT_BD_AA_CREDIT_WINDOW = 2;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_CM_PARTITIONS = 128;
     public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
-    public static final int DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS = 5;
     public static final int DEFAULT_DRAIN_MAX_IN_FLIGHT = 128;
     public static final int DEFAULT_DRAIN_BATCH_SIZE = 16;
     public static final int DEFAULT_DRAIN_RETRY_SECONDS = 2;
-    public static final int DEFAULT_CHECKPOINT_WRITERS_PER_NODE = 4;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
     public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_WHOLE_COUNTS_ENABLED = true;
@@ -54,12 +49,11 @@ public final class UserConfig {
     public static final boolean DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED = true;
     public static final boolean DEFAULT_PRUNE_TRANSITIVE_ENABLED = false;
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
-    public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 100_000;
-    public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES = 100_000;
+    public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 128;
+    public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES_MB = 256;
     public static final DataOrientation DEFAULT_DATA_ORIENTATION = DataOrientation.VALUE_MAJOR;
     public static final CandidateTrackingMode DEFAULT_CANDIDATE_TRACKING = CandidateTrackingMode.COUNT;
-    public static final String DEFAULT_VALUE_ID_DISK_DIR = System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids";
-    public static final String DEFAULT_VALUE_TO_ROWS_DISK_DIR = System.getProperty("java.io.tmpdir")
+    public static final String DEFAULT_VALUE_ID_DISK_DIR = System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids"
             + "/dis-ind-value-to-rows";
     public static final String DEFAULT_VALUE_OWNER_DISK_DIR = System.getProperty("java.io.tmpdir")
             + "/dis-ind-value-owners";
@@ -70,20 +64,14 @@ public final class UserConfig {
     public static int CHUNK_SIZE = DEFAULT_CHUNK_SIZE;
     public static IngestionMode INGESTION_MODE = DEFAULT_INGESTION_MODE;
     public static double DELETE_PERCENT = DEFAULT_DELETE_PERCENT;
-    public static long DELETE_SEED = DEFAULT_DELETE_SEED;
     public static String DATASET_NAME = DEFAULT_DATASET_NAME;
     public static int MAX_TRACKED_VIOLATIONS = DEFAULT_MAX_TRACKED_VIOLATIONS;
-    public static double KMV_PRUNE_THRESHOLD = DEFAULT_KMV_PRUNE_THRESHOLD;
-    public static int CHECKPOINT_INTERVAL = DEFAULT_CHECKPOINT_INTERVAL;
     public static int DL_BD_CREDIT_WINDOW = DEFAULT_DL_BD_CREDIT_WINDOW;
-    public static int BD_AA_CREDIT_WINDOW = DEFAULT_BD_AA_CREDIT_WINDOW;
     public static int VALUE_OWNER_BUCKETS = DEFAULT_VALUE_OWNER_BUCKETS;
     public static int BATCH_ACK_TIMEOUT_SECONDS = DEFAULT_BATCH_ACK_TIMEOUT_SECONDS;
-    public static int FINAL_CM_DRAIN_TIMEOUT_SECONDS = DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS;
     public static int DRAIN_MAX_IN_FLIGHT = DEFAULT_DRAIN_MAX_IN_FLIGHT;
     public static int DRAIN_BATCH_SIZE = DEFAULT_DRAIN_BATCH_SIZE;
     public static int DRAIN_RETRY_SECONDS = DEFAULT_DRAIN_RETRY_SECONDS;
-    public static int CHECKPOINT_WRITERS_PER_NODE = DEFAULT_CHECKPOINT_WRITERS_PER_NODE;
     public static boolean STORE_VALUE_STRINGS = DEFAULT_STORE_VALUE_STRINGS;
     public static boolean PRUNE_CQF_ENABLED = DEFAULT_PRUNE_CQF_ENABLED;
     public static boolean PRUNE_WHOLE_COUNTS_ENABLED = DEFAULT_PRUNE_WHOLE_COUNTS_ENABLED;
@@ -92,9 +80,8 @@ public final class UserConfig {
     public static boolean PRUNE_TRANSITIVE_ENABLED = DEFAULT_PRUNE_TRANSITIVE_ENABLED;
     public static int PRUNE_COUNT_PARTITIONS = DEFAULT_PRUNE_COUNT_PARTITIONS;
     public static int VALUE_ID_HOT_ENTRIES = DEFAULT_VALUE_ID_HOT_ENTRIES;
-    public static int VALUE_OWNER_HOT_ENTRIES = DEFAULT_VALUE_OWNER_HOT_ENTRIES;
+    public static int VALUE_OWNER_HOT_ENTRIES_MB = DEFAULT_VALUE_OWNER_HOT_ENTRIES_MB;
     public static String VALUE_ID_DISK_DIR = DEFAULT_VALUE_ID_DISK_DIR;
-    public static String VALUE_TO_ROWS_DISK_DIR = DEFAULT_VALUE_TO_ROWS_DISK_DIR;
     public static String VALUE_OWNER_DISK_DIR = DEFAULT_VALUE_OWNER_DISK_DIR;
     public static DataOrientation DATA_ORIENTATION = DEFAULT_DATA_ORIENTATION;
     public static CandidateTrackingMode CANDIDATE_TRACKING = DEFAULT_CANDIDATE_TRACKING;
@@ -102,11 +89,11 @@ public final class UserConfig {
     public static boolean CLUSTER_CHANGE_DETECTION = true;
     public static CacheMode VALUE_ID_CACHE_MODE = CacheMode.LRU;
     public static CacheMode MEMBERSHIP_CACHE_MODE = CacheMode.LRU;
-    public static final long DEFAULT_MEMBERSHIP_CACHE_BYTES = 512L * 1024 * 1024;
+    public static final long DEFAULT_MEMBERSHIP_CACHE_BYTES = 512; // Taken as MB
     public static long MEMBERSHIP_CACHE_BYTES = DEFAULT_MEMBERSHIP_CACHE_BYTES;
 
     public static CacheMode CLUSTER_CACHE_MODE = CacheMode.LRU;
-    public static final long DEFAULT_CLUSTER_CACHE_BYTES = 128L * 1024 * 1024;
+    public static final long DEFAULT_CLUSTER_CACHE_BYTES = 128; // Taken as MB
     public static long CLUSTER_CACHE_BYTES = DEFAULT_CLUSTER_CACHE_BYTES;
 
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
@@ -184,33 +171,25 @@ public final class UserConfig {
                 "dis.ind.ingestion-mode", DEFAULT_INGESTION_MODE);
         DELETE_PERCENT = percentSetting("DIS_IND_DELETE_PERCENT",
                 "dis.ind.delete-percent", DEFAULT_DELETE_PERCENT);
-        DELETE_SEED = longSetting("DIS_IND_DELETE_SEED",
-                "dis.ind.delete-seed", DEFAULT_DELETE_SEED);
         DATASET_NAME = stringSetting("DIS_IND_DATASET_NAME", "dis.ind.dataset-name", DEFAULT_DATASET_NAME);
         MAX_TRACKED_VIOLATIONS = positiveIntSetting("DIS_IND_MAX_TRACKED_VIOLATIONS",
                 "dis.ind.max-tracked-violations", DEFAULT_MAX_TRACKED_VIOLATIONS);
-        KMV_PRUNE_THRESHOLD = doubleSetting("DIS_IND_KMV_PRUNE_THRESHOLD",
-                "dis.ind.kmv-prune-threshold", DEFAULT_KMV_PRUNE_THRESHOLD);
-        CHECKPOINT_INTERVAL = positiveIntSetting("DIS_IND_CHECKPOINT_INTERVAL",
-                "dis.ind.checkpoint-interval", DEFAULT_CHECKPOINT_INTERVAL);
+
         DL_BD_CREDIT_WINDOW = positiveIntSetting("DIS_IND_DL_BD_CREDIT_WINDOW",
                 "dis.ind.dl-bd-credit-window", DEFAULT_DL_BD_CREDIT_WINDOW);
-        BD_AA_CREDIT_WINDOW = positiveIntSetting("DIS_IND_BD_AA_CREDIT_WINDOW",
-                "dis.ind.bd-aa-credit-window", DEFAULT_BD_AA_CREDIT_WINDOW);
+
         VALUE_OWNER_BUCKETS = positiveIntSetting("DIS_IND_VALUE_OWNER_BUCKETS",
                 "dis.ind.value-owner-buckets", DEFAULT_VALUE_OWNER_BUCKETS);
         BATCH_ACK_TIMEOUT_SECONDS = positiveIntSetting("DIS_IND_BATCH_ACK_TIMEOUT_SECONDS",
                 "dis.ind.batch-ack-timeout-seconds", DEFAULT_BATCH_ACK_TIMEOUT_SECONDS);
-        FINAL_CM_DRAIN_TIMEOUT_SECONDS = positiveIntSetting("DIS_IND_FINAL_CM_DRAIN_TIMEOUT_SECONDS",
-                "dis.ind.final-cm-drain-timeout-seconds", DEFAULT_FINAL_CM_DRAIN_TIMEOUT_SECONDS);
+
         DRAIN_MAX_IN_FLIGHT = positiveIntSetting("DIS_IND_DRAIN_MAX_IN_FLIGHT",
                 "dis.ind.drain-max-in-flight", DEFAULT_DRAIN_MAX_IN_FLIGHT);
         DRAIN_BATCH_SIZE = positiveIntSetting("DIS_IND_DRAIN_BATCH_SIZE",
                 "dis.ind.drain-batch-size", DEFAULT_DRAIN_BATCH_SIZE);
         DRAIN_RETRY_SECONDS = positiveIntSetting("DIS_IND_DRAIN_RETRY_SECONDS",
                 "dis.ind.drain-retry-seconds", DEFAULT_DRAIN_RETRY_SECONDS);
-        CHECKPOINT_WRITERS_PER_NODE = positiveIntSetting("DIS_IND_CHECKPOINT_WRITERS_PER_NODE",
-                "dis.ind.checkpoint-writers-per-node", DEFAULT_CHECKPOINT_WRITERS_PER_NODE);
+
         STORE_VALUE_STRINGS = booleanSetting("DIS_IND_STORE_VALUE_STRINGS",
                 "dis.ind.store-value-strings", DEFAULT_STORE_VALUE_STRINGS);
         PRUNE_CQF_ENABLED = booleanSetting("DIS_IND_PRUNE_CQF_ENABLED",
@@ -232,10 +211,9 @@ public final class UserConfig {
                 "dis.ind.value-id-hot-entries", DEFAULT_VALUE_ID_HOT_ENTRIES);
         VALUE_ID_DISK_DIR = stringSetting("DIS_IND_VALUE_ID_DISK_DIR",
                 "dis.ind.value-id-disk-dir", DEFAULT_VALUE_ID_DISK_DIR);
-        VALUE_TO_ROWS_DISK_DIR = stringSetting("DIS_IND_VALUE_TO_ROWS_DISK_DIR",
-                "dis.ind.value-to-rows-disk-dir", DEFAULT_VALUE_TO_ROWS_DISK_DIR);
-        VALUE_OWNER_HOT_ENTRIES = positiveIntSetting("DIS_IND_VALUE_OWNER_HOT_ENTRIES",
-                "dis.ind.value-owner-hot-entries", DEFAULT_VALUE_OWNER_HOT_ENTRIES);
+
+        VALUE_OWNER_HOT_ENTRIES_MB = positiveIntSetting("DIS_IND_VALUE_OWNER_HOT_ENTRIES_MB",
+                "dis.ind.value-owner-hot-entries", DEFAULT_VALUE_OWNER_HOT_ENTRIES_MB);
         VALUE_OWNER_DISK_DIR = stringSetting("DIS_IND_VALUE_OWNER_DISK_DIR",
                 "dis.ind.value-owner-disk-dir", DEFAULT_VALUE_OWNER_DISK_DIR);
         DATA_ORIENTATION = orientationSetting("DIS_IND_DATA_ORIENTATION",

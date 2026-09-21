@@ -79,6 +79,10 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
     // Nonempty signatures have keys of length 5 + 8*n, distinct from membership
     // keys.
     private static final byte CLUSTER_PREFIX = 0x47;
+    private static final byte CLUSTER_INDEX_PREFIX = 0x48;
+    private static final byte[] CLUSTER_INDEX_VERSION_KEY = { 0x49 };
+    private static final byte[] EMPTY_INDEX_VALUE = new byte[0];
+    private final boolean clusterIndexEnabled;
     private final ClusterCache[] clusterCaches;
     private final CacheMode clusterCacheMode;
     private final long maximumClusterCacheBytes;
@@ -371,6 +375,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
 
     private final class ClusterCache {
         final Map<BitSet, ClusterEntry> pending = new HashMap<>();
+        final Map<Integer, Set<ClusterEntry>> pendingByColumn = new HashMap<>();
         final ArrayDeque<BitSet> dirty = new ArrayDeque<>();
         final HotCache<BitSet, ClusterEntry> clean;
         final long budget;
@@ -380,6 +385,26 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             this.budget = budget;
             clean = new HotCache<>(clusterCacheMode, budget, ClusterEntry::weight,
                     clusterEvictions::incrementAndGet);
+        }
+
+        long pendingWeight(ClusterEntry entry) {
+            return entry.weight() + 192L * entry.signature.cardinality();
+        }
+
+        void indexPending(ClusterEntry entry) {
+            for (int column = entry.signature.nextSetBit(0); column >= 0; column = entry.signature
+                    .nextSetBit(column + 1))
+                pendingByColumn.computeIfAbsent(column, ignored -> new java.util.LinkedHashSet<>()).add(entry);
+        }
+
+        void unindexPending(ClusterEntry entry) {
+            for (int column = entry.signature.nextSetBit(0); column >= 0; column = entry.signature
+                    .nextSetBit(column + 1)) {
+                Set<ClusterEntry> entries = pendingByColumn.get(column);
+                entries.remove(entry);
+                if (entries.isEmpty())
+                    pendingByColumn.remove(column);
+            }
         }
 
         void enqueue(ClusterEntry entry) {
@@ -432,16 +457,100 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         return BitSet.valueOf(words);
     }
 
+    private static byte[] clusterIndexPrefix(int bucketId, int column) {
+        return ByteBuffer.allocate(9).put(CLUSTER_INDEX_PREFIX).putInt(bucketId).putInt(column).array();
+    }
+
+    private static byte[] clusterIndexKey(byte[] primaryKey, int column) {
+        byte[] key = new byte[primaryKey.length + Integer.BYTES];
+        key[0] = CLUSTER_INDEX_PREFIX;
+        System.arraycopy(primaryKey, 1, key, 1, Integer.BYTES);
+        putInt(key, 5, column);
+        System.arraycopy(primaryKey, 5, key, 9, primaryKey.length - 5);
+        return key;
+    }
+
+    private static BitSet decodeClusterIndexKey(byte[] key) {
+        if (key.length < 17 || (key.length - 9) % Long.BYTES != 0 || key[0] != CLUSTER_INDEX_PREFIX)
+            throw new IllegalStateException("Invalid cluster index key");
+        ByteBuffer bytes = ByteBuffer.wrap(key, 9, key.length - 9);
+        long[] words = new long[(key.length - 9) / Long.BYTES];
+        for (int i = 0; i < words.length; i++)
+            words[i] = bytes.getLong();
+        return BitSet.valueOf(words);
+    }
+
+    private static void writeClusterIndex(WriteBatch batch, byte[] primaryKey, boolean delete)
+            throws RocksDBException {
+        BitSet signature = decodeClusterKey(primaryKey);
+        for (int column = signature.nextSetBit(0); column >= 0; column = signature.nextSetBit(column + 1)) {
+            byte[] key = clusterIndexKey(primaryKey, column);
+            if (delete)
+                batch.delete(key);
+            else
+                batch.put(key, EMPTY_INDEX_VALUE);
+        }
+    }
+
+    private void initializeClusterIndex() throws RocksDBException {
+        byte[] version = db.get(CLUSTER_INDEX_VERSION_KEY);
+        if (version != null) {
+            if (!Arrays.equals(version, new byte[] { 1 }))
+                throw new IllegalStateException("Unsupported cluster index version");
+            return;
+        }
+        try (RocksIterator iterator = db.newIterator(); WriteBatch batch = new WriteBatch()) {
+            for (iterator.seek(new byte[] { CLUSTER_PREFIX }); iterator.isValid(); iterator.next()) {
+                byte[] key = iterator.key();
+                if (key[0] != CLUSTER_PREFIX)
+                    break;
+                if (key.length == 8) // A membership key may share the first byte.
+                    continue;
+                decodeClusterCount(iterator.value());
+                writeClusterIndex(batch, key, false);
+                if (batch.getDataSize() >= 4 * 1024 * 1024) {
+                    db.write(writeOptions, batch);
+                    batch.clear();
+                }
+            }
+            iterator.status();
+            batch.put(CLUSTER_INDEX_VERSION_KEY, new byte[] { 1 });
+            db.write(writeOptions, batch);
+        }
+    }
+
+    public void visitSignaturesContaining(int bucketId, int column, Predicate<BitSet> visitor) {
+        if (!clusterIndexEnabled || column < 0)
+            throw new IllegalArgumentException("Column index requires Exact/Prune and a nonnegative column");
+        ClusterCache cache = clusterCache(bucketId);
+        for (ClusterEntry entry : cache.pendingByColumn.getOrDefault(column, Set.of()))
+            if (entry.count > 0
+                    && !visitor.test((BitSet) entry.signature.clone()))
+                return;
+        byte[] prefix = clusterIndexPrefix(bucketId, column);
+        long started = System.nanoTime(), scanned = 0;
+        try (RocksIterator iterator = db.newIterator()) {
+            for (iterator.seek(prefix); iterator.isValid() && hasPrefix(iterator.key(), prefix); iterator.next()) {
+                scanned++;
+                BitSet signature = decodeClusterIndexKey(iterator.key());
+                if (!cache.pending.containsKey(signature) && !visitor.test(signature))
+                    break;
+            }
+            iterator.status();
+        } catch (RocksDBException exception) {
+            throw new IllegalStateException("Unable to scan signatures for column " + column, exception);
+        } finally {
+            clusterScanned.addAndGet(scanned);
+            clusterReadNanos.addAndGet(System.nanoTime() - started);
+        }
+    }
+
     private static int decodeClusterCount(byte[] value) {
         if (value.length != Integer.BYTES || readInt(value, 0) <= 0)
             throw new IllegalStateException("Invalid cluster count");
         return readInt(value, 0);
     }
 
-    /**
-     * Bucket state is owned by its ValueOwner actor; the writer only receives
-     * encoded copies.
-     */
     public int clusterCount(int bucketId, BitSet signature) {
         if (signature.isEmpty())
             throw new IllegalArgumentException("Empty cluster signature");
@@ -480,8 +589,9 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
         if (entry == null) {
             entry = new ClusterEntry(signature, count);
             cache.pending.put(entry.signature, entry);
-            cache.mutatedBytes += entry.weight();
-            mutatedEstimatedBytes.addAndGet(entry.weight());
+            cache.indexPending(entry);
+            cache.mutatedBytes += cache.pendingWeight(entry);
+            mutatedEstimatedBytes.addAndGet(cache.pendingWeight(entry));
         } else {
             entry.count = count;
             entry.dirty = true;
@@ -552,13 +662,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             int bucketCount, WorkerMembershipMetrics metrics) {
 
         this(directory, hotEntries, trackingMode, bucketCount, metrics,
-                UserConfig.MEMBERSHIP_CACHE_MODE, UserConfig.MEMBERSHIP_CACHE_BYTES);
+                UserConfig.MEMBERSHIP_CACHE_MODE, Math.multiplyExact(UserConfig.MEMBERSHIP_CACHE_BYTES, 1024L * 1024L));
     }
 
     public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
             int bucketCount, WorkerMembershipMetrics metrics, CacheMode policy, long cacheBytes) {
         this(directory, hotEntries, trackingMode, bucketCount, metrics, policy, cacheBytes,
-                UserConfig.CLUSTER_CACHE_MODE, UserConfig.CLUSTER_CACHE_BYTES);
+                UserConfig.CLUSTER_CACHE_MODE, Math.multiplyExact(UserConfig.CLUSTER_CACHE_BYTES, 1024L * 1024L));
     }
 
     public ValueOwnerMembershipStore(Path directory, long hotEntries, CandidateTrackingMode trackingMode,
@@ -566,6 +676,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             CacheMode clusterPolicy, long clusterBytes) {
         if (cacheBytes < 0 || clusterBytes < 0)
             throw new IllegalArgumentException("Negative cache budget");
+        this.clusterIndexEnabled = trackingMode == CandidateTrackingMode.EXACT
+                || trackingMode == CandidateTrackingMode.PRUNE;
         this.clusterCacheMode = Objects.requireNonNull(clusterPolicy);
         this.maximumClusterCacheBytes = clusterBytes;
         this.maximumMembershipCacheBytes = cacheBytes;
@@ -595,6 +707,8 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             else
                 candidateStateCache = CacheBuilder.newBuilder().maximumSize(hotEntries).build();
             this.db = RocksDB.open(options, directory.toString());
+            if (clusterIndexEnabled)
+                initializeClusterIndex();
         } catch (IOException | RocksDBException exception) {
             throw new IllegalStateException("Unable to open ValueOwner membership store at " + directory, exception);
         }
@@ -945,6 +1059,9 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             byte[] key = clusterKey(bucketId, signature);
             byte[] value = entry.count == 0 ? null : ByteBuffer.allocate(4).putInt(entry.count).array();
             long bytes = key.length + (value == null ? 0 : value.length);
+
+            if (clusterIndexEnabled)
+                bytes += (long) signature.cardinality() * (key.length + Integer.BYTES);
             if (encodedBytes > 0 && encodedBytes + bytes > maximumBytes) {
                 clusters.enqueue(entry);
                 break;
@@ -1042,8 +1159,9 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 clusters.enqueue(entry);
             } else {
                 clusters.pending.remove(signature);
-                clusters.mutatedBytes -= entry.weight();
-                mutatedEstimatedBytes.addAndGet(-entry.weight());
+                clusters.unindexPending(entry);
+                clusters.mutatedBytes -= clusters.pendingWeight(entry);
+                mutatedEstimatedBytes.addAndGet(-clusters.pendingWeight(entry));
                 clusters.resize();
                 if (clusters.budget > clusters.mutatedBytes)
                     clusters.clean.put(entry.signature, entry);
@@ -1134,6 +1252,12 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             }
             long puts = 0, deletes = 0;
             for (CandidateWrite write : encodedBatch.clusterWrites()) {
+                if (clusterIndexEnabled) {
+                    boolean existed = db.get(write.key()) != null;
+                    boolean willExist = !write.delete();
+                    if (existed != willExist)
+                        writeClusterIndex(batch, write.key(), write.delete());
+                }
                 if (write.delete()) {
                     batch.delete(write.key());
                     deletes++;
@@ -1382,7 +1506,13 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 byte[] storedValue = iterator.value();
                 boolean candidate = storedKey.length == 1 + Integer.BYTES * 3
                         && storedKey[0] == CANDIDATE_PREFIX;
-                if (storedKey.length >= 13 && storedKey[0] == CLUSTER_PREFIX) {
+                if (Arrays.equals(storedKey, CLUSTER_INDEX_VERSION_KEY)) {
+                    continue; // Schema metadata, not a membership record.
+                } else if (storedKey.length >= 17 && storedKey[0] == CLUSTER_INDEX_PREFIX) {
+                    // Include index storage in cluster bytes without inflating signature count.
+                    clusterKeyBytes += storedKey.length;
+                    clusterValueBytes += storedValue.length;
+                } else if (storedKey.length >= 13 && storedKey[0] == CLUSTER_PREFIX) {
                     clusterRecords++;
                     clusterKeyBytes += storedKey.length;
                     clusterValueBytes += storedValue.length;
@@ -1447,6 +1577,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
                 continue;
             cache.clean.clear();
             cache.pending.clear();
+            cache.pendingByColumn.clear();
             cache.dirty.clear();
         }
 

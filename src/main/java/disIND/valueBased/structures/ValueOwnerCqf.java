@@ -2,7 +2,6 @@ package disIND.valueBased.structures;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -83,7 +82,6 @@ public final class ValueOwnerCqf {
                     .add(candidate);
         }
 
-        Set<CandidateKey> unresolved = new HashSet<>(candidates);
         Map<CandidateKey, Integer> proposals = new HashMap<>();
 
         for (Map.Entry<Integer, List<CandidateKey>> entry : candidatesByLhs.entrySet()) {
@@ -97,13 +95,16 @@ public final class ValueOwnerCqf {
             for (int index = 0; index < lhsValues.size(); index++) {
                 lhsValueVisits = Math.addExact(lhsValueVisits, 1L);
                 int valueId = lhsValues.getInt(index);
-                for (CandidateKey candidate : lhsCandidates) {
-                    if (!unresolved.contains(candidate))
-                        continue;
+                int candidateIndex = 0;
+                while (candidateIndex < unresolvedForLhs) {
+                    CandidateKey candidate = lhsCandidates.get(candidateIndex);
                     if (!mightContain(candidate.rhsCol(), valueId)) {
                         proposals.put(candidate, valueId);
-                        unresolved.remove(candidate);
-                        unresolvedForLhs--;
+                        int last = --unresolvedForLhs;
+                        lhsCandidates.set(candidateIndex, lhsCandidates.get(last));
+                        lhsCandidates.remove(last);
+                    } else {
+                        candidateIndex++;
                     }
                 }
                 if (unresolvedForLhs == 0)

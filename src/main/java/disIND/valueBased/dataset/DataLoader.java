@@ -281,7 +281,7 @@ public final class DataLoader {
                     Random deletionRandom = null;
                     if (deletionStore != null) {
                         // Obtain random deletes for each different table and batches.
-                        long batchSeed = UserConfig.DEFAULT_DELETE_SEED;
+                        long batchSeed = UserConfig.DELETE_SEED;
                         batchSeed = 31L * batchSeed + i;
                         batchSeed = 31L * batchSeed + individualBatchIds[i];
                         deletionRandom = new Random(batchSeed);

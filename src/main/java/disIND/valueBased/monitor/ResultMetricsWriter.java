@@ -15,8 +15,11 @@ public final class ResultMetricsWriter {
         private final Path diagnosticsDirectory;
 
         public ResultMetricsWriter(Logger log) {
-                this.diagnosticsDirectory = Path.of(System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR",
-                                "diagnostics"));
+                this(Path.of(System.getenv().getOrDefault("DIS_IND_DIAGNOSTICS_DIR", "diagnostics")));
+        }
+
+        ResultMetricsWriter(Path diagnosticsDirectory) {
+                this.diagnosticsDirectory = Objects.requireNonNull(diagnosticsDirectory);
         }
 
         public void writeAll(long exactValueProbesWithoutPruning,
@@ -81,6 +84,22 @@ public final class ResultMetricsWriter {
                                 // Skips further iterations due to some counterexample
                                 + "direct_lhs_rejections\t"
                                 + metrics.directLhsRejections()
+                                + "\tcandidate_batch_events\n"
+
+                                + "signature_direct_rejections\t"
+                                + metrics.signatureDirectRejections()
+                                + "\tcandidate_batch_events\n"
+
+                                + "signature_preserved_results\t"
+                                + metrics.signaturePreservedResults()
+                                + "\tcandidate_batch_events\n"
+
+                                + "signature_possible_repairs\t"
+                                + metrics.signaturePossibleRepairs()
+                                + "\tcandidate_batch_events\n"
+
+                                + "signature_repairs_overridden\t"
+                                + metrics.signatureRepairsOverridden()
                                 + "\tcandidate_batch_events\n"
 
                                 // Whole distinct value ocunt > than other

@@ -78,7 +78,7 @@ public final class ValueOwnerClusterIndex {
             BitSet common = new BitSet(totalColumns);
             common.set(0, totalColumns);
             common.clear(lhs);
-            store.visitClusterSignatures(bucketId, signature -> {
+            store.visitSignaturesContaining(bucketId, lhs, signature -> {
                 signatureVisits++;
                 if (signature.get(lhs))
                     common.and(signature);

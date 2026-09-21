@@ -19,7 +19,7 @@ dataset:
 
 application:
   data_orientation: value
-  ingestion_mode: delete  # insert or delete
+  ingestion_mode: insert  # insert or delete
   ind_calculation: batch  # final or batch
   cluster_change_detection: true
   chunk_size: 5000000

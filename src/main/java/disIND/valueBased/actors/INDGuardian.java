@@ -81,11 +81,14 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         this.metadata = metadata;
         if (collector == null && !Cluster.get(ctx.getSystem()).selfMember().hasRole("coordinator"))
             throw new IllegalStateException("Workers require the coordinator-owned result collector");
-        this.rcRef = collector != null ? collector : ctx.spawn(ResultCollectorActor.create(metadata),
-                "result-collector", Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT));
+        this.rcRef = collector != null ? collector
+                : ctx.spawn(ResultCollectorActor.create(metadata),
+                        "result-collector", Props.empty().withDispatcherFromConfig(DISPATCHER_DEFAULT));
         if (collector == null)
-            ctx.getLog().info("IND settings: mode={} calculation={} clusterChangeDetection={} validation=lhs-intersection",
-                    cfg.candidateTracking(), cfg.clusterOptions().calculation(), cfg.clusterOptions().changeDetection());
+            ctx.getLog().info(
+                    "IND settings: mode={} calculation={} clusterChangeDetection={} validation=lhs-intersection",
+                    cfg.candidateTracking(), cfg.clusterOptions().calculation(),
+                    cfg.clusterOptions().changeDetection());
 
         ClusterSharding sharding = ClusterSharding.get(ctx.getSystem());
         this.sharding = sharding;
@@ -133,10 +136,14 @@ public final class INDGuardian extends AbstractBehavior<BDCommand> {
         WorkerPhaseMetrics phaseMetrics = new WorkerPhaseMetrics();
         WorkerMetricsWriter metricsWriter = new WorkerMetricsWriter(nodeId, ctx.getLog());
         ValueOwnerMembershipStore membershipStore = new ValueOwnerMembershipStore(
-                Path.of(UserConfig.VALUE_OWNER_DISK_DIR, nodeId), UserConfig.VALUE_OWNER_HOT_ENTRIES,
+                Path.of(UserConfig.VALUE_OWNER_DISK_DIR, nodeId), UserConfig.VALUE_OWNER_HOT_ENTRIES_MB,
                 cfg.candidateTracking(), UserConfig.VALUE_OWNER_BUCKETS, membershipMetrics);
+        final int estimatedBytesPerEntry = 128;
+        long cacheBytes = UserConfig.VALUE_ID_HOT_ENTRIES * 1024L * 1024L;
+        int maxHotEntries = Math.toIntExact(cacheBytes / estimatedBytesPerEntry);
+
         WorkerValueIdStore valueIdStore = new WorkerValueIdStore(Path.of(UserConfig.VALUE_ID_DISK_DIR, nodeId),
-                UserConfig.VALUE_ID_HOT_ENTRIES, UserConfig.VALUE_OWNER_BUCKETS, valueIdMetrics);
+                maxHotEntries, UserConfig.VALUE_OWNER_BUCKETS, valueIdMetrics);
         ActorRef<MembershipWriteProtocol.Command> membershipWriter = ctx.spawn(
                 MembershipWriterActor.create(membershipStore, phaseMetrics), "membership-writer",
                 Props.empty().withDispatcherFromConfig(DISPATCHER_IO));

@@ -23,7 +23,11 @@ public final class PruneMetricsCollector {
     private static final int RHS_DELETION_INVALID = 17;
     private static final int LHS_DELETION_VALID = 18;
     private static final int MIXED_UPDATE = 19;
-    private static final int METRIC_COUNT = 20;
+    private static final int SIGNATURE_DIRECT = 20;
+    private static final int SIGNATURE_PRESERVED = 21;
+    private static final int SIGNATURE_REPAIRS = 22;
+    private static final int SIGNATURE_OVERRIDDEN = 23;
+    private static final int METRIC_COUNT = 24;
 
     private final long[] counts;
 
@@ -114,6 +118,13 @@ public final class PruneMetricsCollector {
         add(lhs, EXACT_REJECTED, tested - validated);
     }
 
+    public void signatureDecisions(int lhs, long direct, long preserved, long repairs, long overridden) {
+        add(lhs, SIGNATURE_DIRECT, direct);
+        add(lhs, SIGNATURE_PRESERVED, preserved);
+        add(lhs, SIGNATURE_REPAIRS, repairs);
+        add(lhs, SIGNATURE_OVERRIDDEN, overridden);
+    }
+
     public PruneMetrics snapshot(int lhs) {
         int base = lhs * METRIC_COUNT;
 
@@ -124,7 +135,8 @@ public final class PruneMetricsCollector {
                 counts[base + PARTITION_4_PRUNED], counts[base + PARTITION_16_PRUNED],
                 counts[base + PARTITION_FINE_PRUNED], counts[base + PARTITION_4_COMPARISONS],
                 counts[base + PARTITION_16_COMPARISONS], counts[base + PARTITION_FINE_COMPARISONS], counts[base + RHS_DELETION_INVALID],
-                counts[base + LHS_DELETION_VALID], counts[base + MIXED_UPDATE]);
+                counts[base + LHS_DELETION_VALID], counts[base + MIXED_UPDATE], counts[base + SIGNATURE_DIRECT], counts[base + SIGNATURE_PRESERVED],
+                counts[base + SIGNATURE_REPAIRS], counts[base + SIGNATURE_OVERRIDDEN]);
     }
 
     private void increment(int lhs, int metric) {

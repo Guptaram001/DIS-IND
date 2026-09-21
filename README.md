@@ -357,6 +357,30 @@ using a separate key namespace in the existing RocksDB database. They reuse the
 membership writer, bounded write batches, retry handling, and backpressure.
 Count and witness modes do not create cluster caches or write cluster records.
 
+Exact and Prune also maintain `(INDEX, bucket, column, signature-bytes) -> empty`
+keys in the same column family. Validation seeks the `(INDEX, bucket, lhs)` range,
+decodes signatures directly from its keys, and stops at the next prefix or when
+no candidates remain. Pending positive signatures are included; pending records
+suppress their older disk versions, including deletions. The existing full-signature
+visitor remains available for snapshots. Count and Witness neither initialize nor
+use this index, and their membership/candidate paths are unchanged.
+
+Index entries are added when a persisted signature first appears and deleted when
+it disappears, atomically with the primary record in the same RocksDB WriteBatch.
+The writer checks committed primary presence to avoid index rewrites for positive
+count changes and to make retries idempotent. Batch byte limits conservatively
+allow for index expansion. The scan metric counts index entries visited; final
+cluster key bytes include secondary-index keys without increasing cluster record
+counts. This uses ordered prefix ranges with the existing RocksDB filter settings;
+it does not add a prefix Bloom-filter configuration.
+
+On first open in Exact/Prune, stores without the index-version marker are backfilled
+from primary signatures in bounded write batches before actors start. An interrupted
+backfill can be replayed. Once indexed, keep using an index-aware binary: an older
+binary would not maintain the index. Index storage repeats each signature once per
+member column. The pending overlay still checks pending entries in memory; persisted
+validation no longer scans unrelated signatures.
+
 ```bash
 --candidate-tracking prune --cluster-cache-policy lru --cluster-cache-bytes 134217728
 ```
@@ -421,3 +445,26 @@ including all-LHS derivation with change detection disabled and lazy final
 calculation. Re-reading a cached final result does not increase `derived_lhs`.
 Both counts are cumulative per bucket, summed per worker, not unique global
 columns. Final mode consumes its affected set when final derivation begins.
+
+### Signature-based Prune metrics
+
+`prune-metrics.tsv` includes four counters for Prune batch calculation with change
+detection enabled. They count distinct candidate pairs per derived bucket/LHS row
+per batch, accumulated across workers and batches, not distinct final INDs or values.
+LHS rows skipped entirely by cluster change detection are not counted.
+
+| Metric | Meaning |
+|---|---|
+| `signature_direct_rejections` | Candidates with a newly introduced counterexample, including already-invalid candidates. |
+| `signature_preserved_results` | Candidate statuses retained without further checks: eligible pairs minus direct rejections and remaining repair checks. |
+| `signature_possible_repairs` | Previously invalid candidates with a removed counterexample, before excluding new counterexamples from other values. |
+| `signature_repairs_overridden` | Possible repairs excluded because the batch also introduces a counterexample for the same pair. |
+
+Overridden repairs overlap the direct-rejection and possible-repair counters; do
+not sum all four as disjoint categories. Per derived row, eligible candidates equal
+direct rejections + preserved results + possible repairs - overridden repairs.
+Remaining repairs proceed through the existing Prune filters and exact verification.
+These counters do not change `filter_pruned_total`, which still covers whole-count,
+partition-count, and CQF filtering. Legacy per-value skip counters are unchanged.
+Exact, Count, Witness, final-only calculation, and change-detection-off do not
+increment these new counters. Existing diagnostic files are not retroactively updated.
