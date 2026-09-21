@@ -39,6 +39,7 @@ import disIND.valueBased.actors.AsyncBatchDispatcher;
 import disIND.valueBased.actors.DirectBatchAggregatorActor;
 import disIND.valueBased.actors.INDGuardian;
 import disIND.valueBased.actors.ValueOwnerActor;
+import disIND.valueBased.ingestion.BatchPreparationPipeline;
 import disIND.valueBased.ingestion.ColumnMajorBatchBuilder;
 import disIND.valueBased.ingestion.ValueMajorBatchBuilder;
 import disIND.valueBased.model.IngestionMode;
@@ -209,6 +210,22 @@ public final class DataLoader {
     private static IngestionResult ingestAllInterleaved(ActorRef<BDCommand> guardian, ActorSystem<?> system,
             List<String> files, List<Integer> offsets, List<Integer> nCols, int chunkSize, DataOrientation orientation)
             throws Exception {
+        int creditWindow = UserConfig.DL_BD_CREDIT_WINDOW;
+        boolean enforceTableOrdering = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
+        AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
+                Math.max(2, creditWindow), enforceTableOrdering);
+        try {
+            IngestionResult result = ingestPrepared(files, offsets, nCols, chunkSize, orientation, dispatcher::submit);
+            dispatcher.finishAndWait();
+            return result;
+        } finally {
+            dispatcher.close();
+        }
+    }
+
+    static IngestionResult ingestPrepared(List<String> files, List<Integer> offsets, List<Integer> nCols,
+            int chunkSize, DataOrientation orientation, BatchPreparationPipeline.Sink<PreparedBatch> sink)
+            throws Exception {
         int n = files.size();
         CSVParser[] parsers = new CSVParser[n];
         @SuppressWarnings("unchecked")
@@ -219,13 +236,8 @@ public final class DataLoader {
         int[] nextRowId = new int[n];
         int[] individualBatchIds = new int[n];
         Map<Integer, Integer> latestBatchByTable = new HashMap<>();
-        int creditWindow = UserConfig.DL_BD_CREDIT_WINDOW;
-        int preparedQueueCapacity = Math.max(2, creditWindow);
-        // Ensures the delete is not processed before the insert opertion.
-        boolean enforceTblOrdering = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
-
-        AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
-                preparedQueueCapacity, enforceTblOrdering);
+        BatchPreparationPipeline<PreparedBatch> preparation = new BatchPreparationPipeline<>(
+                UserConfig.DL_PREPARATION_THREADS, UserConfig.DL_PREPARATION_CAPACITY, sink);
         AtomicInteger nextEpoch = new AtomicInteger();
 
         long totalRows = 0;
@@ -243,6 +255,8 @@ public final class DataLoader {
             deletionByTable[tableId] = new ArrayDeque<>(2);
         }
         try {
+            System.out.printf("[Loader] Batch preparation: threads=%d outstandingCapacity=%d%n",
+                    UserConfig.DL_PREPARATION_THREADS, UserConfig.DL_PREPARATION_CAPACITY);
             System.out.println("[Loader] Opening files...");
             for (int i = 0; i < n; i++) {
                 if (nCols.get(i) == 0)
@@ -270,103 +284,105 @@ public final class DataLoader {
                 for (int i = 0; i < n; i++) {
                     if (!active[i])
                         continue;
-                    int rowsRead = 0;
-                    OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
-                    boolean deleteMode = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
-                    int deletionCapacityPerBatch = deleteMode
-                            ? (int) Math.floor(batchSize[i] * UserConfig.DELETE_PERCENT / 100)
-                            : 0;
-                    String[][] deletionStore = deletionCapacityPerBatch > 0 ? new String[deletionCapacityPerBatch][]
-                            : null;
-                    Random deletionRandom = null;
-                    if (deletionStore != null) {
-                        // Obtain random deletes for each different table and batches.
-                        long batchSeed = UserConfig.DELETE_SEED;
-                        batchSeed = 31L * batchSeed + i;
-                        batchSeed = 31L * batchSeed + individualBatchIds[i];
-                        deletionRandom = new Random(batchSeed);
-
-                    }
-                    int batchStartRowId = nextRowId[i];
-                    int expectedColumns = nCols.get(i);
-                    int globalColumnOffset = offsets.get(i);
-                    while (rowsRead < batchSize[i]) {
-                        if (!iterators[i].hasNext()) {
-                            parsers[i].close();
-                            active[i] = false;
-                            break;
-                        }
-                        CSVRecord record = iterators[i].next();
-                        String[] row = recordToArray(record, tblFlags[i]);
-
-                        if (row.length != expectedColumns)
-                            throw new IllegalArgumentException();
-
-                        int rowId = batchStartRowId + rowsRead;
-                        addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, rowId, 1, orientation,
-                                builders);
+                    try (var reservation = preparation.reserve()) {
+                        int rowsRead = 0;
+                        List<String[]> newRows = new ArrayList<>();
+                        List<String[]> restoreRows = List.of();
+                        List<String[]> deleteRows = List.of();
+                        boolean deleteMode = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
+                        int deletionCapacityPerBatch = deleteMode
+                                ? (int) Math.floor(batchSize[i] * UserConfig.DELETE_PERCENT / 100)
+                                : 0;
+                        String[][] deletionStore = deletionCapacityPerBatch > 0 ? new String[deletionCapacityPerBatch][]
+                                : null;
+                        Random deletionRandom = null;
                         if (deletionStore != null) {
-                            // Added the rows to deletionStore randomly using Algorithm R.
-                            if (rowsRead < deletionCapacityPerBatch) {
-                                deletionStore[rowsRead] = row;
-                            } else {
-                                int j = deletionRandom.nextInt(rowsRead + 1);
-                                if (j < deletionCapacityPerBatch) {
-                                    deletionStore[j] = row;
+                            // Obtain random deletes for each different table and batches.
+                            long batchSeed = UserConfig.DELETE_SEED;
+                            batchSeed = 31L * batchSeed + i;
+                            batchSeed = 31L * batchSeed + individualBatchIds[i];
+                            deletionRandom = new Random(batchSeed);
+
+                        }
+                        int batchStartRowId = nextRowId[i];
+                        int expectedColumns = nCols.get(i);
+                        int globalColumnOffset = offsets.get(i);
+                        while (rowsRead < batchSize[i]) {
+                            if ((rowsRead & 1023) == 0)
+                                preparation.checkFailure();
+                            if (!iterators[i].hasNext()) {
+                                parsers[i].close();
+                                active[i] = false;
+                                break;
+                            }
+                            CSVRecord record = iterators[i].next();
+                            String[] row = recordToArray(record, tblFlags[i]);
+
+                            if (row.length != expectedColumns)
+                                throw new IllegalArgumentException();
+
+                            newRows.add(row);
+                            if (deletionStore != null) {
+                                // Added the rows to deletionStore randomly using Algorithm R.
+                                if (rowsRead < deletionCapacityPerBatch) {
+                                    deletionStore[rowsRead] = row;
+                                } else {
+                                    int j = deletionRandom.nextInt(rowsRead + 1);
+                                    if (j < deletionCapacityPerBatch) {
+                                        deletionStore[j] = row;
+                                    }
                                 }
                             }
-                        }
-                        rowsRead++;
-                        rowCounts[i]++;
-                        totalRows++;
-                    }
-
-                    numberOfColsSent += nCols.get(i);
-                    if (rowsRead > 0) {
-                        int batchId = individualBatchIds[i]++;
-
-                        if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
-
-                            Deque<List<String[]>> deletionQueue = deletionByTable[i];
-                            if (deletionQueue.size() == 2) {
-                                List<String[]> rowsToReinsert = deletionQueue.removeFirst();
-                                addRowsToOwnerBuilders(rowsToReinsert, expectedColumns, globalColumnOffset, 1,
-                                        orientation, builders);
-                                totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToReinsert.size());
-                            }
-
-                            if (!deletionQueue.isEmpty()) {
-                                List<String[]> rowsToDelete = deletionQueue.peekFirst();
-                                addRowsToOwnerBuilders(rowsToDelete, expectedColumns, globalColumnOffset, -1,
-                                        orientation, builders);
-                                totalDeletedRows = Math.addExact(totalDeletedRows, rowsToDelete.size());
-                            }
-
-                            List<String[]> currentDeletionSample = (active[i] && deletionStore != null)
-                                    ? List.copyOf(Arrays.asList(deletionStore))
-                                    : List.of();
-
-                            deletionQueue.addLast(currentDeletionSample);
-
-                            if (deletionQueue.size() > 2)
-                                throw new IllegalStateException("Deletion queue exceeded two samples");
-
+                            rowsRead++;
+                            rowCounts[i]++;
+                            totalRows++;
                         }
 
-                        Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
-                        PreparedBatch preparedBatch = new PreparedBatch(nextEpoch.incrementAndGet(), i, batchStartRowId,
-                                rowsRead, ownerBatches, round, batchId, orientation);
-                        dispatcher.submit(preparedBatch);
-                        totalBatches = Math.incrementExact(totalBatches);
-                        long batchCells = Math.multiplyExact((long) rowsRead, expectedColumns);
-                        totalCells = Math.addExact(totalCells, batchCells);
-                        latestBatchByTable.put(i, batchId);
-                        nextRowId[i] += rowsRead;
-                        anyActive = true;
+                        numberOfColsSent += nCols.get(i);
+                        if (rowsRead > 0) {
+                            int batchId = individualBatchIds[i]++;
+
+                            if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
+
+                                Deque<List<String[]>> deletionQueue = deletionByTable[i];
+                                if (deletionQueue.size() == 2) {
+                                    List<String[]> rowsToReinsert = deletionQueue.removeFirst();
+                                    restoreRows = rowsToReinsert;
+                                    totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToReinsert.size());
+                                }
+
+                                if (!deletionQueue.isEmpty()) {
+                                    List<String[]> rowsToDelete = deletionQueue.peekFirst();
+                                    deleteRows = rowsToDelete;
+                                    totalDeletedRows = Math.addExact(totalDeletedRows, rowsToDelete.size());
+                                }
+
+                                List<String[]> currentDeletionSample = (active[i] && deletionStore != null)
+                                        ? List.copyOf(Arrays.asList(deletionStore))
+                                        : List.of();
+
+                                deletionQueue.addLast(currentDeletionSample);
+
+                                if (deletionQueue.size() > 2)
+                                    throw new IllegalStateException("Deletion queue exceeded two samples");
+
+                            }
+
+                            RawBatch work = new RawBatch(nextEpoch.incrementAndGet(), i, batchStartRowId,
+                                    round, batchId, orientation, expectedColumns, globalColumnOffset,
+                                    newRows, restoreRows, deleteRows);
+                            reservation.submit(() -> prepareBatch(work));
+                            totalBatches = Math.incrementExact(totalBatches);
+                            long batchCells = Math.multiplyExact((long) rowsRead, expectedColumns);
+                            totalCells = Math.addExact(totalCells, batchCells);
+                            latestBatchByTable.put(i, batchId);
+                            nextRowId[i] += rowsRead;
+                            anyActive = true;
+                        }
                     }
                 }
                 System.out.printf(
-                        "[Loader] Round %d complete: totalRows=%,d addedRows=%,d columnsVisited=%,d submittedBatches=%,d elapsedSeconds=%.3f%n",
+                        "[Loader] Round %d complete: totalRows=%,d addedRows=%,d columnsVisited=%,d scheduledBatches=%,d elapsedSeconds=%.3f%n",
                         round, totalRows, totalRows - addedRows, numberOfColsSent, totalBatches,
                         (System.nanoTime() - roundStartedNanos) / 1_000_000_000.0);
             }
@@ -387,22 +403,20 @@ public final class DataLoader {
                     if (rowsToRestore.isEmpty())
                         continue;
 
-                    OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
-                    addRowsToOwnerBuilders(rowsToRestore, nCols.get(tableId), offsets.get(tableId), 1, orientation,
-                            builders);
-                    Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
                     int restorationBatchId = individualBatchIds[tableId]++;
-                    PreparedBatch restorationBatch = new PreparedBatch(nextEpoch.incrementAndGet(), tableId,
-                            nextRowId[tableId], 0, ownerBatches, restorationRound,
-                            restorationBatchId, orientation);
-                    dispatcher.submit(restorationBatch);
+                    try (var reservation = preparation.reserve()) {
+                        RawBatch work = new RawBatch(nextEpoch.incrementAndGet(), tableId, nextRowId[tableId],
+                                restorationRound, restorationBatchId, orientation, nCols.get(tableId), offsets.get(tableId),
+                                List.of(), rowsToRestore, List.of());
+                        reservation.submit(() -> prepareBatch(work));
+                    }
                     totalBatches = Math.incrementExact(totalBatches);
                     totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToRestore.size());
                     latestBatchByTable.put(tableId, restorationBatchId);
                 }
             }
 
-            dispatcher.finishAndWait();
+            preparation.finishAndWait();
             if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
                 System.out.printf("[Loader] Deletion Stat: %,d deletions, " + "%,d reinsertions%n",
                         totalDeletedRows, totalReinsertedRows);
@@ -420,7 +434,7 @@ public final class DataLoader {
                     new HashMap<>(latestBatchByTable));
 
         } finally {
-            dispatcher.close();
+            preparation.close();
 
             for (CSVParser parser : parsers) {
                 if (parser != null) {
@@ -431,6 +445,34 @@ public final class DataLoader {
                 }
             }
         }
+    }
+
+    // Lists are snapshotted; row arrays are normalized by the reader and never mutated after handoff.
+    record RawBatch(int epoch, int tableId, int startRowId, int round, int batchId,
+            DataOrientation orientation, int columns, int columnOffset,
+            List<String[]> rows, List<String[]> restores, List<String[]> deletes) {
+        RawBatch {
+            rows = List.copyOf(rows);
+            restores = List.copyOf(restores);
+            deletes = List.copyOf(deletes);
+        }
+    }
+
+    static PreparedBatch prepareBatch(RawBatch batch) throws InterruptedException {
+        OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
+        for (int i = 0; i < batch.rows().size(); i++) {
+            if (Thread.currentThread().isInterrupted())
+                throw new InterruptedException("Batch preparation interrupted");
+            addRowToOwnerBuilders(batch.rows().get(i), batch.columns(), batch.columnOffset(),
+                    batch.startRowId() + i, 1, batch.orientation(), builders);
+        }
+        // Preserve the existing operation order and row-ID conventions for both orientations.
+        addRowsToOwnerBuilders(batch.restores(), batch.columns(), batch.columnOffset(), 1, batch.orientation(), builders);
+        addRowsToOwnerBuilders(batch.deletes(), batch.columns(), batch.columnOffset(), -1, batch.orientation(), builders);
+        if (Thread.currentThread().isInterrupted())
+            throw new InterruptedException("Batch preparation interrupted");
+        return new PreparedBatch(batch.epoch(), batch.tableId(), batch.startRowId(), batch.rows().size(),
+                finishOwnerBatches(builders), batch.round(), batch.batchId(), batch.orientation());
     }
 
     private static CSVParser openCSVParser(String file, char separator, boolean inputHasHeader) throws IOException {
@@ -463,9 +505,11 @@ public final class DataLoader {
     }
 
     private static void addRowsToOwnerBuilders(List<String[]> rows, int expectedColumns, int globalColumnOffset,
-            int delta, DataOrientation orientation, OrientetationBatchBuilder[] builders) {
+            int delta, DataOrientation orientation, OrientetationBatchBuilder[] builders) throws InterruptedException {
 
         for (String[] row : rows) {
+            if (Thread.currentThread().isInterrupted())
+                throw new InterruptedException("Batch preparation interrupted");
             addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, 0, delta, orientation, builders);
         }
     }
@@ -496,9 +540,11 @@ public final class DataLoader {
         }
     }
 
-    private static Map<Integer, BatchBody> finishOwnerBatches(OrientetationBatchBuilder[] builders) {
+    private static Map<Integer, BatchBody> finishOwnerBatches(OrientetationBatchBuilder[] builders) throws InterruptedException {
         Map<Integer, BatchBody> ownerBatches = new HashMap<>();
         for (int ownerId = 0; ownerId < builders.length; ownerId++) {
+            if (Thread.currentThread().isInterrupted())
+                throw new InterruptedException("Batch preparation interrupted");
             OrientetationBatchBuilder builder = builders[ownerId];
             if (builder != null)
                 ownerBatches.put(ownerId, builder.build());

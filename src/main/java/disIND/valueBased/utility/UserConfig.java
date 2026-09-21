@@ -35,6 +35,8 @@ public final class UserConfig {
     public static final long DEFAULT_VO_PINNED_LOW_BYTES = 32L * 1024L * 1024L;
     public static final int DEFAULT_VO_WRITE_RETRY_DELAY_MS = 500;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 4;
+    public static final int DEFAULT_DL_PREPARATION_THREADS = 3;
+    public static final int DEFAULT_DL_PREPARATION_CAPACITY = 4;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_CM_PARTITIONS = 128;
     public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
@@ -67,6 +69,8 @@ public final class UserConfig {
     public static String DATASET_NAME = DEFAULT_DATASET_NAME;
     public static int MAX_TRACKED_VIOLATIONS = DEFAULT_MAX_TRACKED_VIOLATIONS;
     public static int DL_BD_CREDIT_WINDOW = DEFAULT_DL_BD_CREDIT_WINDOW;
+    public static int DL_PREPARATION_THREADS = DEFAULT_DL_PREPARATION_THREADS;
+    public static int DL_PREPARATION_CAPACITY = DEFAULT_DL_PREPARATION_CAPACITY;
     public static int VALUE_OWNER_BUCKETS = DEFAULT_VALUE_OWNER_BUCKETS;
     public static int BATCH_ACK_TIMEOUT_SECONDS = DEFAULT_BATCH_ACK_TIMEOUT_SECONDS;
     public static int DRAIN_MAX_IN_FLIGHT = DEFAULT_DRAIN_MAX_IN_FLIGHT;
@@ -111,6 +115,8 @@ public final class UserConfig {
         CLI_PROPERTIES.put("delete-seed", "dis.ind.delete-seed");
         CLI_PROPERTIES.put("max-tracked-violations", "dis.ind.max-tracked-violations");
         CLI_PROPERTIES.put("dl-bd-credit-window", "dis.ind.dl-bd-credit-window");
+        CLI_PROPERTIES.put("dl-preparation-threads", "dis.ind.dl-preparation-threads");
+        CLI_PROPERTIES.put("dl-preparation-capacity", "dis.ind.dl-preparation-capacity");
         CLI_PROPERTIES.put("value-owner-buckets", "dis.ind.value-owner-buckets");
         CLI_PROPERTIES.put("batch-ack-timeout-seconds", "dis.ind.batch-ack-timeout-seconds");
         CLI_PROPERTIES.put("final-cm-drain-timeout-seconds", "dis.ind.final-cm-drain-timeout-seconds");
@@ -173,6 +179,11 @@ public final class UserConfig {
 
         DL_BD_CREDIT_WINDOW = positiveIntSetting("DIS_IND_DL_BD_CREDIT_WINDOW",
                 "dis.ind.dl-bd-credit-window", DEFAULT_DL_BD_CREDIT_WINDOW);
+
+        DL_PREPARATION_THREADS = positiveIntSetting("DIS_IND_DL_PREPARATION_THREADS",
+                "dis.ind.dl-preparation-threads", DEFAULT_DL_PREPARATION_THREADS);
+        DL_PREPARATION_CAPACITY = positiveIntSetting("DIS_IND_DL_PREPARATION_CAPACITY",
+                "dis.ind.dl-preparation-capacity", DEFAULT_DL_PREPARATION_CAPACITY);
 
         VALUE_OWNER_BUCKETS = positiveIntSetting("DIS_IND_VALUE_OWNER_BUCKETS",
                 "dis.ind.value-owner-buckets", DEFAULT_VALUE_OWNER_BUCKETS);

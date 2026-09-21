@@ -154,8 +154,8 @@ export_docker_application_arguments() {
         case "$option" in
             --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
             --candidate-tracking) export DIS_IND_CANDIDATE_TRACKING="$value" ;;
-            --value-id-cache-mode) export DIS_IND_VALUE_ID_CACHE="$value" ;;
-            --membership-cache-mode) export DIS_IND_MEMBERSHIP_CACHE="$value" ;;
+            --value-id-cache-policy) export DIS_IND_VALUE_ID_CACHE="$value" ;;
+            --membership-cache-policy) export DIS_IND_MEMBERSHIP_CACHE="$value" ;;
             --membership-cache-bytes) export DIS_IND_MEMBERSHIP_CACHE_BYTES="$value" ;;
             --cluster-cache-mode) export DIS_IND_CLUSTER_CACHE="$value" ;;
             --cluster-cache-bytes) export DIS_IND_CLUSTER_CACHE_BYTES="$value" ;;

@@ -468,3 +468,33 @@ These counters do not change `filter_pruned_total`, which still covers whole-cou
 partition-count, and CQF filtering. Legacy per-value skip counters are unchanged.
 Exact, Count, Witness, final-only calculation, and change-detection-off do not
 increment these new counters. Existing diagnostic files are not retroactively updated.
+
+### Coordinator batch preparation
+
+The value-based loader uses one CSV reader, two preparation threads, and an
+ordered submission thread. Parsing, normalization, row IDs, and deterministic
+delete sampling remain on the reader. Each preparation task owns its bucket
+builders. Encoding and worker processing are unchanged.
+
+Configure `ValueBasedMain` with `--dl-preparation-threads 2` and
+`--dl-preparation-capacity 3`. Equivalent environment variables are
+`DIS_IND_DL_PREPARATION_THREADS` and `DIS_IND_DL_PREPARATION_CAPACITY`; JVM
+properties are `dis.ind.dl-preparation-threads` and
+`dis.ind.dl-preparation-capacity`. Both values must be positive. These settings
+must reach the coordinator process; exporting them on a launcher host alone
+does not imply remote forwarding.
+
+Capacity includes a batch being read, preparation tasks, and completed batches
+waiting for ordered submission. It is separate from the existing dispatcher
+credit/queue limits. Raw row groups add memory overhead, especially for wide
+inputs such as BTC; start with the defaults and compare 1, 2, and 4 preparation
+threads at a fixed cluster size before increasing capacity. One preparation
+thread still overlaps parsing and preparation; it is not the former synchronous
+loader.
+
+Insert/delete batches retain per-table acknowledgement ordering and final
+restoration. All preparation and submission drains before the dispatcher waits
+for acknowledgements and discovery finalizes. Preparation/submission failures
+abort ingestion and cancel pending work. Loader progress now reports
+`scheduledBatches`, which counts batches queued for preparation, not completed
+or acknowledged batches.
