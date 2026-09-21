@@ -59,7 +59,7 @@ def build_plan(path):
         raise ValueError('Use scaling.modes instead of application.candidate_tracking')
     for key, choices in {'ind_calculation': ['final', 'batch'], 'ingestion_mode': ['insert', 'delete'],
                          'value_id_cache_policy': ['lru', 'caffeine'], 'membership_cache_policy': ['lru', 'caffeine'],
-                         'cluster_cache_policy': ['lru', 'caffeine']}.items():
+                         'cluster_cache': ['lru', 'caffeine']}.items():
         if key in application and application[key] not in choices:
             raise ValueError(f'{key} must be one of {choices}')
     dataset = config['dataset']

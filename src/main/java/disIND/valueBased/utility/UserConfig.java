@@ -103,7 +103,6 @@ public final class UserConfig {
         CLI_PROPERTIES.put("membership-cache-policy", "dis.ind.membership-cache-policy");
         CLI_PROPERTIES.put("membership-cache-bytes", "dis.ind.membership-cache-bytes");
         CLI_PROPERTIES.put("cluster-cache", "dis.ind.cluster-cache");
-        CLI_PROPERTIES.put("cluster-cache", "dis.ind.cluster-cache");
         CLI_PROPERTIES.put("input-dir", "dis.ind.input-dir");
         CLI_PROPERTIES.put("output-file", "dis.ind.output-file");
         CLI_PROPERTIES.put("batch-size", "dis.ind.batch-size");
@@ -111,10 +110,7 @@ public final class UserConfig {
         CLI_PROPERTIES.put("delete-percent", "dis.ind.delete-percent");
         CLI_PROPERTIES.put("delete-seed", "dis.ind.delete-seed");
         CLI_PROPERTIES.put("max-tracked-violations", "dis.ind.max-tracked-violations");
-        CLI_PROPERTIES.put("kmv-prune-threshold", "dis.ind.kmv-prune-threshold");
-        CLI_PROPERTIES.put("checkpoint-interval", "dis.ind.checkpoint-interval");
         CLI_PROPERTIES.put("dl-bd-credit-window", "dis.ind.dl-bd-credit-window");
-        CLI_PROPERTIES.put("bd-aa-credit-window", "dis.ind.bd-aa-credit-window");
         CLI_PROPERTIES.put("value-owner-buckets", "dis.ind.value-owner-buckets");
         CLI_PROPERTIES.put("batch-ack-timeout-seconds", "dis.ind.batch-ack-timeout-seconds");
         CLI_PROPERTIES.put("final-cm-drain-timeout-seconds", "dis.ind.final-cm-drain-timeout-seconds");

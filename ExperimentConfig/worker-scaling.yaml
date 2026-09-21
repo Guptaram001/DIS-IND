@@ -7,15 +7,15 @@
 cluster_config: cluster.yaml
 scaling:
   worker_counts: all  # all = 1..number of available workers; use [5] for only five
-  modes: [prune, exact]  # Use [prune] or [exact] for one mode
+  modes: [exact]  # Use [prune] or [exact] for one mode
   repeats: 1
   timeout_seconds: 3600
-  stop_on_failure: true
+  stop_on_failure: false
   excluded_workers: [192.168.2.89]
 
 dataset:
-  name: mb  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/mb
+  name: tpch-1  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/tpch-1
 
 application:
   data_orientation: value
@@ -25,10 +25,11 @@ application:
   chunk_size: 5000000
   value_id_cache_policy: lru  # lru or caffeine
   membership_cache_policy: lru  # lru or caffeine
-  value_id_hot_entries: 1000000
-  membership_cache_bytes: 536870912
+  value_id_hot_entries: 128
+  membership_cache_bytes: 512
+  cluster_cache_bytes: 128
   prune_cqf_enabled: false
-  prune_whole_counts_enabled: true
+  prune_whole_counts_enabled: false
   prune_partition_counts_enabled: false
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
