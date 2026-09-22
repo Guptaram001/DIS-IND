@@ -35,8 +35,8 @@ public final class UserConfig {
     public static final long DEFAULT_VO_PINNED_LOW_BYTES = 32L * 1024L * 1024L;
     public static final int DEFAULT_VO_WRITE_RETRY_DELAY_MS = 500;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 4;
-    public static final int DEFAULT_DL_PREPARATION_THREADS = 3;
-    public static final int DEFAULT_DL_PREPARATION_CAPACITY = 4;
+    public static final int DEFAULT_DL_PREPARATION_THREADS = 4;
+    public static final int DEFAULT_DL_PREPARATION_CAPACITY = 5;
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_CM_PARTITIONS = 128;
     public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
