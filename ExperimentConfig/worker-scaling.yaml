@@ -14,8 +14,8 @@ scaling:
   excluded_workers: [192.168.2.89]
 
 dataset:
-  name: mb  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/mb
+  name: tpch-1  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/tpch-1
 
 application:
   data_orientation: value
