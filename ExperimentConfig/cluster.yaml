@@ -26,6 +26,6 @@ cluster:
 
 deployment:
   git_url: https://github.com/Guptaram001/DIS-IND.git
-  git_branch: pruneTest
+  git_branch: parallelDL
   project_dir: /home/node/dis-ind
   state_base: /home/node/.local/state/dis-ind
