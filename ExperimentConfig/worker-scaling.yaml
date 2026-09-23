@@ -35,8 +35,8 @@ application:
   prune_transitive_enabled: false
   prune_count_partitions: 64
   dl_shard_manifest: /home/node/DIS-IND/data/wikipedia-shards/manifest.properties
-  dl_reader_threads: 2
-  dl_reader_capacity: 5
+  dl_reader_threads: 4
+  dl_reader_capacity: 8
 
 resources:
   coordinator_java_xmx: 8g
