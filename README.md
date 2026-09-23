@@ -468,3 +468,104 @@ These counters do not change `filter_pruned_total`, which still covers whole-cou
 partition-count, and CQF filtering. Legacy per-value skip counters are unchanged.
 Exact, Count, Witness, final-only calculation, and change-detection-off do not
 increment these new counters. Existing diagnostic files are not retroactively updated.
+
+## Optional parallel parsing of pre-sharded input
+
+This input path addresses the single-parser bottleneck, including the TPC-H tail
+where only one large table remains. Physical shards retain the original table and
+column IDs. Reader tasks follow the same round-robin batch schedule as serial
+loading. Later reads may finish first but are consumed in order. Batch assembly,
+delete sampling/restoration, encoding, dispatcher credits, and worker protocols
+are unchanged. In this checkout batch assembly remains on the loader thread;
+this feature adds parallel parsing, not a separate preparation pool.
+
+Without a shard manifest the ordinary reader remains active. Start with two
+reader threads and a shared capacity of five on a four-CPU coordinator.
+
+Build and prepare immutable shards **on the coordinator**, outside the original
+input directory (the destination must not already exist):
+
+```bash
+mvn -Dmaven.test.skip=true package
+./scripts/create-csv-shards.sh /data/wikipedia /data/wikipedia-shards wikipedia 5000000
+# For TPC-H, use its dataset name and input directory instead:
+./scripts/create-csv-shards.sh /data/tpch /data/tpch-shards tpch-1 5000000
+```
+
+The script uses Java and the application's Commons CSV parser, so quoted commas,
+embedded newlines, headers, and TPC-H trailing fields are handled as records.
+Each shard contains one original batch, without a header. The manifest stores
+logical table names, row offsets, counts, column counts, format, chunk size,
+source sizes/mtimes, and shard SHA-256 checksums. Manifest publication happens
+only after all shards are written. Failed preprocessing leaves its new directory
+for inspection; rerun with a new destination. Original inputs are never modified.
+Keep the original files for schema/type discovery. Do not list shards as tables.
+
+Enable using these settings in the existing launch command:
+
+```bash
+export DIS_IND_DL_SHARD_MANIFEST=/data/wikipedia-shards/manifest.properties
+export DIS_IND_DL_READER_THREADS=2
+export DIS_IND_DL_READER_CAPACITY=5
+# Run the existing launcher with the ORIGINAL coordinator input directory.
+```
+
+Equivalent Java CLI options are `--dl-shard-manifest`, `--dl-reader-threads`, and
+`--dl-reader-capacity`; JVM properties use the `dis.ind.` prefix. For experiment
+suite YAML, put `dl_shard_manifest`, `dl_reader_threads`, and `dl_reader_capacity`
+under `application`. These values are forwarded by the Proxmox launcher. The
+manifest and shard files must already exist on the coordinator; the launchers do
+not create or transfer them. Workers do not read shards. To disable, omit/unset
+the manifest setting (and remove its CLI/JVM/YAML override, if present).
+
+For Docker via `scripts/run.sh`, create shards on the host from the same original
+files mounted as input. Set `INPUT_DIR=./data/tpch-1`,
+`DIS_IND_SHARD_DIR=./data/tpch-1-shards`, and
+`DIS_IND_DL_SHARD_MANIFEST=/data/shards/manifest.properties`. The coordinator
+mounts the host shard directory read-only at `/data/shards` and receives the
+reader thread/capacity settings. `COORDINATOR_INPUT_DIR` belongs to the Proxmox
+launcher, not this Docker launcher. Do not use a remote `/home/node/...` path on
+your Mac. The same bind-mounted source files must pass the manifest size/mtime
+checks; regenerate shards if those source fingerprints change.
+
+Use the same dataset format and chunk size for sharding and execution. A changed
+source size/mtime, format, schema, table list, or chunk size is rejected: regenerate
+shards after changing/moving input files. Source fingerprints are a quick stale
+input check, not a cryptographic source-content check; keep inputs immutable.
+Shard checksums and row counts are verified while reading, before submission.
+Account for additional disk space and report preprocessing separately when timing
+repeated runs; include it when reporting one-off end-to-end cost.
+
+**Shared capacity:** five means at most five upstream batch slots across all
+readers, including queued tasks, parsing, completed rows waiting for order, and
+the batch currently being assembled/submitted. It does not mean five per reader.
+A slot is reserved in order before the read starts, and released only after the
+existing dispatcher accepts its batch. Dispatcher queue/in-flight credits remain
+separate, and delete/restore history retains its existing memory usage. This is
+a batch-count bound, not a byte limit; very large records can still use substantial
+memory. A capacity smaller than the reader count limits achievable concurrency.
+
+Other logical tables retain their existing order and rounds. As smaller tables
+finish, readers can work on successive shards of the remaining large table.
+Insert/delete history is updated only by the ordered loader, with unchanged
+seeds, batch boundaries, acknowledgement barriers, and final restoration.
+Failures abort ingestion and close/cancel remaining reader tasks. Ordered parsing
+can still suffer head-of-line blocking; it does not guarantee linear speedup.
+
+Diagnostics are written under `DIS_IND_DIAGNOSTICS_DIR` (default `diagnostics`),
+with an optional `dis.ind.diagnostics-dir` JVM override:
+
+- `shard-reader-batches.tsv`: `read` events report full-shard wall/thread CPU time
+  (including parsing, normalization, checksum verification and allocation).
+  `consume` events report the ordered wait and approximate head-of-line wait.
+  Empty timing fields are not applicable; unavailable thread CPU is `NaN`.
+- `shard-reader-resources.tsv`: one-second samples of active readers, queued
+  reads, occupied global slots, completed buffered tasks (including the current
+  consumer-held batch), and whether an earlier unfinished read blocks a later
+  completed read. Short bursts can be missed.
+
+Head-of-line wait is sampled while the consumer waits, at up to 50 ms intervals;
+its estimate may miss the beginning/end of a short blocked interval. Read wall
+seconds overlap across readers and must not be summed as pipeline elapsed time.
+Compare these files with `pipeline-metrics.tsv` and `batch-time-monitor.tsv` to
+assess throughput and whether workers still run out of work.

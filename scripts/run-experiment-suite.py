@@ -132,6 +132,9 @@ def base_environment(cluster_config: dict) -> tuple[dict[str, str], dict]:
 
 
 APPLICATION_VARIABLES = {
+    "dl_shard_manifest": "DIS_IND_DL_SHARD_MANIFEST",
+    "dl_reader_threads": "DIS_IND_DL_READER_THREADS",
+    "dl_reader_capacity": "DIS_IND_DL_READER_CAPACITY",
     "value_id_cache_policy": "DIS_IND_VALUE_ID_CACHE_POLICY",
     "membership_cache_policy": "DIS_IND_MEMBERSHIP_CACHE_POLICY",
     "membership_cache_bytes": "DIS_IND_MEMBERSHIP_CACHE_BYTES",

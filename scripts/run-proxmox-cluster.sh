@@ -34,6 +34,9 @@ AKKA_MAXIMUM_FRAME_SIZE="${AKKA_MAXIMUM_FRAME_SIZE//[[:space:]]/}"
 AKKA_BUFFER_POOL_SIZE="${AKKA_BUFFER_POOL_SIZE:-4}"
 DIS_IND_BATCH_SIZE="${DIS_IND_BATCH_SIZE:-15000}"
 DIS_IND_CHUNK_SIZE="${DIS_IND_CHUNK_SIZE:-5000000}"
+DIS_IND_DL_SHARD_MANIFEST="${DIS_IND_DL_SHARD_MANIFEST:-}"
+DIS_IND_DL_READER_THREADS="${DIS_IND_DL_READER_THREADS:-2}"
+DIS_IND_DL_READER_CAPACITY="${DIS_IND_DL_READER_CAPACITY:-5}"
 DIS_IND_DATA_ORIENTATION="${DIS_IND_DATA_ORIENTATION:-value}"
 DIS_IND_CANDIDATE_TRACKING="${DIS_IND_CANDIDATE_TRACKING:-count}"
 DIS_IND_DATASET_NAME="${DIS_IND_DATASET_NAME:-tpch-1}"
@@ -58,7 +61,10 @@ EXPECTED_MEMBERS="$((EXPECTED_WORKERS + 1))"
 remote() {
     local host="$1"
     shift
-    ssh "${SSH_USER}@${host}" "$@"
+    # SSH joins arguments into a shell command: preserve empty settings and paths with spaces.
+    local remote_command
+    printf -v remote_command '%q ' "$@"
+    ssh "${SSH_USER}@${host}" "$remote_command"
 }
 
 update_and_build() {
@@ -144,7 +150,8 @@ start_node() {
         "$AKKA_MAXIMUM_FRAME_SIZE" "$AKKA_BUFFER_POOL_SIZE" \
         "$DIS_IND_VALUE_ID_CACHE_POLICY" "$DIS_IND_MEMBERSHIP_CACHE_POLICY" \
         "$DIS_IND_MEMBERSHIP_CACHE_BYTES" "$DIS_IND_VALUE_ID_HOT_ENTRIES" "$DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED" \
-        "$DIS_IND_CLUSTER_CACHE" "$DIS_IND_CLUSTER_CACHE_BYTES" <<'REMOTE_START'
+        "$DIS_IND_CLUSTER_CACHE" "$DIS_IND_CLUSTER_CACHE_BYTES" \
+        "$DIS_IND_DL_SHARD_MANIFEST" "$DIS_IND_DL_READER_THREADS" "$DIS_IND_DL_READER_CAPACITY" <<'REMOTE_START'
 set -euo pipefail
 project_dir="$1"
 state_dir="$2"
@@ -182,6 +189,9 @@ value_id_hot_entries="${33}"
 prune_whole_counts_enabled="${34}"
 cluster_cache_policy="${35}"
 cluster_cache_bytes="${36}"
+shard_manifest="${37}"
+reader_threads="${38}"
+reader_capacity="${39}"
 
 if [[ -e "$state_dir" ]]; then
     echo "Run-state directory already exists; refusing to reuse it: $state_dir" >&2
@@ -212,6 +222,9 @@ common_env=(
     "AKKA_BUFFER_POOL_SIZE=$buffer_pool_size"
     "DIS_IND_BATCH_SIZE=$batch_size"
     "DIS_IND_CHUNK_SIZE=$chunk_size"
+    "DIS_IND_DL_SHARD_MANIFEST=$shard_manifest"
+    "DIS_IND_DL_READER_THREADS=$reader_threads"
+    "DIS_IND_DL_READER_CAPACITY=$reader_capacity"
     "DIS_IND_DATA_ORIENTATION=$data_orientation"
     "DIS_IND_CANDIDATE_TRACKING=$candidate_tracking"
     "DIS_IND_DATASET_NAME=$dataset_name"

@@ -34,6 +34,9 @@ application:
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
+  dl_shard_manifest: /home/node/DIS-IND/data/tpch-1-shards/manifest.properties
+  dl_reader_threads: 2
+  dl_reader_capacity: 5
 
 resources:
   coordinator_java_xmx: 8g
