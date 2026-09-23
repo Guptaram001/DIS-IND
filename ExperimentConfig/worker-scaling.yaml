@@ -14,8 +14,8 @@ scaling:
   excluded_workers: [192.168.2.89]
 
 dataset:
-  name: mb  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/mb
+  name: wikipedia  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/wikipedia
 
 application:
   data_orientation: value
@@ -34,7 +34,7 @@ application:
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  dl_shard_manifest: /home/node/DIS-IND/data/tpch-1-shards/manifest.properties
+  dl_shard_manifest: /home/node/DIS-IND/data/wikipedia-shards/manifest.properties
   dl_reader_threads: 2
   dl_reader_capacity: 5
 
