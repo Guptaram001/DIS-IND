@@ -17,7 +17,7 @@ if [[ "${#WORKER_HOSTS[@]}" -ne "${#WORKER_ADDRESSES[@]}" ]]; then
 fi
 
 GIT_URL="${GIT_URL:-git@github.com:Guptaram001/DIS-IND.git}"
-GIT_BRANCH="${GIT_BRANCH:-parallelDL}"
+GIT_BRANCH="${GIT_BRANCH:-pruneTest}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/$SSH_USER/dis-ind}"
 COORDINATOR_INPUT_DIR="${COORDINATOR_INPUT_DIR:-/data/dis-ind/input}"
 COORDINATOR_OUTPUT_DIR="${COORDINATOR_OUTPUT_DIR:-/data/dis-ind/output}"
