@@ -77,6 +77,9 @@ services:
       <<: *dis-ind-environment
       AKKA_HOSTNAME: coordinator
       DIS_IND_NODE_ROLE: coordinator
+      DIS_IND_DL_SHARD_MANIFEST: "${DIS_IND_DL_SHARD_MANIFEST:-}"
+      DIS_IND_DL_READER_THREADS: "${DIS_IND_DL_READER_THREADS:-2}"
+      DIS_IND_DL_READER_CAPACITY: "${DIS_IND_DL_READER_CAPACITY:-5}"
       DIS_IND_OUTPUT_FILE: /data/output/ind-report.txt
       JAVA_XMX: "${COORDINATOR_JAVA_XMX:-1g}"
       JMX_PORT: "${COORDINATOR_JMX_PORT:-9011}"
@@ -85,6 +88,7 @@ services:
     volumes:
       - "${DIS_IND_DATA_DIR:-./data/tpch-10-corrected}:/data/input:ro"
       - "${DIS_IND_OUTPUT_DIR:-./output}:/data/output"
+      - "${DIS_IND_SHARD_DIR:-./data}:/data/shards:ro"
       - "${DIS_IND_DIAGNOSTICS_DIR:-./diagnostics/docker-current}:/data/diagnostics"
 
   worker:

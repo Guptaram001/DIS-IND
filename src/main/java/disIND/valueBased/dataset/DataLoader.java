@@ -154,6 +154,8 @@ public final class DataLoader {
             }
         }
         DatasetMetadata metadata = new DatasetMetadata(totalCols, offsets, nCols, tableNames, columns);
+        if (!UserConfig.DL_SHARD_MANIFEST.isBlank())
+            ShardManifest.load(Path.of(UserConfig.DL_SHARD_MANIFEST), files, nCols, UserConfig.CHUNK_SIZE);
         return INDGuardian.Config.withAll(metadata, orientation, candidateTracking);
     }
 
@@ -211,11 +213,14 @@ public final class DataLoader {
             List<String> files, List<Integer> offsets, List<Integer> nCols, int chunkSize, DataOrientation orientation)
             throws Exception {
         int creditWindow = UserConfig.DL_BD_CREDIT_WINDOW;
-        boolean enforceTableOrdering = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
+        int preparedQueueCapacity = Math.max(2, creditWindow);
+        // Ensures the delete is not processed before the insert opertion.
+        boolean enforceTblOrdering = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
+
         AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
-                Math.max(2, creditWindow), enforceTableOrdering);
+                preparedQueueCapacity, enforceTblOrdering);
         try {
-            IngestionResult result = ingestPrepared(files, offsets, nCols, chunkSize, orientation, dispatcher::submit);
+            IngestionResult result = ingestBatches(files, offsets, nCols, chunkSize, orientation, dispatcher::submit);
             dispatcher.finishAndWait();
             return result;
         } finally {
@@ -223,9 +228,13 @@ public final class DataLoader {
         }
     }
 
-    static IngestionResult ingestPrepared(List<String> files, List<Integer> offsets, List<Integer> nCols,
-            int chunkSize, DataOrientation orientation, BatchPreparationPipeline.Sink<PreparedBatch> sink)
-            throws Exception {
+    @FunctionalInterface
+    interface BatchSink {
+        void submit(PreparedBatch batch) throws Exception;
+    }
+
+    static IngestionResult ingestBatches(List<String> files, List<Integer> offsets, List<Integer> nCols,
+            int chunkSize, DataOrientation orientation, BatchSink sink) throws Exception {
         int n = files.size();
         CSVParser[] parsers = new CSVParser[n];
         @SuppressWarnings("unchecked")
@@ -236,8 +245,9 @@ public final class DataLoader {
         int[] nextRowId = new int[n];
         int[] individualBatchIds = new int[n];
         Map<Integer, Integer> latestBatchByTable = new HashMap<>();
-        BatchPreparationPipeline<PreparedBatch> preparation = new BatchPreparationPipeline<>(
-                UserConfig.DL_PREPARATION_THREADS, UserConfig.DL_PREPARATION_CAPACITY, sink);
+        ShardedBatchReader shardReader = UserConfig.DL_SHARD_MANIFEST.isBlank() ? null
+                : new ShardedBatchReader(ShardManifest.load(Path.of(UserConfig.DL_SHARD_MANIFEST),
+                        files, nCols, chunkSize), UserConfig.DL_READER_THREADS, UserConfig.DL_READER_CAPACITY);
         AtomicInteger nextEpoch = new AtomicInteger();
 
         long totalRows = 0;
@@ -263,10 +273,12 @@ public final class DataLoader {
                     continue;
                 batchSize[i] = Math.max(1, chunkSize / nCols.get(i));
                 // batchSize[i] = UserConfig.BATCH_SIZE;
-                CSVParser parser = openCSVParser(files.get(i), UserConfig.separator.charAt(0),
-                        UserConfig.inputFileHasHeader);
-                parsers[i] = parser;
-                iterators[i] = parser.iterator();
+                if (shardReader == null) {
+                    CSVParser parser = openCSVParser(files.get(i), UserConfig.separator.charAt(0),
+                            UserConfig.inputFileHasHeader);
+                    parsers[i] = parser;
+                    iterators[i] = parser.iterator();
+                }
                 tblFlags[i] = isTbl(files.get(i));
                 active[i] = true;
             }
@@ -284,11 +296,10 @@ public final class DataLoader {
                 for (int i = 0; i < n; i++) {
                     if (!active[i])
                         continue;
-                    try (var reservation = preparation.reserve()) {
+                    try (var shard = shardReader == null ? null : shardReader.take(i, individualBatchIds[i])) {
+                        Iterator<String[]> shardRows = shard == null ? null : shard.rows().iterator();
                         int rowsRead = 0;
-                        List<String[]> newRows = new ArrayList<>();
-                        List<String[]> restoreRows = List.of();
-                        List<String[]> deleteRows = List.of();
+                        OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
                         boolean deleteMode = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
                         int deletionCapacityPerBatch = deleteMode
                                 ? (int) Math.floor(batchSize[i] * UserConfig.DELETE_PERCENT / 100)
@@ -297,7 +308,6 @@ public final class DataLoader {
                                 : null;
                         Random deletionRandom = null;
                         if (deletionStore != null) {
-                            // Obtain random deletes for each different table and batches.
                             long batchSeed = UserConfig.DELETE_SEED;
                             batchSeed = 31L * batchSeed + i;
                             batchSeed = 31L * batchSeed + individualBatchIds[i];
@@ -308,20 +318,23 @@ public final class DataLoader {
                         int expectedColumns = nCols.get(i);
                         int globalColumnOffset = offsets.get(i);
                         while (rowsRead < batchSize[i]) {
-                            if ((rowsRead & 1023) == 0)
-                                preparation.checkFailure();
-                            if (!iterators[i].hasNext()) {
-                                parsers[i].close();
+                            if (shardReader != null && (rowsRead & 1023) == 0)
+                                shardReader.checkFailure();
+                            if (shardRows != null ? !shardRows.hasNext() : !iterators[i].hasNext()) {
+                                if (parsers[i] != null)
+                                    parsers[i].close();
                                 active[i] = false;
                                 break;
                             }
-                            CSVRecord record = iterators[i].next();
-                            String[] row = recordToArray(record, tblFlags[i]);
+                            String[] row = shardRows != null ? shardRows.next()
+                                    : recordToArray(iterators[i].next(), tblFlags[i]);
 
                             if (row.length != expectedColumns)
                                 throw new IllegalArgumentException();
 
-                            newRows.add(row);
+                            int rowId = batchStartRowId + rowsRead;
+                            addRowToOwnerBuilders(row, expectedColumns, globalColumnOffset, rowId, 1, orientation,
+                                    builders);
                             if (deletionStore != null) {
                                 // Added the rows to deletionStore randomly using Algorithm R.
                                 if (rowsRead < deletionCapacityPerBatch) {
@@ -347,13 +360,15 @@ public final class DataLoader {
                                 Deque<List<String[]>> deletionQueue = deletionByTable[i];
                                 if (deletionQueue.size() == 2) {
                                     List<String[]> rowsToReinsert = deletionQueue.removeFirst();
-                                    restoreRows = rowsToReinsert;
+                                    addRowsToOwnerBuilders(rowsToReinsert, expectedColumns, globalColumnOffset, 1,
+                                            orientation, builders);
                                     totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToReinsert.size());
                                 }
 
                                 if (!deletionQueue.isEmpty()) {
                                     List<String[]> rowsToDelete = deletionQueue.peekFirst();
-                                    deleteRows = rowsToDelete;
+                                    addRowsToOwnerBuilders(rowsToDelete, expectedColumns, globalColumnOffset, -1,
+                                            orientation, builders);
                                     totalDeletedRows = Math.addExact(totalDeletedRows, rowsToDelete.size());
                                 }
 
@@ -368,10 +383,11 @@ public final class DataLoader {
 
                             }
 
-                            RawBatch work = new RawBatch(nextEpoch.incrementAndGet(), i, batchStartRowId,
-                                    round, batchId, orientation, expectedColumns, globalColumnOffset,
-                                    newRows, restoreRows, deleteRows);
-                            reservation.submit(() -> prepareBatch(work));
+                            Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
+                            PreparedBatch preparedBatch = new PreparedBatch(nextEpoch.incrementAndGet(), i,
+                                    batchStartRowId,
+                                    rowsRead, ownerBatches, round, batchId, orientation);
+                            sink.submit(preparedBatch);
                             totalBatches = Math.incrementExact(totalBatches);
                             long batchCells = Math.multiplyExact((long) rowsRead, expectedColumns);
                             totalCells = Math.addExact(totalCells, batchCells);
@@ -387,8 +403,6 @@ public final class DataLoader {
                         (System.nanoTime() - roundStartedNanos) / 1_000_000_000.0);
             }
             if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
-                // Last restoration of the deleted rows is reinserted to bring dataset
-                // consistency.
 
                 int restorationRound = Math.incrementExact(round);
                 round = restorationRound;
@@ -404,19 +418,16 @@ public final class DataLoader {
                         continue;
 
                     int restorationBatchId = individualBatchIds[tableId]++;
-                    try (var reservation = preparation.reserve()) {
-                        RawBatch work = new RawBatch(nextEpoch.incrementAndGet(), tableId, nextRowId[tableId],
-                                restorationRound, restorationBatchId, orientation, nCols.get(tableId), offsets.get(tableId),
-                                List.of(), rowsToRestore, List.of());
-                        reservation.submit(() -> prepareBatch(work));
-                    }
+                    PreparedBatch restorationBatch = new PreparedBatch(nextEpoch.incrementAndGet(), tableId,
+                            nextRowId[tableId], 0, ownerBatches, restorationRound,
+                            restorationBatchId, orientation);
+                    sink.submit(restorationBatch);
                     totalBatches = Math.incrementExact(totalBatches);
                     totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToRestore.size());
                     latestBatchByTable.put(tableId, restorationBatchId);
                 }
             }
 
-            preparation.finishAndWait();
             if (UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE) {
                 System.out.printf("[Loader] Deletion Stat: %,d deletions, " + "%,d reinsertions%n",
                         totalDeletedRows, totalReinsertedRows);
@@ -434,7 +445,8 @@ public final class DataLoader {
                     new HashMap<>(latestBatchByTable));
 
         } finally {
-            preparation.close();
+            if (shardReader != null)
+                shardReader.close();
 
             for (CSVParser parser : parsers) {
                 if (parser != null) {
@@ -447,35 +459,7 @@ public final class DataLoader {
         }
     }
 
-    // Lists are snapshotted; row arrays are normalized by the reader and never mutated after handoff.
-    record RawBatch(int epoch, int tableId, int startRowId, int round, int batchId,
-            DataOrientation orientation, int columns, int columnOffset,
-            List<String[]> rows, List<String[]> restores, List<String[]> deletes) {
-        RawBatch {
-            rows = List.copyOf(rows);
-            restores = List.copyOf(restores);
-            deletes = List.copyOf(deletes);
-        }
-    }
-
-    static PreparedBatch prepareBatch(RawBatch batch) throws InterruptedException {
-        OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
-        for (int i = 0; i < batch.rows().size(); i++) {
-            if (Thread.currentThread().isInterrupted())
-                throw new InterruptedException("Batch preparation interrupted");
-            addRowToOwnerBuilders(batch.rows().get(i), batch.columns(), batch.columnOffset(),
-                    batch.startRowId() + i, 1, batch.orientation(), builders);
-        }
-        // Preserve the existing operation order and row-ID conventions for both orientations.
-        addRowsToOwnerBuilders(batch.restores(), batch.columns(), batch.columnOffset(), 1, batch.orientation(), builders);
-        addRowsToOwnerBuilders(batch.deletes(), batch.columns(), batch.columnOffset(), -1, batch.orientation(), builders);
-        if (Thread.currentThread().isInterrupted())
-            throw new InterruptedException("Batch preparation interrupted");
-        return new PreparedBatch(batch.epoch(), batch.tableId(), batch.startRowId(), batch.rows().size(),
-                finishOwnerBatches(builders), batch.round(), batch.batchId(), batch.orientation());
-    }
-
-    private static CSVParser openCSVParser(String file, char separator, boolean inputHasHeader) throws IOException {
+    static CSVParser openCSVParser(String file, char separator, boolean inputHasHeader) throws IOException {
 
         CSVFormat.Builder builder = CSVFormat.DEFAULT.builder()
                 .setDelimiter(separator)
@@ -490,7 +474,7 @@ public final class DataLoader {
         return new CSVParser(Files.newBufferedReader(Paths.get(file), StandardCharsets.UTF_8), builder.build());
     }
 
-    private static String[] recordToArray(CSVRecord record, boolean tbl) {
+    static String[] recordToArray(CSVRecord record, boolean tbl) {
         // One parsed row into array
         int size = record.size();
         // For 1|Alice|Berlin|, remove last |
@@ -540,7 +524,8 @@ public final class DataLoader {
         }
     }
 
-    private static Map<Integer, BatchBody> finishOwnerBatches(OrientetationBatchBuilder[] builders) throws InterruptedException {
+    private static Map<Integer, BatchBody> finishOwnerBatches(OrientetationBatchBuilder[] builders)
+            throws InterruptedException {
         Map<Integer, BatchBody> ownerBatches = new HashMap<>();
         for (int ownerId = 0; ownerId < builders.length; ownerId++) {
             if (Thread.currentThread().isInterrupted())
@@ -587,7 +572,7 @@ public final class DataLoader {
         };
     }
 
-    private static List<String> listInputFiles(Path dir) throws IOException {
+    static List<String> listInputFiles(Path dir) throws IOException {
         List<String> files = new ArrayList<>();
         try (DirectoryStream<Path> paths = Files.newDirectoryStream(dir)) {
             for (Path path : paths) {
@@ -601,7 +586,7 @@ public final class DataLoader {
         return files;
     }
 
-    private static boolean isTbl(String file) {
+    static boolean isTbl(String file) {
         return file.toLowerCase(Locale.ROOT).endsWith(".tbl");
     }
 

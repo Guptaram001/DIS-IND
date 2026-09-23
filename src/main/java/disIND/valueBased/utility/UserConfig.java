@@ -34,6 +34,8 @@ public final class UserConfig {
     public static final long DEFAULT_VO_PINNED_HIGH_BYTES = 64L * 1024L * 1024L;
     public static final long DEFAULT_VO_PINNED_LOW_BYTES = 32L * 1024L * 1024L;
     public static final int DEFAULT_VO_WRITE_RETRY_DELAY_MS = 500;
+    public static final int DEFAULT_DL_READER_THREADS = 2;
+    public static final int DEFAULT_DL_READER_CAPACITY = 5;
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 4;
     public static final int DEFAULT_DL_PREPARATION_THREADS = 4;
     public static final int DEFAULT_DL_PREPARATION_CAPACITY = 5;
@@ -68,6 +70,9 @@ public final class UserConfig {
     public static double DELETE_PERCENT = DEFAULT_DELETE_PERCENT;
     public static String DATASET_NAME = DEFAULT_DATASET_NAME;
     public static int MAX_TRACKED_VIOLATIONS = DEFAULT_MAX_TRACKED_VIOLATIONS;
+    public static String DL_SHARD_MANIFEST = "";
+    public static int DL_READER_THREADS = DEFAULT_DL_READER_THREADS;
+    public static int DL_READER_CAPACITY = DEFAULT_DL_READER_CAPACITY;
     public static int DL_BD_CREDIT_WINDOW = DEFAULT_DL_BD_CREDIT_WINDOW;
     public static int DL_PREPARATION_THREADS = DEFAULT_DL_PREPARATION_THREADS;
     public static int DL_PREPARATION_CAPACITY = DEFAULT_DL_PREPARATION_CAPACITY;
@@ -114,6 +119,10 @@ public final class UserConfig {
         CLI_PROPERTIES.put("delete-percent", "dis.ind.delete-percent");
         CLI_PROPERTIES.put("delete-seed", "dis.ind.delete-seed");
         CLI_PROPERTIES.put("max-tracked-violations", "dis.ind.max-tracked-violations");
+        CLI_PROPERTIES.put("dl-shard-manifest", "dis.ind.dl-shard-manifest");
+        CLI_PROPERTIES.put("dl-reader-threads", "dis.ind.dl-reader-threads");
+        CLI_PROPERTIES.put("dl-reader-capacity", "dis.ind.dl-reader-capacity");
+        CLI_PROPERTIES.put("chunk-size", "dis.ind.chunk-size");
         CLI_PROPERTIES.put("dl-bd-credit-window", "dis.ind.dl-bd-credit-window");
         CLI_PROPERTIES.put("dl-preparation-threads", "dis.ind.dl-preparation-threads");
         CLI_PROPERTIES.put("dl-preparation-capacity", "dis.ind.dl-preparation-capacity");
@@ -177,6 +186,9 @@ public final class UserConfig {
         MAX_TRACKED_VIOLATIONS = positiveIntSetting("DIS_IND_MAX_TRACKED_VIOLATIONS",
                 "dis.ind.max-tracked-violations", DEFAULT_MAX_TRACKED_VIOLATIONS);
 
+        DL_SHARD_MANIFEST = stringSetting("DIS_IND_DL_SHARD_MANIFEST", "dis.ind.dl-shard-manifest", "");
+        DL_READER_THREADS = positiveIntSetting("DIS_IND_DL_READER_THREADS", "dis.ind.dl-reader-threads", DEFAULT_DL_READER_THREADS);
+        DL_READER_CAPACITY = positiveIntSetting("DIS_IND_DL_READER_CAPACITY", "dis.ind.dl-reader-capacity", DEFAULT_DL_READER_CAPACITY);
         DL_BD_CREDIT_WINDOW = positiveIntSetting("DIS_IND_DL_BD_CREDIT_WINDOW",
                 "dis.ind.dl-bd-credit-window", DEFAULT_DL_BD_CREDIT_WINDOW);
 
