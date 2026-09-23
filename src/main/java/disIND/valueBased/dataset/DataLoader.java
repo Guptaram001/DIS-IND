@@ -417,6 +417,10 @@ public final class DataLoader {
                     if (rowsToRestore.isEmpty())
                         continue;
 
+                    OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
+                    addRowsToOwnerBuilders(rowsToRestore, nCols.get(tableId), offsets.get(tableId), 1, orientation,
+                            builders);
+                    Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
                     int restorationBatchId = individualBatchIds[tableId]++;
                     PreparedBatch restorationBatch = new PreparedBatch(nextEpoch.incrementAndGet(), tableId,
                             nextRowId[tableId], 0, ownerBatches, restorationRound,
