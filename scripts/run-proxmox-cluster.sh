@@ -301,17 +301,15 @@ collect_worker_diagnostics() {
     remote "$COORDINATOR" mkdir -p "$destination/coordinator"
     if remote "$COORDINATOR" test -d "$REMOTE_STATE_DIR"; then
         remote "$COORDINATOR" tar -C "$REMOTE_STATE_DIR" -czf - diagnostics logs | \
-            remote "$COORDINATOR" "tar -C $(printf '%q' "$destination/coordinator") -xzf -"
+            remote "$COORDINATOR" tar -C "$destination/coordinator" -xzf -
     else
         echo "[$COORDINATOR] No runtime diagnostics were created"
     fi
     local worker
     for worker in "${WORKER_HOSTS[@]}"; do
-        local remote_destination
-        printf -v remote_destination '%q' "$destination/$worker"
         if remote "$worker" test -d "$REMOTE_STATE_DIR"; then
             remote "$worker" tar -C "$REMOTE_STATE_DIR" -czf - diagnostics logs | \
-                remote "$COORDINATOR" "mkdir -p $remote_destination && tar -C $remote_destination -xzf -"
+                remote "$COORDINATOR" bash -c 'mkdir -p -- "$1" && tar -C "$1" -xzf -' _ "$destination/$worker"
         else
             echo "[$worker] No runtime diagnostics were created"
         fi
