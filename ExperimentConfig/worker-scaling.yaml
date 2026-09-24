@@ -14,8 +14,8 @@ scaling:
   excluded_workers: [192.168.2.89]
 
 dataset:
-  name: btc  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/btc
+  name: uniprot  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/uniprot
 
 application:
   data_orientation: value
@@ -34,9 +34,9 @@ application:
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  dl_shard_manifest: /home/node/DIS-IND/data/btc-shards/manifest.properties
-  dl_reader_threads: 4
-  dl_reader_capacity: 8
+  #dl_shard_manifest: /home/node/DIS-IND/data/btc-shards/manifest.properties
+  #dl_reader_threads: 4
+  #dl_reader_capacity: 8
 
 resources:
   coordinator_java_xmx: 8g
