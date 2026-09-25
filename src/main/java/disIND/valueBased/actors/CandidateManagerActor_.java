@@ -78,7 +78,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         return newReceiveBuilder()
                 .onMessage(CMCommand.VOCandidateStatusUpdate.class, this::onCandidateStatusUpdate)
                 .onMessage(CMCommand.DrainReadyProbe.class, this::onDrainReadyProbe)
-                .onMessage(CMCommand.PartitionDrainReadyProbe.class, this::onPartitionDrainReadyProbe)
                 .onMessage(CMCommand.OwnersDrained.class, this::onOwnersDrained)
                 .onMessage(CMCommand.EnsurePartitionInitialized.class, this::onEnsurePartitionInitialized)
                 .onMessage(CMCommand.NoMoreCandidates.class, this::onNoMoreCandidates)
@@ -104,7 +103,8 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
             if (CMCommand.partitionFor(lhsCol, UserConfig.DEFAULT_CM_PARTITIONS) != partitionId)
                 throw new IllegalArgumentException("LHS " + lhsCol + " does not belong to cm partition " + partitionId);
             LhsState state = stateFor(lhsCol);
-            if (state.violationCountByRhs == null) state.violationCountByRhs = new int[metadata.totalCols()];
+            if (state.violationCountByRhs == null)
+                state.violationCountByRhs = new int[metadata.totalCols()];
 
             int start = msg.offsets()[lhsIndex];
             int end = msg.offsets()[lhsIndex + 1];
@@ -148,8 +148,10 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         state.expectedValueOwnerDrains = msg.expectedBuckets();
         if (!state.drainedValueOwners.contains(msg.bucketId())) {
             if (snapshot != null) {
-                if (state.validRhsSnapshot == null) state.validRhsSnapshot = snapshot.clone();
-                else state.validRhsSnapshot.and(snapshot);
+                if (state.validRhsSnapshot == null)
+                    state.validRhsSnapshot = snapshot.clone();
+                else
+                    state.validRhsSnapshot.and(snapshot);
             }
             state.exactComparisonsWithoutPruning = Math.addExact(state.exactComparisonsWithoutPruning,
                     msg.exactValueProbesWithoutPruning());
@@ -168,20 +170,6 @@ public final class CandidateManagerActor_ extends AbstractBehavior<CMCommand> {
         stateFor(msg.lhsCol());
         msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.CandidateManagerReady(
                 msg.finalRound(), msg.lhsCol(), msg.bucketId()));
-        return this;
-    }
-
-    private Behavior<CMCommand> onPartitionDrainReadyProbe(CMCommand.PartitionDrainReadyProbe msg) {
-        if (msg.partitionId() != partitionId)
-            throw new IllegalArgumentException("Drain Probe partition error");
-        int bucketId = msg.bucketId();
-        if (bucketId < 0 || bucketId >= latestVoSequenceByBucket.length) {
-            throw new IllegalArgumentException("Invalid bucket ID: " + bucketId);
-        }
-        int processedSequence = latestVoSequenceByBucket[bucketId];
-        if (processedSequence >= msg.requiredSequence())
-            msg.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.PartitionCandidateManagerReady(
-                    msg.finalRound(), partitionId, msg.bucketId()));
         return this;
     }
 

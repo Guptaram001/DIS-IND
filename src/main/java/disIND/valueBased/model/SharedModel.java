@@ -148,7 +148,8 @@ public final class SharedModel {
             long partition4Pruned, long partition16Pruned, long partitionFinePruned,
             long partition4Comparisons, long partition16Comparisons, long partitionFineComparisons,
             long rhsDeletionInvalidSkips, long lhsDeletionValidSkips, long mixedUpdateSkips,
-            long signatureDirectRejections, long signaturePreservedResults, long signaturePossibleRepairs, long signatureRepairsOverridden)
+            long signatureDirectRejections, long signaturePreservedResults, long signaturePossibleRepairs,
+            long signatureRepairsOverridden)
             implements AkkaSerializable {
 
         public static PruneMetrics empty() {
@@ -235,7 +236,7 @@ public final class SharedModel {
             CMCommand.NaryDispatched, CMCommand.NaryQuiesced, CMCommand.DistinctDeltaBatch,
             CMCommand.LhsReplayDelta, CMCommand.RhsReplayDelta, CMCommand.LhsLiveDelta, CMCommand.RhsLiveDelta,
             CMCommand.MembershipResult, CMCommand.VOCandidateStatusUpdate, CMCommand.ValueOwnerDrained,
-            CMCommand.DrainReadyProbe, CMCommand.PartitionDrainReadyProbe, CMCommand.OwnersDrained,
+            CMCommand.DrainReadyProbe, CMCommand.OwnersDrained,
             CMCommand.NoMoreCandidates, CMCommand.ForceFinish, CMCommand.EnsurePartitionInitialized {
 
         static String entityId(int partitionId) {
@@ -309,10 +310,6 @@ public final class SharedModel {
         }
 
         record DrainReadyProbe(int finalRound, int lhsCol, int bucketId,
-                ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
-        }
-
-        record PartitionDrainReadyProbe(int finalRound, int partitionId, int bucketId, int requiredSequence,
                 ActorRef<disIND.valueBased.protocol.ValueOwnerProtocol.Command> replyTo) implements CMCommand {
         }
 
