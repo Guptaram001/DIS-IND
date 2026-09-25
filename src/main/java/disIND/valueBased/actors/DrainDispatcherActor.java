@@ -55,25 +55,29 @@ public final class DrainDispatcherActor extends AbstractBehavior<Command> {
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
-                .onMessage(DrainProtocol.Enqueue.class, this::onEnqueue)
+                // .onMessage(DrainProtocol.Enqueue.class, this::onEnqueue)
                 .onMessage(DrainProtocol.EnqueuePartition.class, this::onEnqueuePartition)
                 .onMessage(DrainProtocol.BatchAcknowledged.class, this::onAcknowledged)
                 .onMessageEquals(DrainProtocol.RetryTick.INSTANCE, this::onRetryTick)
                 .build();
     }
 
-    private Behavior<Command> onEnqueue(DrainProtocol.Enqueue message) {
-        int pendingCount = pending.values().stream().mapToInt(ArrayDeque::size).sum();
-        if (pendingCount >= maxPending)
-            return this; // backpressure: producer retries until admitted
-        int partitionId = CMCommand.partitionFor(message.record().lhsCol(), UserConfig.DEFAULT_CM_PARTITIONS);
-        pending.computeIfAbsent(partitionId, ignored -> new ArrayDeque<>())
-                .addLast(message.record());
-        message.replyTo().tell(new disIND.valueBased.protocol.ValueOwnerProtocol.DrainQueued(
-                message.record().finalRound(), message.record().lhsCol(), message.record().bucketId()));
-        pump(false);
-        return this;
-    }
+    // private Behavior<Command> onEnqueue(DrainProtocol.Enqueue message) {
+    // int pendingCount =
+    // pending.values().stream().mapToInt(ArrayDeque::size).sum();
+    // if (pendingCount >= maxPending)
+    // return this; // backpressure: producer retries until admitted
+    // int partitionId = CMCommand.partitionFor(message.record().lhsCol(),
+    // UserConfig.DEFAULT_CM_PARTITIONS);
+    // pending.computeIfAbsent(partitionId, ignored -> new ArrayDeque<>())
+    // .addLast(message.record());
+    // message.replyTo().tell(new
+    // disIND.valueBased.protocol.ValueOwnerProtocol.DrainQueued(
+    // message.record().finalRound(), message.record().lhsCol(),
+    // message.record().bucketId()));
+    // pump(false);
+    // return this;
+    // }
 
     private Behavior<Command> onEnqueuePartition(DrainProtocol.EnqueuePartition message) {
         int pendingCount = pending.values().stream().mapToInt(ArrayDeque::size).sum();

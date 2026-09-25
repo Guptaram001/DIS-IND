@@ -57,7 +57,10 @@ import disIND.valueBased.model.SharedModel.InputBatchDetails;
 import disIND.valueBased.model.SharedModel.RCCommand;
 import disIND.valueBased.monitor.PipelineMetricsWriter;
 import disIND.valueBased.protocol.ValueOwnerProtocol.BatchBody;
+import disIND.valueBased.protocol.ValueOwnerProtocol.ColumnMajorBatch;
+import disIND.valueBased.protocol.ValueOwnerProtocol.CompressedBatch;
 import disIND.valueBased.protocol.ValueOwnerProtocol.StoreBatch;
+import disIND.valueBased.protocol.ValueOwnerProtocol.ValueMajorBatch;
 import disIND.valueBased.structures.ValueOwnerBatchCodec;
 import disIND.valueBased.utility.InferDataAttributes;
 import disIND.valueBased.utility.UserConfig;
@@ -67,7 +70,8 @@ public final class DataLoader {
     private static final PipelineMetricsWriter pipelineMetricsWriter = new PipelineMetricsWriter();
 
     public record PreparedBatch(int epoch, int tableId, int startRowId, int rowCount,
-            Map<Integer, BatchBody> ownerBatches, int round, int individualBatchId, DataOrientation orientation) {
+            Map<Integer, BatchBody> ownerBatches, int round, int individualBatchId, DataOrientation orientation,
+            int distinctValueCount) {
 
         public PreparedBatch {
             ownerBatches = Map.copyOf(ownerBatches);
@@ -384,9 +388,10 @@ public final class DataLoader {
                             }
 
                             Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
+                            int distinctValues = ownerBatches.values().stream().mapToInt(DataLoader::valueCount).sum();
                             PreparedBatch preparedBatch = new PreparedBatch(nextEpoch.incrementAndGet(), i,
-                                    batchStartRowId,
-                                    rowsRead, ownerBatches, round, batchId, orientation);
+                                    batchStartRowId, rowsRead, ownerBatches, round, batchId, orientation,
+                                    distinctValues);
                             sink.submit(preparedBatch);
                             totalBatches = Math.incrementExact(totalBatches);
                             long batchCells = Math.multiplyExact((long) rowsRead, expectedColumns);
@@ -421,10 +426,11 @@ public final class DataLoader {
                     addRowsToOwnerBuilders(rowsToRestore, nCols.get(tableId), offsets.get(tableId), 1, orientation,
                             builders);
                     Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
+                    int distinctValues = ownerBatches.values().stream().mapToInt(DataLoader::valueCount).sum();
                     int restorationBatchId = individualBatchIds[tableId]++;
                     PreparedBatch restorationBatch = new PreparedBatch(nextEpoch.incrementAndGet(), tableId,
                             nextRowId[tableId], 0, ownerBatches, restorationRound,
-                            restorationBatchId, orientation);
+                            restorationBatchId, orientation, distinctValues);
                     sink.submit(restorationBatch);
                     totalBatches = Math.incrementExact(totalBatches);
                     totalReinsertedRows = Math.addExact(totalReinsertedRows, rowsToRestore.size());
@@ -567,6 +573,14 @@ public final class DataLoader {
                                     completionRef)));
                     return completion;
                 });
+    }
+
+    private static int valueCount(BatchBody body) {
+        return switch (body) {
+            case ValueMajorBatch v -> v.values().size();
+            case ColumnMajorBatch c -> c.columns().stream().mapToInt(cv -> cv.values().size()).sum();
+            case CompressedBatch ignored -> throw new IllegalStateException("count before compression");
+        };
     }
 
     private static OrientetationBatchBuilder newBuilder(DataOrientation orientation) {

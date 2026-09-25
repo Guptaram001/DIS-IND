@@ -255,7 +255,8 @@ public final class AsyncBatchDispatcher {
         double completionSec = (completedNanos - ingestionStartedNanos) / 1_000_000_000.0;
         double batchLatencySec = completionSec - dispatchStartedSec;
         batchTimeMonitorWriter.write(batch.epoch(), batch.tableId(), batch.individualBatchId(), batch.round(),
-                batch.rowCount(), processedRows, dispatchStartedSec, completionSec, batchLatencySec);
+                batch.rowCount(), processedRows, dispatchStartedSec, completionSec, batchLatencySec,
+                batch.distinctValueCount());
     }
 
     private void promoteNextForTable(int tableId) {
