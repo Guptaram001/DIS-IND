@@ -62,6 +62,8 @@ def build_plan(path):
                          'cluster_cache': ['lru', 'caffeine']}.items():
         if key in application and application[key] not in choices:
             raise ValueError(f'{key} must be one of {choices}')
+    application = suite.resolved_application(application)
+    application.pop('candidate_tracking')
     dataset = config['dataset']
     name = suite.checked_name(dataset['name'], 'dataset.name')
     if not str(dataset['input_dir']).strip():

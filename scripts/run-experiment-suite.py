@@ -55,10 +55,17 @@ def bool_text(value: object) -> str:
 
 
 def run_launcher(action: str, environment: dict[str, str], check: bool = True) -> int:
-    completed = subprocess.run([str(LAUNCHER), action], env={**os.environ, **environment}, check=False)
+    completed = subprocess.run([str(LAUNCHER), action], env=launcher_environment(environment), check=False)
     if check and completed.returncode != 0:
         raise subprocess.CalledProcessError(completed.returncode, [str(LAUNCHER), action])
     return completed.returncode
+
+
+def launcher_environment(environment: dict[str, str]) -> dict[str, str]:
+    # Keep SSH/PATH credentials, but never inherit experiment knobs from the shell.
+    inherited = {key: value for key, value in os.environ.items()
+                 if not key.startswith(("DIS_IND_", "AKKA_"))}
+    return {**inherited, **environment}
 
 
 def ssh_target(environment: dict[str, str]) -> str:
@@ -157,6 +164,56 @@ APPLICATION_VARIABLES = {
 }
 
 
+# Explicit suite defaults mirror the VM launcher; resolved runs include every setting.
+APPLICATION_DEFAULTS = {
+    "dl_shard_manifest": "", "dl_reader_threads": 2, "dl_reader_capacity": 5,
+    "value_id_cache_policy": "lru", "membership_cache_policy": "lru",
+    "membership_cache_bytes": 512, "cluster_cache": "lru", "cluster_cache_bytes": 128,
+    "value_id_hot_entries": 128, "chunk_size": 5000000,
+    "data_orientation": "value", "candidate_tracking": "count", "ind_calculation": "batch",
+    "cluster_change_detection": True, "ingestion_mode": "insert",
+    "prune_cqf_enabled": True, "prune_whole_counts_enabled": True,
+    "prune_partition_counts_enabled": True, "prune_partition_hierarchy_enabled": True,
+    "prune_transitive_enabled": False, "prune_count_partitions": 64,
+}
+
+
+def resolved_application(application: dict) -> dict:
+    unknown = set(application) - set(APPLICATION_VARIABLES)
+    if unknown:
+        raise ValueError(f"Unsupported application settings: {sorted(unknown)}")
+    if "batch_size" in application:
+        raise ValueError("application.batch_size is unused by ValueBasedMain; use chunk_size (values per table batch)")
+    result = {**APPLICATION_DEFAULTS, **application}
+    choices = {
+        "value_id_cache_policy": {"lru", "caffeine"},
+        "membership_cache_policy": {"lru", "caffeine"}, "cluster_cache": {"lru", "caffeine"},
+        "candidate_tracking": {"count", "witness", "prune", "exact"},
+        "ind_calculation": {"batch", "final"}, "ingestion_mode": {"insert", "delete"},
+        "data_orientation": {"value", "value-major", "column", "column-major"},
+    }
+    for key, allowed in choices.items():
+        if not isinstance(result[key], str) or result[key] not in allowed:
+            raise ValueError(f"application.{key} must be one of {sorted(allowed)}")
+    for key in BOOLEAN_APPLICATION_SETTINGS:
+        result[key] = bool_text(result[key]) == "true"
+    for key in ("dl_reader_threads", "dl_reader_capacity", "chunk_size", "prune_count_partitions",
+                "value_id_hot_entries", "membership_cache_bytes", "cluster_cache_bytes"):
+        value = result[key]
+        minimum = 0 if key in {"value_id_hot_entries", "membership_cache_bytes", "cluster_cache_bytes"} else 1
+        maximum = (2**63 - 1) // (1024 * 1024) if key.endswith("cache_bytes") else 2**31 - 1
+        if key == "value_id_hot_entries":
+            maximum = (2**31 - 1) // 8192  # MiB converted to 128-byte entries by INDGuardian
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"application.{key} must be an integer between {minimum} and {maximum}")
+    partitions = result["prune_count_partitions"]
+    if partitions & (partitions - 1):
+        raise ValueError("application.prune_count_partitions must be a power of two")
+    if not isinstance(result["dl_shard_manifest"], str):
+        raise ValueError("application.dl_shard_manifest must be a string")
+    return result
+
+
 BOOLEAN_APPLICATION_SETTINGS = {
     "prune_whole_counts_enabled",
     "cluster_change_detection",
@@ -169,9 +226,15 @@ BOOLEAN_APPLICATION_SETTINGS = {
 
 def experiment_environment(base: dict[str, str], coordinator: dict, experiment: dict,
                            suite_name: str, run_name: str) -> tuple[dict[str, str], str]:
-    application = experiment.get("application", {})
+    application = resolved_application(experiment.get("application", {}))
     dataset = require(experiment, "dataset", "experiment")
     resources = experiment.get("resources", {})
+    unknown = set(resources) - {"coordinator_java_xmx", "worker_java_xmx"}
+    if unknown:
+        raise ValueError(f"Unsupported resources settings: {sorted(unknown)}")
+    unknown = set(dataset) - {"name", "input_dir"}
+    if unknown:
+        raise ValueError(f"Unsupported dataset settings: {sorted(unknown)}")
     output_dir = f"{base['COORDINATOR_OUTPUT_BASE']}/{suite_name}/{run_name}"
     state_dir = f"{base['REMOTE_STATE_BASE']}/runs/{suite_name}/{run_name}"
 
@@ -223,18 +286,19 @@ def main() -> int:
         raise ValueError("suite.experiments must be a non-empty list")
 
     base, coordinator = base_environment(cluster_config)
+    # Validate every entry before preparation or any remote side effects.
+    for reference in references:
+        experiment_path = resolve_experiment_path(str(reference), suite_path, cluster_path.parent)
+        experiment = load_yaml(experiment_path)
+        metadata = require(experiment, "experiment", "experiment root")
+        experiment_name = checked_name(require(metadata, "name", "experiment"), "experiment.name")
+        repeats = int(metadata.get("repeats", 1))
+        if repeats <= 0:
+            raise ValueError(f"experiment.repeats must be positive in {experiment_path}")
+        experiment_environment(base, coordinator, experiment, suite_name, f"{experiment_name}-validation")
+        print(f"Valid: {experiment_path} (enabled={bool(metadata.get('enabled', True))}, repeats={repeats})")
+    print(f"Suite '{suite_name}' is valid")
     if args.validate_only:
-        for reference in references:
-            experiment_path = resolve_experiment_path(str(reference), suite_path, cluster_path.parent)
-            experiment = load_yaml(experiment_path)
-            metadata = require(experiment, "experiment", "experiment root")
-            experiment_name = checked_name(require(metadata, "name", "experiment"), "experiment.name")
-            repeats = int(metadata.get("repeats", 1))
-            if repeats <= 0:
-                raise ValueError(f"experiment.repeats must be positive in {experiment_path}")
-            experiment_environment(base, coordinator, experiment, suite_name, f"{experiment_name}-validation")
-            print(f"Valid: {experiment_path} (enabled={bool(metadata.get('enabled', True))}, repeats={repeats})")
-        print(f"Suite '{suite_name}' is valid")
         return 0
 
     if not args.skip_prepare:
@@ -265,7 +329,8 @@ def main() -> int:
                 "run": run_name,
                 "git_commit": commit,
                 "cluster": cluster_config,
-                "experiment": experiment,
+                "experiment": {**experiment, "application": resolved_application(experiment.get("application", {}))},
+                "launcher_environment": environment,
             }
             print(f"\n=== Starting {suite_name}/{run_name} ===", flush=True)
             remote_write(environment, f"{output_dir}/status.txt", "RUNNING\n")

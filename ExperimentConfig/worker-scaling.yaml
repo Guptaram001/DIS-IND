@@ -7,36 +7,37 @@
 cluster_config: cluster.yaml
 scaling:
   worker_counts: all  # all = 1..number of available workers; use [5] for only five
-  modes: [exact]  # Use [prune] or [exact] for one mode
+  modes: [prune,exact]  # Use [prune] or [exact] for one mode
   repeats: 1
   timeout_seconds: 3600
   stop_on_failure: false
   excluded_workers: [192.168.2.89]
 
 dataset:
-  name: uniprot  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/uniprot
+  name: btc  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/btc
 
 application:
   data_orientation: value
   ingestion_mode: insert  # insert or delete
   ind_calculation: batch  # final or batch
   cluster_change_detection: true
-  chunk_size: 5000000
+  chunk_size: 2000000
   value_id_cache_policy: lru  # lru or caffeine
   membership_cache_policy: lru  # lru or caffeine
-  value_id_hot_entries: 128
-  membership_cache_bytes: 512
-  cluster_cache_bytes: 128
+  cluster_cache: lru  # lru or caffeine
+  value_id_hot_entries: 128  # MiB; converted to entries assuming 128 bytes each
+  membership_cache_bytes: 512  # MiB, despite the legacy key name; 0 disables clean retention
+  cluster_cache_bytes: 128  # MiB; 0 disables clean retention
   prune_cqf_enabled: false
   prune_whole_counts_enabled: false
   prune_partition_counts_enabled: false
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  #dl_shard_manifest: /home/node/DIS-IND/data/btc-shards/manifest.properties
-  #dl_reader_threads: 4
-  #dl_reader_capacity: 8
+  dl_shard_manifest: /home/node/DIS-IND/data/btc-shards/manifest.properties
+  dl_reader_threads: 4
+  dl_reader_capacity: 8
 
 resources:
   coordinator_java_xmx: 8g

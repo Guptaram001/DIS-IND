@@ -46,8 +46,10 @@ Add these keys under an experiment's `application` mapping:
 ```yaml
 value_id_cache_policy: caffeine  # lru or caffeine (W-TinyLFU)
 membership_cache_policy: lru     # lru or caffeine
-value_id_hot_entries: 100000     # per-worker total; 0 disables the value-ID hot cache
-membership_cache_bytes: 536870912  # per-worker estimated budget; 0 permits only pinned state
+value_id_hot_entries: 128        # MiB per worker, estimated at 128 bytes per entry; 0 disables
+membership_cache_bytes: 512     # MiB per worker (legacy key name); 0 permits only pinned state
+cluster_cache: lru              # lru or caffeine
+cluster_cache_bytes: 128        # MiB per worker; 0 disables clean retention
 ```
 
 Create four copies using `lru/lru`, `caffeine/lru`, `lru/caffeine`, and
@@ -61,3 +63,17 @@ README for memory accounting and metric interpretation.
 Set `application.prune_whole_counts_enabled: false` to disable whole-column
 distinct-count pruning and its count-array maintenance (default: true).
 Previous-result reuse remains enabled. All cluster processes receive the option.
+
+## Worker scaling
+
+Edit `worker-scaling.yaml`, then run `bash scripts/run-worker-scaling.sh --validate-only`
+and `bash scripts/run-worker-scaling.sh`. Application settings omitted from YAML use
+explicit runner defaults, independent of `DIS_IND_*` shell variables. Each
+`resolved-config.yaml` records these defaults and the launcher environment.
+`chunk_size` controls values per table batch (rows = max(1, chunk_size / columns));
+`batch_size` is unused by this pipeline and is rejected. Reader thread/capacity
+settings apply to the shard-manifest input path. Cache budgets are per worker,
+so total cluster cache capacity increases with the worker count.
+
+The launcher builds the configured remote Git branch; local uncommitted Java
+changes are not deployed. Ensure the intended code is on that branch before running.

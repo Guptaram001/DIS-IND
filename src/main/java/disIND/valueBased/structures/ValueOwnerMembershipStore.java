@@ -699,6 +699,7 @@ public final class ValueOwnerMembershipStore implements AutoCloseable {
             this.options.setCreateIfMissing(true);
             this.options.setTableFormatConfig(tableConfig);
             this.writeOptions = new WriteOptions();
+            this.writeOptions.setSync(false).setDisableWAL(true);
             if (trackingMode == CandidateTrackingMode.WITNESS)
                 candidateStateCache = CacheBuilder.newBuilder()
                         .maximumWeight(Math.multiplyExact(hotEntries, CANDIDATE_CACHE_BASE_WEIGHT))

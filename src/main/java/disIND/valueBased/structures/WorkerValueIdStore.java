@@ -33,7 +33,6 @@ public final class WorkerValueIdStore implements AutoCloseable {
     private static final byte VALUE_PREFIX = 0;
     private static final byte NEXT_ID_PREFIX = 1;
     private static final long WRITE_BUFFER_BYTES = 32L * 1024 * 1024;
-    private static final long MAX_TOTAL_WAL_BYTES = 128L * 1024 * 1024;
     private static final float BLOOM_FILTER_BITS_PER_KEY = UserConfig.BLOOM_FILTER_BITS_PER_KEY;
     public static final int UNRESOLVED = Integer.MIN_VALUE; // Keys missing update to min value as ids
 
@@ -109,9 +108,8 @@ public final class WorkerValueIdStore implements AutoCloseable {
             this.options.setWriteBufferSize(WRITE_BUFFER_BYTES);
             this.options.setMaxWriteBufferNumber(2);
             this.options.setMinWriteBufferNumberToMerge(1);
-            this.options.setMaxTotalWalSize(MAX_TOTAL_WAL_BYTES);
             this.writeOptions = new WriteOptions();
-            this.writeOptions.setSync(false).setDisableWAL(false);
+            this.writeOptions.setSync(false).setDisableWAL(true);
             this.database = RocksDB.open(options, databasePath.toString());
         } catch (IOException | RocksDBException exception) {
             throw new IllegalStateException("Cannot open worker value-ID RocksDB at " + databasePath, exception);

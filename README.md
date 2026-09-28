@@ -299,21 +299,22 @@ The existing diagnostic runner is also available as `scripts/run.sh`.
 
 Value-ID and membership caches independently support `lru` (default) and
 `caffeine` (Caffeine 3.2.4 W-TinyLFU, which combines frequency and recency).
-Pass these options to `ValueBasedMain` or `scripts/run.sh`:
+Pass these options to `ValueBasedMain`:
 
 ```bash
 --value-id-cache-policy caffeine --membership-cache-policy caffeine \
---value-id-hot-entries 100000 --membership-cache-bytes 536870912
+--value-id-hot-entries 128 --membership-cache-bytes 512
 ```
 
-Equivalent environment variables are `DIS_IND_VALUE_ID_CACHE_POLICY`,
-`DIS_IND_MEMBERSHIP_CACHE_POLICY`, `DIS_IND_VALUE_ID_HOT_ENTRIES`, and
+Equivalent Java environment variables are `DIS_IND_VALUE_ID_CACHE_MODE`,
+`DIS_IND_MEMBERSHIP_CACHE_MODE`, `DIS_IND_VALUE_ID_HOT_ENTRIES`, and
 `DIS_IND_MEMBERSHIP_CACHE_BYTES`. JVM properties use `dis.ind.` followed by the
 CLI option name. Configure every worker consistently; Docker Compose and the
 Proxmox experiment launcher forward these settings.
 
-The value-ID limit is an entry budget per worker, divided across configured
-buckets (including the remainder). Membership has a soft estimated-byte budget
+The value-ID setting is a MiB budget per worker, converted to entries at an
+estimated 128 bytes each, then divided across configured buckets (including
+the remainder). Membership is also configured in MiB and has a soft estimated-byte budget
 per worker, also divided across buckets; zero disables retention of clean
 membership entries. Dirty/in-flight membership stays pinned outside the
 selectable cache, consumes that same budget, and may exceed it until existing
@@ -347,7 +348,7 @@ Disable the value-ID hot cache with `--value-id-hot-entries 0` (or
 `DIS_IND_VALUE_ID_HOT_ENTRIES=0`). No hot-cache instances are created or looked
 up; metrics report policy `disabled`, zero hits, and misses for distinct values
 requested within each batch. RocksDB/OS caching and within-batch deduplication
-still apply. The default remains 100000 entries. To disable both clean hot
+still apply. The default is 128 MiB (1,048,576 estimated entries). To disable both clean hot
 caches, also pass `--membership-cache-bytes 0`.
 
 ### Disk-backed clusters (prune and exact)
@@ -381,17 +382,21 @@ binary would not maintain the index. Index storage repeats each signature once p
 member column. The pending overlay still checks pending entries in memory; persisted
 validation no longer scans unrelated signatures.
 
-```bash
---candidate-tracking prune --cluster-cache-policy lru --cluster-cache-bytes 134217728
+```yaml
+# Experiment application settings
+candidate_tracking: prune
+cluster_cache: lru
+cluster_cache_bytes: 128
 ```
 
-`--cluster-cache-policy` accepts `lru` (default) or `caffeine`. The separate
-`--cluster-cache-bytes` budget defaults to 128 MiB per worker, divided across
+`cluster_cache` accepts `lru` (default) or `caffeine`. The separate
+`cluster_cache_bytes` budget defaults to 128 MiB per worker, divided across
 configured buckets; zero disables clean cluster retention. Environment variables
-are `DIS_IND_CLUSTER_CACHE_POLICY` and `DIS_IND_CLUSTER_CACHE_BYTES`; JVM properties
-are `dis.ind.cluster-cache-policy` and `dis.ind.cluster-cache-bytes`. Docker Compose,
+are `DIS_IND_CLUSTER_CACHE` and `DIS_IND_CLUSTER_CACHE_BYTES`; JVM properties
+are `dis.ind.cluster-cache` and `dis.ind.cluster-cache-bytes`. The budget value
+is in MiB despite the legacy `bytes` name. Docker Compose,
 `scripts/run.sh`, and the Proxmox launcher forward these settings. Experiment and
-worker-scaling YAML application settings are `cluster_cache_policy` and
+worker-scaling YAML application settings are `cluster_cache` and
 `cluster_cache_bytes`.
 
 Dirty and in-flight signature counts stay pinned until acknowledged. Their
