@@ -391,7 +391,7 @@ wait_for_cluster() {
     local worker
     for worker in "${WORKER_HOSTS[@]}"; do
         echo "Waiting for worker $worker to stop"
-        wait_for_node_exit "$worker" 180
+        wait_for_node_exit "$worker" 600
     done
 
     if ! remote "$COORDINATOR" test -s "$COORDINATOR_OUTPUT_DIR/ind-report.txt"; then
