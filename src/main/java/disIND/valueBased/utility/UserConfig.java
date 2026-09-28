@@ -42,7 +42,7 @@ public final class UserConfig {
     public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
     public static final int DEFAULT_CM_PARTITIONS = 128;
     public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
-    public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 120;
+    public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 180;
     public static final int DEFAULT_DRAIN_MAX_IN_FLIGHT = 128;
     public static final int DEFAULT_DRAIN_BATCH_SIZE = 16;
     public static final int DEFAULT_DRAIN_RETRY_SECONDS = 2;
@@ -54,7 +54,7 @@ public final class UserConfig {
     public static final boolean DEFAULT_PRUNE_TRANSITIVE_ENABLED = false;
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 128;
-    public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES_MB = 256;
+    public static final int DEFAULT_VALUE_OWNER_HOT_ENTRIES_MB = 512;
     public static final DataOrientation DEFAULT_DATA_ORIENTATION = DataOrientation.VALUE_MAJOR;
     public static final CandidateTrackingMode DEFAULT_CANDIDATE_TRACKING = CandidateTrackingMode.COUNT;
     public static final String DEFAULT_VALUE_ID_DISK_DIR = System.getProperty("java.io.tmpdir") + "/dis-ind-value-ids"
@@ -187,8 +187,10 @@ public final class UserConfig {
                 "dis.ind.max-tracked-violations", DEFAULT_MAX_TRACKED_VIOLATIONS);
 
         DL_SHARD_MANIFEST = stringSetting("DIS_IND_DL_SHARD_MANIFEST", "dis.ind.dl-shard-manifest", "");
-        DL_READER_THREADS = positiveIntSetting("DIS_IND_DL_READER_THREADS", "dis.ind.dl-reader-threads", DEFAULT_DL_READER_THREADS);
-        DL_READER_CAPACITY = positiveIntSetting("DIS_IND_DL_READER_CAPACITY", "dis.ind.dl-reader-capacity", DEFAULT_DL_READER_CAPACITY);
+        DL_READER_THREADS = positiveIntSetting("DIS_IND_DL_READER_THREADS", "dis.ind.dl-reader-threads",
+                DEFAULT_DL_READER_THREADS);
+        DL_READER_CAPACITY = positiveIntSetting("DIS_IND_DL_READER_CAPACITY", "dis.ind.dl-reader-capacity",
+                DEFAULT_DL_READER_CAPACITY);
         DL_BD_CREDIT_WINDOW = positiveIntSetting("DIS_IND_DL_BD_CREDIT_WINDOW",
                 "dis.ind.dl-bd-credit-window", DEFAULT_DL_BD_CREDIT_WINDOW);
 
