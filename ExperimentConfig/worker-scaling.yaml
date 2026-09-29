@@ -14,8 +14,8 @@ scaling:
   excluded_workers: [192.168.2.89]
 
 dataset:
-  name: t2d  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/t2d
+  name: census  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/census
 
 application:
   data_orientation: value
@@ -35,7 +35,7 @@ application:
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  dl_shard_manifest: /home/node/DIS-IND/data/t2d-shards/manifest.properties
+  dl_shard_manifest: /home/node/DIS-IND/data/census-shards/manifest.properties
   dl_reader_threads: 4
   dl_reader_capacity: 8
 
