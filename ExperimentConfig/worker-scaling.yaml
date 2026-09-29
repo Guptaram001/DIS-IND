@@ -6,8 +6,8 @@
 # Temporary suite/experiment YAML is generated automatically; no extra files to maintain.
 cluster_config: cluster.yaml
 scaling:
-  worker_counts: [2,3,5]  # all = 1..number of available workers; use [5] for only five
-  modes: [exact]  # Use [prune] or [exact] for one mode
+  worker_counts: [4,5]  # all = 1..number of available workers; use [5] for only five
+  modes: [prune]  # Use [prune] or [exact] for one mode
   repeats: 1
   timeout_seconds: 4800
   stop_on_failure: false
