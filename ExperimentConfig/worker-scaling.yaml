@@ -9,7 +9,7 @@ scaling:
   worker_counts: all  # all = 1..number of available workers; use [5] for only five
   modes: [prune,exact]  # Use [prune] or [exact] for one mode
   repeats: 1
-  timeout_seconds: 3600
+  timeout_seconds: 4800
   stop_on_failure: false
   excluded_workers: [192.168.2.89]
 
