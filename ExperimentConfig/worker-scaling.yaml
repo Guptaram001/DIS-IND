@@ -6,12 +6,12 @@
 # Temporary suite/experiment YAML is generated automatically; no extra files to maintain.
 cluster_config: cluster.yaml
 scaling:
-  worker_counts: [5]   # all = 1..number of available workers; use [5] for only five
-  modes: [prune,exact]  # Use [prune] or [exact] for one mode
+  worker_counts: [3,4]   # all = 1..number of available workers; use [5] for only five
+  modes: [exact]  # Use [prune] or [exact] for one mode
   repeats: 1
   timeout_seconds: 7200
   stop_on_failure: false
-  excluded_workers: [192.168.2.232]
+  excluded_workers: [192.168.2.232,192.168.2.89]
 
 dataset:
   name: tpch-10  # For TPCH-1 change this to tpch-1 and the input directory below
