@@ -1,11 +1,11 @@
 import pandas as pd
 from pathlib import Path
 
-project_dir = Path("../")
+project_dir = Path(__file__).resolve().parent.parent
 
 input_file = project_dir / "data/btc/btc.csv"
 output_dir = project_dir / "data/btc"
-output_dir.mkdir(exist_ok=True)
+output_dir.mkdir(parents=True, exist_ok=True)
 
 # Percentages of the total file to generate
 percentages = [0.10, 0.20, 0.40, 0.60, 0.80]
