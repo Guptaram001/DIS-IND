@@ -15,7 +15,7 @@ scaling:
 
 dataset:
   name: btc  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/btc/btc-c60
+  input_dir: /home/node/DIS-IND/data/btc/btc-c40
 
 application:
   data_orientation: value
@@ -35,7 +35,7 @@ application:
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  dl_shard_manifest: /home/node/DIS-IND/data/btc/btc-c60-shards/manifest.properties
+  dl_shard_manifest: /home/node/DIS-IND/data/btc/btc-c40-shards/manifest.properties
   dl_reader_threads: 4
   dl_reader_capacity: 8
 
