@@ -14,7 +14,7 @@ scaling:
   excluded_workers: [192.168.2.232,192.168.2.89]
 
 dataset:
-  name: btc  # For TPCH-1 change this to tpch-1 and the input directory below
+  name: wikipedia  # For TPCH-1 change this to tpch-1 and the input directory below
   input_dir: /home/node/DIS-IND/data/wikipedia/wiki-r10
 
 application:
