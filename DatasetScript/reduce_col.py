@@ -8,7 +8,7 @@ output_dir = project_dir / "data/imdb"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Column percentages instead of fixed counts
-target_pcts = [0.10, 0.20, 0.40, 0.60, 0.80]
+target_pcts = [0.60, 0.80]
 
 # Load fixed number of rows
 df = pd.read_csv(input_file, sep=",")
