@@ -3,8 +3,8 @@ from pathlib import Path
 
 project_dir = Path(__file__).resolve().parent.parent
 
-input_file = project_dir / "data/btc/1m_BTC_2021.csv"
-output_dir = project_dir / "data/btc"
+input_file = project_dir / "data/wikipedia/WIKIPEDIA.csv"
+output_dir = project_dir / "data/wikipedia"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Percentages of the total file to generate
