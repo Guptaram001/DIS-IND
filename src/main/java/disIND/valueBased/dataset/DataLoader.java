@@ -475,7 +475,7 @@ public final class DataLoader {
                 .setDelimiter(separator)
                 .setQuote('"')
                 .setIgnoreEmptyLines(true)
-                .setTrim(true)
+                // .setTrim(true)
                 .setAllowMissingColumnNames(true);
 
         if (inputHasHeader) {
@@ -611,10 +611,11 @@ public final class DataLoader {
     private static String normalize(String s) {
         if (s == null)
             return "";
-        s = s.strip(); // Removes leading/trailing space.
-        if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
-            s = s.substring(1, s.length() - 1).strip();
-        }
+        // s = s.strip(); // Removes leading/trailing space.
+        // if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"')
+        // {
+        // s = s.substring(1, s.length() - 1).strip();
+        // }
         return s;
     }
 
