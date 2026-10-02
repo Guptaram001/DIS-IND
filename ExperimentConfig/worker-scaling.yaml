@@ -14,15 +14,15 @@ scaling:
   excluded_workers: [192.168.2.232,192.168.2.89]
 
 dataset:
-  name: mb  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/mb-c/scaled/80pct
+  name: btc  # For TPCH-1 change this to tpch-1 and the input directory below
+  input_dir: /home/node/DIS-IND/data/btc/btc
 
 application:
   data_orientation: value
   ingestion_mode: insert  # insert or delete
   ind_calculation: batch  # final or batch
   cluster_change_detection: true
-  chunk_size: 2000000
+  chunk_size: 1000000
   value_id_cache_policy: lru  # lru or caffeine
   membership_cache_policy: lru  # lru or caffeine
   cluster_cache: lru  # lru or caffeine
@@ -35,7 +35,7 @@ application:
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  dl_shard_manifest: /home/node/DIS-IND/data/mb-c80-shards/manifest.properties
+  dl_shard_manifest: /home/node/DIS-IND/data/btc-shards/manifest.properties
   dl_reader_threads: 4
   dl_reader_capacity: 8
 
