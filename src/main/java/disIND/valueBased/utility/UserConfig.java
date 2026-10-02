@@ -47,10 +47,10 @@ public final class UserConfig {
     public static final int DEFAULT_DRAIN_BATCH_SIZE = 16;
     public static final int DEFAULT_DRAIN_RETRY_SECONDS = 2;
     public static final boolean DEFAULT_STORE_VALUE_STRINGS = true;
-    public static final boolean DEFAULT_PRUNE_CQF_ENABLED = true;
-    public static final boolean DEFAULT_PRUNE_WHOLE_COUNTS_ENABLED = true;
-    public static final boolean DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED = true;
-    public static final boolean DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED = true;
+    public static final boolean DEFAULT_PRUNE_CQF_ENABLED = false;
+    public static final boolean DEFAULT_PRUNE_WHOLE_COUNTS_ENABLED = false;
+    public static final boolean DEFAULT_PRUNE_PARTITION_COUNTS_ENABLED = false;
+    public static final boolean DEFAULT_PRUNE_PARTITION_HIERARCHY_ENABLED = false;
     public static final boolean DEFAULT_PRUNE_TRANSITIVE_ENABLED = false;
     public static final int DEFAULT_PRUNE_COUNT_PARTITIONS = 64;
     public static final int DEFAULT_VALUE_ID_HOT_ENTRIES = 128;
