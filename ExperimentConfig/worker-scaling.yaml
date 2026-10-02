@@ -22,7 +22,7 @@ application:
   ingestion_mode: insert  # insert or delete
   ind_calculation: batch  # final or batch
   cluster_change_detection: true
-  chunk_size: 50000
+  chunk_size: 500000
   value_id_cache_policy: lru  # lru or caffeine
   membership_cache_policy: lru  # lru or caffeine
   cluster_cache: lru  # lru or caffeine
