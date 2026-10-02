@@ -7,7 +7,7 @@
 cluster_config: cluster.yaml
 scaling:
   worker_counts: [4]   # all = 1..number of available workers; use [5] for only five
-  modes: [prune]  # Use [prune] or [exact] for one mode
+  modes: [exact]  # Use [prune] or [exact] for one mode
   repeats: 1
   timeout_seconds: 7200
   stop_on_failure: false
@@ -20,8 +20,8 @@ dataset:
 application:
   data_orientation: value
   ingestion_mode: insert  # insert or delete
-  ind_calculation: batch  # final or batch
-  cluster_change_detection: false
+  ind_calculation: final  # final or batch
+  cluster_change_detection: true
   chunk_size: 2000000
   value_id_cache_policy: lru  # lru or caffeine
   membership_cache_policy: lru  # lru or caffeine
