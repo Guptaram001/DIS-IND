@@ -39,7 +39,7 @@ public final class UserConfig {
     public static final int DEFAULT_DL_BD_CREDIT_WINDOW = 4;
     public static final int DEFAULT_DL_PREPARATION_THREADS = 4;
     public static final int DEFAULT_DL_PREPARATION_CAPACITY = 5;
-    public static final int DEFAULT_VALUE_OWNER_BUCKETS = 256;
+    public static final int DEFAULT_VALUE_OWNER_BUCKETS = 1024;
     public static final int DEFAULT_CM_PARTITIONS = 128;
     public static final float BLOOM_FILTER_BITS_PER_KEY = 10.0f;
     public static final int DEFAULT_BATCH_ACK_TIMEOUT_SECONDS = 360;
