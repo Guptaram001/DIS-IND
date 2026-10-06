@@ -15,7 +15,7 @@ scaling:
 
 dataset:
   name: btc  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/btc
+  input_dir: /home/node/DIS-IND/data/btc/btc
 
 application:
   data_orientation: value
