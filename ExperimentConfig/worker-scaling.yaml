@@ -39,7 +39,7 @@ application:
   dl_reader_threads: 4
   dl_reader_capacity: 8
   benchmark_operation: delete 
-  benchmark_sample_dir: /home/node/DIS-IND/data/tpch-1-sample-shards
+  benchmark_sample_dir: /home/node/DIS-IND/data/tpch-1-sample
 
 resources:
   coordinator_java_xmx: 8g
