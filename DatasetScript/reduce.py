@@ -3,7 +3,7 @@ from pathlib import Path
 
 project_dir = Path(__file__).resolve().parent.parent
 
-input_file = project_dir / "data/wikipedia/wikipedia"
+input_file = project_dir / "data/wikipedia/wikipedia/WIKIPEDIA.csv"
 output_dir = project_dir / "data/wikipedia"
 output_dir.mkdir(parents=True, exist_ok=True)
 
