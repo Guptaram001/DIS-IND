@@ -28,8 +28,7 @@ public final class ValueBasedMain {
         UserConfig.init(args);
         String nodeRole = nodeRole();
         int expectedMembers = mustBePositiveInt("DIS_IND_EXPECTED_CLUSTER_SIZE", 1);
-        int expectedWorkers = mustBePositiveInt(
-                "DIS_IND_EXPECTED_WORKERS", Math.max(0, expectedMembers - 1));
+        int expectedWorkers = mustBePositiveInt("DIS_IND_EXPECTED_WORKERS", Math.max(0, expectedMembers - 1));
         int startTimeoutSeconds = mustBePositiveInt("DIS_IND_CLUSTER_START_TIMEOUT_SECONDS", 120);
 
         INDGuardian.Config coordinatorConfig = null;

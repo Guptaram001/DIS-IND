@@ -136,6 +136,24 @@ timestamp() {
     date '+%Y-%m-%dT%H:%M:%S%z'
 }
 
+# Compose run creates one-off workers that compose rm may not remove.
+remove_stopped_project_worker() {
+    local worker_name="$1" expected_project="$2" details
+    if ! details="$(docker inspect --format '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$worker_name" 2>/dev/null)"; then
+        return 0 # Absent container; compose run will report any Docker connection failure.
+    fi
+    case "$details" in
+        "created|$expected_project|worker"|"exited|$expected_project|worker")
+            echo "Removing stopped worker from an earlier run: $worker_name" >&2
+            docker rm "$worker_name" >/dev/null || return 1
+            ;;
+        *)
+            echo "Cannot reuse $worker_name: container is active or belongs to another project/service ($details)." >&2
+            return 1
+            ;;
+    esac
+}
+
 export_docker_application_arguments() {
     while (( "$#" )); do
         local option="${1%%=*}"
@@ -154,8 +172,8 @@ export_docker_application_arguments() {
         case "$option" in
             --data-orientation) export DIS_IND_DATA_ORIENTATION="$value" ;;
             --candidate-tracking) export DIS_IND_CANDIDATE_TRACKING="$value" ;;
-            --value-id-cache-policy) export DIS_IND_VALUE_ID_CACHE="$value" ;;
-            --membership-cache-policy) export DIS_IND_MEMBERSHIP_CACHE="$value" ;;
+            --value-id-cache-policy) export DIS_IND_VALUE_ID_CACHE_POLICY="$value" ;;
+            --membership-cache-policy) export DIS_IND_MEMBERSHIP_CACHE_POLICY="$value" ;;
             --membership-cache-bytes) export DIS_IND_MEMBERSHIP_CACHE_BYTES="$value" ;;
             --cluster-cache-mode) export DIS_IND_CLUSTER_CACHE="$value" ;;
             --cluster-cache-bytes) export DIS_IND_CLUSTER_CACHE_BYTES="$value" ;;
@@ -163,6 +181,8 @@ export_docker_application_arguments() {
             --cluster-change-detection) export DIS_IND_CLUSTER_CHANGE_DETECTION="$value" ;;
             --prune-cqf-enabled) export DIS_IND_PRUNE_CQF_ENABLED="$value" ;;
             --ingestion-mode) export DIS_IND_INGESTION_MODE="$value" ;;
+            --benchmark-operation) export DIS_IND_BENCHMARK_OPERATION="$value" ;;
+            --benchmark-sample-dir) export DIS_IND_BENCHMARK_SAMPLE_DIR="$value" ;;
             --delete-percent) export DIS_IND_DELETE_PERCENT="$value" ;;
             --delete-seed) export DIS_IND_DELETE_SEED="$value" ;;
             --prune-whole-counts-enabled) export DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED="$value" ;;
@@ -266,6 +286,16 @@ run_distributed_docker() {
     if [[ ! -d "$INPUT_DIR" ]]; then
         echo "Input directory not found: $INPUT_DIR" >&2
         exit 1
+    fi
+
+    if [[ "${DIS_IND_BENCHMARK_OPERATION:-none}" != "none" ]]; then
+        if [[ -z "${DIS_IND_BENCHMARK_SAMPLE_DIR:-}" ||
+              ! -f "${DIS_IND_BENCHMARK_SAMPLE_DIR}/manifest.json" ]]; then
+            echo "Benchmark sample manifest not found: ${DIS_IND_BENCHMARK_SAMPLE_DIR:-<unset>}/manifest.json. Set --benchmark-sample-dir to the generated sample directory." >&2
+            exit 1
+        fi
+        DIS_IND_BENCHMARK_SAMPLE_DIR="$(cd "$DIS_IND_BENCHMARK_SAMPLE_DIR" && pwd)" || exit 1
+        export DIS_IND_BENCHMARK_SAMPLE_DIR
     fi
 
     local input_dir_abs
@@ -394,31 +424,55 @@ run_distributed_docker() {
     export COORDINATOR_JMX_PORT="$coordinator_jmx_port"
 
     echo "Building the Docker image..."
-    (cd "$PROJECT_DIR" && docker compose build)
+    if ! (cd "$PROJECT_DIR" && docker compose build); then
+        echo "Docker image build failed; cluster startup aborted." >&2
+        exit 1
+    fi
 
     # Remove containers left by an earlier scaled run. All containers started
     # below remain in this Compose project and therefore share its network.
     (cd "$PROJECT_DIR" && docker compose rm -sf worker coordinator >/dev/null 2>&1) || true
 
     echo "Starting coordinator with JMX at localhost:$coordinator_jmx_port"
-    (cd "$PROJECT_DIR" && docker compose up -d --force-recreate --remove-orphans coordinator)
+    if ! (cd "$PROJECT_DIR" && docker compose up -d --force-recreate --remove-orphans coordinator); then
+        echo "Coordinator startup failed; workers were not started. Check COORDINATOR_JMX_PORT=$coordinator_jmx_port for conflicts." >&2
+        exit 1
+    fi
+
+    local coordinator_container compose_project
+    if ! coordinator_container="$(cd "$PROJECT_DIR" && docker compose ps -aq coordinator)" ||
+       [[ -z "$coordinator_container" ]] ||
+       ! compose_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$coordinator_container")" ||
+       [[ -z "$compose_project" || "$compose_project" == "<no value>" ]]; then
+        echo "Cannot identify the coordinator Compose project; worker startup aborted." >&2
+        (cd "$PROJECT_DIR" && docker compose stop coordinator) || true
+        exit 1
+    fi
 
     echo "Starting $WORKERS worker replica(s) with dedicated JMX ports..."
     local i
     for ((i = 0; i < WORKERS; i++)); do
         local current_port=$((worker_jmx_base_port + i))
         local worker_name="dis-ind-worker-$((i + 1))"
-        worker_names+=("$worker_name")
-
         echo "  $worker_name -> localhost:$current_port"
-        (
+        if ! (
+            remove_stopped_project_worker "$worker_name" "$compose_project" &&
             cd "$PROJECT_DIR" &&
             docker compose run -d --no-deps \
                 --name "$worker_name" \
                 -e "JMX_PORT=$current_port" \
                 -p "127.0.0.1:$current_port:$current_port" \
                 worker
-        ) >/dev/null
+        ) >/dev/null; then
+            echo "Worker $worker_name startup failed; stopping containers started by this attempt. See the Docker error above (container name, port $current_port, or another startup error)." >&2
+            local started_index
+            for ((started_index = 0; started_index < i; started_index++)); do
+                docker stop -t 10 "${worker_names[$started_index]}" >/dev/null 2>&1 || true
+            done
+            (cd "$PROJECT_DIR" && docker compose stop coordinator) || true
+            exit 1
+        fi
+        worker_names+=("$worker_name")
     done
 
     echo "JConsole connections:"
@@ -438,8 +492,18 @@ run_distributed_docker() {
             local_log_pids+=("$!")
         done
 
-        coordinator_id="$(docker compose ps -q coordinator)"
-        coordinator_status="$(docker wait "$coordinator_id")"
+        coordinator_status=1
+        if coordinator_id="$(docker compose ps -aq coordinator)" && [[ -n "$coordinator_id" ]]; then
+            if ! coordinator_status="$(docker wait "$coordinator_id")"; then
+                echo "Failed to wait for coordinator container $coordinator_id" >&2
+                coordinator_status=1
+            elif [[ ! "$coordinator_status" =~ ^[0-9]+$ ]]; then
+                echo "Docker returned an invalid coordinator exit status: $coordinator_status" >&2
+                coordinator_status=1
+            fi
+        else
+            echo "Coordinator container could not be found after startup." >&2
+        fi
 
         for log_pid in "${local_log_pids[@]}"; do
             kill "$log_pid" 2>/dev/null || true

@@ -41,6 +41,8 @@ DIS_IND_DATA_ORIENTATION="${DIS_IND_DATA_ORIENTATION:-value}"
 DIS_IND_CANDIDATE_TRACKING="${DIS_IND_CANDIDATE_TRACKING:-count}"
 DIS_IND_DATASET_NAME="${DIS_IND_DATASET_NAME:-tpch-1}"
 DIS_IND_INGESTION_MODE="${DIS_IND_INGESTION_MODE:-insert}"
+DIS_IND_BENCHMARK_OPERATION="${DIS_IND_BENCHMARK_OPERATION:-none}"
+DIS_IND_BENCHMARK_SAMPLE_DIR="${DIS_IND_BENCHMARK_SAMPLE_DIR:-}"
 DIS_IND_PRUNE_CQF_ENABLED="${DIS_IND_PRUNE_CQF_ENABLED:-true}"
 DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED="${DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED:-true}"
 DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED="${DIS_IND_PRUNE_PARTITION_COUNTS_ENABLED:-true}"
@@ -151,7 +153,8 @@ start_node() {
         "$DIS_IND_VALUE_ID_CACHE_POLICY" "$DIS_IND_MEMBERSHIP_CACHE_POLICY" \
         "$DIS_IND_MEMBERSHIP_CACHE_BYTES" "$DIS_IND_VALUE_ID_HOT_ENTRIES" "$DIS_IND_PRUNE_WHOLE_COUNTS_ENABLED" \
         "$DIS_IND_CLUSTER_CACHE" "$DIS_IND_CLUSTER_CACHE_BYTES" \
-        "$DIS_IND_DL_SHARD_MANIFEST" "$DIS_IND_DL_READER_THREADS" "$DIS_IND_DL_READER_CAPACITY" <<'REMOTE_START'
+        "$DIS_IND_DL_SHARD_MANIFEST" "$DIS_IND_DL_READER_THREADS" "$DIS_IND_DL_READER_CAPACITY" \
+        "$DIS_IND_BENCHMARK_OPERATION" "$DIS_IND_BENCHMARK_SAMPLE_DIR" <<'REMOTE_START'
 set -euo pipefail
 project_dir="$1"
 state_dir="$2"
@@ -192,6 +195,8 @@ cluster_cache_bytes="${36}"
 shard_manifest="${37}"
 reader_threads="${38}"
 reader_capacity="${39}"
+benchmark_operation="${40}"
+benchmark_sample_dir="${41}"
 
 if [[ -e "$state_dir" ]]; then
     echo "Run-state directory already exists; refusing to reuse it: $state_dir" >&2
@@ -200,6 +205,10 @@ fi
 mkdir -p "$state_dir/value-ids" "$state_dir/value-to-rows" \
     "$state_dir/value-owners" "$state_dir/diagnostics" "$log_dir"
 if [[ "$role" == "coordinator" ]]; then
+    if [[ "$benchmark_operation" != "none" && ! -f "$benchmark_sample_dir/manifest.json" ]]; then
+        echo "Benchmark sample manifest not found on coordinator: $benchmark_sample_dir/manifest.json" >&2
+        exit 1
+    fi
     test -d "$input_dir" || { echo "Input directory not found: $input_dir" >&2; exit 1; }
     mkdir -p "$output_dir"
 fi
@@ -251,7 +260,8 @@ common_env=(
     "DIS_IND_VALUE_OWNER_DISK_DIR=$state_dir/value-owners"
 )
 if [[ "$role" == "coordinator" ]]; then
-    common_env+=("DIS_IND_INPUT_DIR=$input_dir" "DIS_IND_OUTPUT_FILE=$output_dir/ind-report.txt")
+    common_env+=("DIS_IND_INPUT_DIR=$input_dir" "DIS_IND_OUTPUT_FILE=$output_dir/ind-report.txt"
+        "DIS_IND_BENCHMARK_OPERATION=$benchmark_operation" "DIS_IND_BENCHMARK_SAMPLE_DIR=$benchmark_sample_dir")
 fi
 
 nohup env "${common_env[@]}" java \

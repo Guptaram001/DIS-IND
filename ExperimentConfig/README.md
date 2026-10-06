@@ -77,3 +77,40 @@ so total cluster cache capacity increases with the worker count.
 
 The launcher builds the configured remote Git branch; local uncommitted Java
 changes are not deployed. Ensure the intended code is on that branch before running.
+
+## Insert/delete benchmarks on the remote cluster
+
+Use `worker-scaling-benchmark-insert.yaml` and
+`worker-scaling-benchmark-delete.yaml`. These examples select four workers and
+PRUNE; edit `scaling.worker_counts`, `scaling.modes`, repeats and remote paths
+as needed. The original `worker-scaling.yaml` is unchanged.
+
+```yaml
+application:
+  benchmark_operation: delete  # none (default), insert, delete
+  benchmark_sample_dir: /home/node/DIS-IND/data/tpch-1-sample-v2
+  ingestion_mode: insert
+  ind_calculation: batch
+  data_orientation: value
+```
+
+The baseline directory belongs in `dataset.input_dir`; do not use D−S for
+these benchmarks. Generate the sample on the coordinator or copy the complete
+sample directory there, including `manifest.json`. The sample must match the
+baseline files exactly. Workers do not need the sample. Clear `dl_shard_manifest`
+unless it was generated for the selected baseline.
+
+```bash
+bash scripts/run-worker-scaling.sh ExperimentConfig/worker-scaling-benchmark-delete.yaml --validate-only
+bash scripts/run-worker-scaling.sh ExperimentConfig/worker-scaling-benchmark-delete.yaml
+bash scripts/run-worker-scaling.sh ExperimentConfig/worker-scaling-benchmark-insert.yaml
+```
+
+Validation checks settings without contacting nodes. Actual launch checks the
+sample manifest exists on the coordinator; Java validates source/sample hashes.
+The coordinator receives the benchmark options, and collected coordinator
+diagnostics contain `benchmark-metrics.tsv`. Experiment names include the
+operation. The launcher builds the configured remote Git branch, so commit and
+push the Java benchmark implementation before launching; local uncommitted Java
+changes are not deployed automatically. Use identical code and settings for
+both operations.

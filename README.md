@@ -574,3 +574,111 @@ its estimate may miss the beginning/end of a short blocked interval. Read wall
 seconds overlap across readers and must not be summed as pipeline elapsed time.
 Compare these files with `pipeline-metrics.tsv` and `batch-time-monitor.tsv` to
 assess throughput and whether workers still run out of work.
+
+## Fixed-sample insert/delete benchmark
+
+Create one sample outside the original dataset directory. The default format is
+IMDb's configured semicolon-separated CSV with headers:
+
+```bash
+python3 scripts/create-update-sample.py \
+  --input-dir data/imdb --output-dir data/imdb-update-sample \
+  --rows 2000000 --seed 12345
+```
+
+The generator samples row occurrences without replacement, allocates rows
+proportionally across tables using largest-remainder rounding, and preserves
+source order within each table. Duplicate rows remain separate occurrences.
+It streams the files with bounded memory, refuses to overwrite an output
+directory, and records source/sample SHA-256 hashes and per-table counts in
+`manifest.json`. For other formats use `--delimiter` and `--no-header` matching
+the application's dataset settings. The manifest is written only on success;
+a failed generation may leave an incomplete directory. Source files must remain
+unchanged during generation and benchmark execution.
+
+The generator also writes the complementary dataset D−S, by default to
+`<output-dir>-remaining`. Use `--remainder-dir` to choose another directory.
+Every source row occurrence goes to exactly one output; duplicates are preserved
+by multiplicity, rather than removed by value. Both outputs keep the same file
+names, CSV format and headers. The remainder includes `remainder-manifest.json`
+with counts, hashes and the associated sample manifest hash. Both output
+directories must be new, separate directories outside the source. This requires
+disk space for both outputs (approximately the complete dataset after CSV
+reserialization). The original sample selection and sample manifest format are
+unchanged for the same inputs and seed.
+
+For TPC-H, generate both outputs with:
+
+```bash
+python3 scripts/create-update-sample.py \
+  --input-dir data/tpch-1 --output-dir data/tpch-1-sample-v2 \
+  --remainder-dir data/tpch-1-without-sample \
+  --rows 2000000 --seed 12345 --delimiter '|' --no-header
+```
+
+To independently discover INDs on D−S, run normal ingestion with
+`INPUT_DIR=./data/tpch-1-without-sample`, `--dataset-name tpch-1`,
+`--ingestion-mode insert`, and `--benchmark-operation none`. Compare qualified
+IND pairs with the deletion benchmark report, not just the total IND count.
+Use matching algorithm/type-compatibility settings; a fresh load infers metadata
+from the remaining data, so emptied tables or changed inferred types may affect
+the comparison.
+
+Run each operation in a fresh process with the same baseline and sample:
+
+```bash
+INPUT_DIR=./data/imdb OUTPUT_DIR=./output/imdb-delete \
+./scripts/run.sh valuebased --dataset-name imdb \
+  --ingestion-mode insert --data-orientation value \
+  --candidate-tracking exact --ind-calculation batch \
+  --benchmark-operation delete --benchmark-sample-dir ./data/imdb-update-sample
+
+INPUT_DIR=./data/imdb OUTPUT_DIR=./output/imdb-insert \
+./scripts/run.sh valuebased --dataset-name imdb \
+  --ingestion-mode insert --data-orientation value \
+  --candidate-tracking exact --ind-calculation batch \
+  --benchmark-operation insert --benchmark-sample-dir ./data/imdb-update-sample
+```
+
+Add `DOCKER_DISTRIBUTED=1 WORKERS=2` to run with Docker. The sample-directory
+argument is a host path mounted read-only into the coordinator. Direct Java
+launches also accept these flags; environment equivalents are
+`DIS_IND_BENCHMARK_OPERATION=none|insert|delete` and
+`DIS_IND_BENCHMARK_SAMPLE_DIR`. The default `none` disables the benchmark.
+Remote experiment YAML launchers accept `application.benchmark_operation` and
+`application.benchmark_sample_dir` (an absolute path on the coordinator).
+
+Both cases load the complete original dataset D and wait for all input batch
+acknowledgments. Then they replay exactly the same sample S: delete uses signed
+counts of -1 and ends at D−S; insert uses +1 and ends at D+S. The insert case adds
+duplicates and does not introduce new value memberships. Deletion can remove
+last occurrences and change INDs. The sample is not automatically restored.
+
+The benchmark requires `ingestion-mode insert`, `ind-calculation batch`, and
+`data-orientation value`. Existing column-oriented messages do not encode signed
+updates. Both benchmark cases allow multiple batches from the same table in flight,
+bounded by dispatcher credits, during baseline ingestion and sample replay.
+Only phase boundaries wait for all acknowledgments; the existing mixed-delete
+ingestion mode retains per-table ordering. Table IDs and global column offsets come from the original
+schema; batch IDs and epochs continue from baseline ingestion.
+
+The timer begins before opening/reading the sample for replay and ends after
+all replay batches are acknowledged, including pending candidate-status updates
+applied by candidate managers. It includes parsing, normalization, batching,
+encoding, backpressure, transport, and incremental computation. It excludes
+sample generation, preflight source/sample checksum verification, baseline
+loading, final discovery drain/report generation, and a guaranteed full disk
+flush. Background storage work can overlap the measured phase. This is
+end-to-end acknowledged update time, not durable-commit latency.
+
+Each run writes `benchmark-metrics.tsv` alongside its existing diagnostics:
+operation, sample manifest hash, UTC start/end, update rows/cells/batches, elapsed
+seconds, rows/second, and cells/second. Cells count schema-width cells including
+empty cells, although the existing encoder skips empty values. Console
+`[Benchmark] START/END` markers identify the phase in resource logs. The normal
+pipeline metrics retain baseline ingestion counts/time; total pipeline time
+also includes the benchmark. Finalization timing excludes replay.
+
+Keep the same sample, worker/cache/chunk settings and algorithm for both runs;
+repeat fresh runs to assess variation. The sample size is recorded in the
+manifest, allowing smaller fixtures before a 2M-row run.

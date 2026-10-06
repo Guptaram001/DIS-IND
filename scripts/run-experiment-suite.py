@@ -139,6 +139,8 @@ def base_environment(cluster_config: dict) -> tuple[dict[str, str], dict]:
 
 
 APPLICATION_VARIABLES = {
+    "benchmark_operation": "DIS_IND_BENCHMARK_OPERATION",
+    "benchmark_sample_dir": "DIS_IND_BENCHMARK_SAMPLE_DIR",
     "dl_shard_manifest": "DIS_IND_DL_SHARD_MANIFEST",
     "dl_reader_threads": "DIS_IND_DL_READER_THREADS",
     "dl_reader_capacity": "DIS_IND_DL_READER_CAPACITY",
@@ -166,6 +168,7 @@ APPLICATION_VARIABLES = {
 
 # Explicit suite defaults mirror the VM launcher; resolved runs include every setting.
 APPLICATION_DEFAULTS = {
+    "benchmark_operation": "none", "benchmark_sample_dir": "",
     "dl_shard_manifest": "", "dl_reader_threads": 2, "dl_reader_capacity": 5,
     "value_id_cache_policy": "lru", "membership_cache_policy": "lru",
     "membership_cache_bytes": 512, "cluster_cache": "lru", "cluster_cache_bytes": 128,
@@ -186,6 +189,7 @@ def resolved_application(application: dict) -> dict:
         raise ValueError("application.batch_size is unused by ValueBasedMain; use chunk_size (values per table batch)")
     result = {**APPLICATION_DEFAULTS, **application}
     choices = {
+        "benchmark_operation": {"none", "insert", "delete"},
         "value_id_cache_policy": {"lru", "caffeine"},
         "membership_cache_policy": {"lru", "caffeine"}, "cluster_cache": {"lru", "caffeine"},
         "candidate_tracking": {"count", "witness", "prune", "exact"},
@@ -211,6 +215,14 @@ def resolved_application(application: dict) -> dict:
         raise ValueError("application.prune_count_partitions must be a power of two")
     if not isinstance(result["dl_shard_manifest"], str):
         raise ValueError("application.dl_shard_manifest must be a string")
+    if not isinstance(result["benchmark_sample_dir"], str):
+        raise ValueError("application.benchmark_sample_dir must be a string")
+    if result["benchmark_operation"] != "none":
+        if not result["benchmark_sample_dir"].startswith("/"):
+            raise ValueError("Benchmark requires an absolute sample directory on the coordinator")
+        if (result["ingestion_mode"] != "insert" or result["ind_calculation"] != "batch"
+                or result["data_orientation"] not in {"value", "value-major"}):
+            raise ValueError("Benchmark requires ingestion_mode insert, ind_calculation batch and value orientation")
     return result
 
 

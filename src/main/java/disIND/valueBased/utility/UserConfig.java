@@ -95,6 +95,8 @@ public final class UserConfig {
     public static DataOrientation DATA_ORIENTATION = DEFAULT_DATA_ORIENTATION;
     public static CandidateTrackingMode CANDIDATE_TRACKING = DEFAULT_CANDIDATE_TRACKING;
     public static IndCalculation IND_CALCULATION = IndCalculation.BATCH;
+    public static String BENCHMARK_OPERATION = "none";
+    public static String BENCHMARK_SAMPLE_DIR = "";
     public static boolean CLUSTER_CHANGE_DETECTION = true;
     public static CacheMode VALUE_ID_CACHE_MODE = CacheMode.LRU;
     public static CacheMode MEMBERSHIP_CACHE_MODE = CacheMode.LRU;
@@ -108,10 +110,13 @@ public final class UserConfig {
     private static final Map<String, String> CLI_PROPERTIES = new LinkedHashMap<>();
 
     static {
+        CLI_PROPERTIES.put("benchmark-operation", "dis.ind.benchmark-operation");
+        CLI_PROPERTIES.put("benchmark-sample-dir", "dis.ind.benchmark-sample-dir");
         CLI_PROPERTIES.put("value-id-cache-policy", "dis.ind.value-id-cache-policy");
         CLI_PROPERTIES.put("membership-cache-policy", "dis.ind.membership-cache-policy");
         CLI_PROPERTIES.put("membership-cache-bytes", "dis.ind.membership-cache-bytes");
         CLI_PROPERTIES.put("cluster-cache", "dis.ind.cluster-cache");
+        CLI_PROPERTIES.put("dataset-name", "dis.ind.dataset-name");
         CLI_PROPERTIES.put("input-dir", "dis.ind.input-dir");
         CLI_PROPERTIES.put("output-file", "dis.ind.output-file");
         CLI_PROPERTIES.put("batch-size", "dis.ind.batch-size");
@@ -226,6 +231,13 @@ public final class UserConfig {
         PRUNE_COUNT_PARTITIONS = powerOfTwoSetting("DIS_IND_PRUNE_COUNT_PARTITIONS",
                 "dis.ind.prune-count-partitions", DEFAULT_PRUNE_COUNT_PARTITIONS);
         IND_CALCULATION = indCalculationSetting("DIS_IND_IND_CALCULATION", "dis.ind.ind-calculation");
+        BENCHMARK_OPERATION = stringSetting("DIS_IND_BENCHMARK_OPERATION", "dis.ind.benchmark-operation", "none");
+        BENCHMARK_SAMPLE_DIR = stringSetting("DIS_IND_BENCHMARK_SAMPLE_DIR", "dis.ind.benchmark-sample-dir", "");
+        if (!java.util.Set.of("none", "insert", "delete").contains(BENCHMARK_OPERATION))
+            throw new IllegalArgumentException("benchmark-operation must be none, insert or delete");
+        if (!BENCHMARK_OPERATION.equals("none") && (BENCHMARK_SAMPLE_DIR.isBlank()
+                || INGESTION_MODE != IngestionMode.INSERT_ONLY || IND_CALCULATION != IndCalculation.BATCH))
+            throw new IllegalArgumentException("Benchmark requires sample directory, ingestion-mode insert and ind-calculation batch");
         CLUSTER_CHANGE_DETECTION = booleanSetting("DIS_IND_CLUSTER_CHANGE_DETECTION",
                 "dis.ind.cluster-change-detection", true);
         VALUE_ID_HOT_ENTRIES = nonNegativeIntSetting("DIS_IND_VALUE_ID_HOT_ENTRIES",
@@ -239,6 +251,8 @@ public final class UserConfig {
                 "dis.ind.value-owner-disk-dir", DEFAULT_VALUE_OWNER_DISK_DIR);
         DATA_ORIENTATION = orientationSetting("DIS_IND_DATA_ORIENTATION",
                 "dis.ind.data-orientation", DEFAULT_DATA_ORIENTATION);
+        if (!BENCHMARK_OPERATION.equals("none") && DATA_ORIENTATION != DataOrientation.VALUE_MAJOR)
+            throw new IllegalArgumentException("Benchmark requires data-orientation value (column batches do not encode signed deltas)");
         CANDIDATE_TRACKING = candidateTrackingSetting("DIS_IND_CANDIDATE_TRACKING",
                 "dis.ind.candidate-tracking", DEFAULT_CANDIDATE_TRACKING);
     }

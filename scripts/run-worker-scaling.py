@@ -76,7 +76,9 @@ def build_plan(path):
         experiments = []
         base, coordinator = suite.base_environment(cluster)
         for mode in modes:
-            experiment = {'experiment': {'name': f'{name}-{mode}-{application.get("ind_calculation", "batch")}',
+            benchmark_suffix = (f"-{application['benchmark_operation']}"
+                                if application['benchmark_operation'] != 'none' else '')
+            experiment = {'experiment': {'name': f'{name}-{mode}-{application.get("ind_calculation", "batch")}{benchmark_suffix}',
                           'enabled': True, 'repeats': scaling.get('repeats', 1),
                           'timeout_seconds': scaling.get('timeout_seconds', 3600)},
                           'dataset': dataset, 'application': {**application, 'candidate_tracking': mode},

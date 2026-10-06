@@ -56,6 +56,7 @@ import disIND.valueBased.model.SharedModel.IngestionResult;
 import disIND.valueBased.model.SharedModel.InputBatchDetails;
 import disIND.valueBased.model.SharedModel.RCCommand;
 import disIND.valueBased.monitor.PipelineMetricsWriter;
+import disIND.valueBased.monitor.BenchmarkMetricsWriter;
 import disIND.valueBased.protocol.ValueOwnerProtocol.BatchBody;
 import disIND.valueBased.protocol.ValueOwnerProtocol.ColumnMajorBatch;
 import disIND.valueBased.protocol.ValueOwnerProtocol.CompressedBatch;
@@ -178,21 +179,55 @@ public final class DataLoader {
             return;
         }
 
+        BenchmarkSample sample = UserConfig.BENCHMARK_OPERATION.equals("none") ? null
+                : BenchmarkSample.load(Path.of(UserConfig.BENCHMARK_SAMPLE_DIR), files,
+                        UserConfig.separator.charAt(0), UserConfig.inputFileHasHeader);
         long pipelineStarted = System.nanoTime();
-        long ingestionStarted = pipelineStarted;
-        IngestionResult ingestion = ingestAllInterleaved(guardian, system, files, metadata.offsets(), metadata.nCols(),
-                chunkSize, orientation);
-        long ingestionFinished = System.nanoTime();
-        long ingestionNanos = ingestionFinished - ingestionStarted;
-        System.out.printf("[Loader] Ingestion done: %,d rows " + "in %.3fs%n", ingestion.totalRows(),
-                ingestionNanos / 1_000_000_000.0);
+        long ingestionNanos;
+        IngestionResult baseline;
+        IngestionResult ingestion;
+        int creditWindow = UserConfig.DL_BD_CREDIT_WINDOW;
+        AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
+                Math.max(2, creditWindow), UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE);
+        try {
+            baseline = ingestBatches(files, metadata.offsets(), metadata.nCols(), chunkSize, orientation,
+                    dispatcher::submit);
+            dispatcher.awaitIdle();
+            ingestionNanos = System.nanoTime() - pipelineStarted;
+            ingestion = baseline;
+            System.out.printf("[Loader] Baseline ingestion done: %,d rows in %.3fs%n",
+                    baseline.totalRows(), ingestionNanos / 1_000_000_000.0);
+            if (sample != null) {
+                String startedAt = java.time.Instant.now().toString();
+                System.out.printf("[Benchmark] START operation=%s rows=%d at=%s%n",
+                        UserConfig.BENCHMARK_OPERATION, sample.rows(), startedAt);
+                long started = System.nanoTime();
+                ReplayResult replay = replaySample(sample, metadata.offsets(), metadata.nCols(), chunkSize,
+                        orientation, baseline, UserConfig.BENCHMARK_OPERATION.equals("delete") ? -1 : 1,
+                        dispatcher::submit);
+                dispatcher.awaitIdle();
+                long elapsed = System.nanoTime() - started;
+                String endedAt = java.time.Instant.now().toString();
+                BenchmarkMetricsWriter.write(UserConfig.BENCHMARK_OPERATION,
+                        sample.manifestSha256(), replay.rows(), replay.cells(), replay.batches(),
+                        elapsed, startedAt, endedAt);
+                System.out.printf("[Benchmark] END operation=%s rows=%d elapsedSeconds=%.6f at=%s%n",
+                        UserConfig.BENCHMARK_OPERATION, replay.rows(), elapsed / 1e9, endedAt);
+                ingestion = replay.finalState();
+            }
+            dispatcher.finishAndWait();
+        } finally {
+            dispatcher.close();
+        }
+        long finalizationStarted = System.nanoTime();
 
+        IngestionResult finalIngestion = ingestion;
         CompletionStage<BDReply> doneFuture = AskPattern.ask(guardian, replyTo -> new BDCommand.FinishDiscovery(
-                ingestion.finalRound(), ingestion.finalBatchByTable(), replyTo), Duration.ofMinutes(30),
+                finalIngestion.finalRound(), finalIngestion.finalBatchByTable(), replyTo), Duration.ofMinutes(30),
                 system.scheduler());
         doneFuture.toCompletableFuture().get();
         long finalizationFinished = System.nanoTime();
-        long finalizationNanos = finalizationFinished - ingestionFinished;
+        long finalizationNanos = finalizationFinished - finalizationStarted;
 
         System.out.println("[Loader] Waiting for discovery result...");
         CompletionStage<ActorRef<RCCommand>> rcFuture = AskPattern.ask(guardian, BDCommand.GetResultCollector::new,
@@ -207,28 +242,82 @@ public final class DataLoader {
         printReport(report, outputFile);
         long pipelineFinished = System.nanoTime();
         long pipelineNanos = pipelineFinished - pipelineStarted;
-        Path metricsFile = pipelineMetricsWriter.write(ingestion, ingestionNanos, finalizationNanos, pipelineNanos,
+        Path metricsFile = pipelineMetricsWriter.write(baseline, ingestionNanos, finalizationNanos, pipelineNanos,
                 report.confirmedUnary().size());
 
         guardian.tell(new BDCommand.Shutdown());
     }
 
-    private static IngestionResult ingestAllInterleaved(ActorRef<BDCommand> guardian, ActorSystem<?> system,
-            List<String> files, List<Integer> offsets, List<Integer> nCols, int chunkSize, DataOrientation orientation)
-            throws Exception {
-        int creditWindow = UserConfig.DL_BD_CREDIT_WINDOW;
-        int preparedQueueCapacity = Math.max(2, creditWindow);
-        // Ensures the delete is not processed before the insert opertion.
-        boolean enforceTblOrdering = UserConfig.INGESTION_MODE == IngestionMode.INSERT_WITH_DELETE;
+    record ReplayResult(long rows, long cells, long batches, IngestionResult finalState) {}
 
-        AsyncBatchDispatcher dispatcher = new AsyncBatchDispatcher(guardian, system, creditWindow,
-                preparedQueueCapacity, enforceTblOrdering);
+    static ReplayResult replaySample(BenchmarkSample sample, List<Integer> offsets, List<Integer> nCols,
+            int chunkSize, DataOrientation orientation, IngestionResult baseline, int delta, BatchSink sink)
+            throws Exception {
+        if (delta != -1 && delta != 1)
+            throw new IllegalArgumentException("Sample delta must be -1 or +1");
+        if (orientation != DataOrientation.VALUE_MAJOR)
+            throw new IllegalArgumentException("Benchmark requires signed value-major batches");
+        int epoch = Math.toIntExact(baseline.totalBatches());
+        int round = baseline.finalRound();
+        Map<Integer, Integer> latest = new HashMap<>(baseline.finalBatchByTable());
+        CSVParser[] parsers = new CSVParser[sample.tables().size()];
+        List<Iterator<CSVRecord>> iterators = new ArrayList<>();
+        long[] counts = new long[parsers.length];
+        long rows = 0, cells = 0, batches = 0;
         try {
-            IngestionResult result = ingestBatches(files, offsets, nCols, chunkSize, orientation, dispatcher::submit);
-            dispatcher.finishAndWait();
-            return result;
+            for (int i = 0; i < parsers.length; i++) {
+                var table = sample.tables().get(i);
+                parsers[i] = openCSVParser(table.file().toString(), UserConfig.separator.charAt(0),
+                        UserConfig.inputFileHasHeader);
+                iterators.add(parsers[i].iterator());
+            }
+            boolean active;
+            do {
+                active = false;
+                round = Math.incrementExact(round);
+                for (int i = 0; i < parsers.length; i++) {
+                    var table = sample.tables().get(i);
+                    int tableId = table.tableId();
+                    int columns = nCols.get(tableId);
+                    Iterator<CSVRecord> iterator = iterators.get(i);
+                    if (!iterator.hasNext())
+                        continue;
+                    if (columns <= 0)
+                        throw new IllegalArgumentException("Sample rows for a table without columns");
+                    OrientetationBatchBuilder[] builders = new OrientetationBatchBuilder[UserConfig.VALUE_OWNER_BUCKETS];
+                    int count = 0;
+                    int limit = Math.max(1, chunkSize / columns);
+                    while (count < limit && iterator.hasNext()) {
+                        String[] row = recordToArray(iterator.next(), isTbl(table.file().toString()));
+                        addRowToOwnerBuilders(row, columns, offsets.get(tableId), 0, delta, orientation, builders);
+                        count++;
+                    }
+                    counts[i] += count;
+                    if (counts[i] > table.rows())
+                        throw new IllegalArgumentException("Sample row count exceeds manifest");
+                    Map<Integer, BatchBody> ownerBatches = finishOwnerBatches(builders);
+                    int batchId = Math.incrementExact(latest.getOrDefault(tableId, -1));
+                    epoch = Math.incrementExact(epoch);
+                    sink.submit(new PreparedBatch(epoch, tableId, 0, count, ownerBatches, round, batchId,
+                            orientation, ownerBatches.values().stream().mapToInt(DataLoader::valueCount).sum()));
+                    latest.put(tableId, batchId);
+                    rows = Math.addExact(rows, count);
+                    cells = Math.addExact(cells, Math.multiplyExact((long) count, columns));
+                    batches++;
+                    active = true;
+                }
+            } while (active);
+            for (int i = 0; i < counts.length; i++)
+                if (counts[i] != sample.tables().get(i).rows())
+                    throw new IllegalArgumentException("Sample row count differs from manifest");
+            if (rows != sample.rows())
+                throw new IllegalArgumentException("Sample total differs from manifest");
+            return new ReplayResult(rows, cells, batches, new IngestionResult(baseline.totalRows(),
+                    Math.addExact(baseline.totalBatches(), batches), baseline.totalCells(), round, latest));
         } finally {
-            dispatcher.close();
+            for (CSVParser parser : parsers)
+                if (parser != null)
+                    parser.close();
         }
     }
 

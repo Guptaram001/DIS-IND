@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class AsyncBatchDispatcher {
 
-    private sealed interface Event permits SubmittedEvent, CompletedEvent, FinishedEvent {
+    private sealed interface Event permits SubmittedEvent, CompletedEvent, FinishedEvent, IdleEvent {
     }
 
     private record SubmittedEvent(PreparedBatch batch) implements Event {
@@ -38,6 +38,11 @@ public final class AsyncBatchDispatcher {
 
     private record CompletedEvent(PreparedBatch batch, Throwable failure) implements Event {
     }
+
+    private record IdleEvent(CompletableFuture<Void> completion) implements Event {
+    }
+
+    private final ArrayDeque<CompletableFuture<Void>> idleWaiters = new ArrayDeque<>();
 
     private enum FinishedEvent implements Event {
         DONE
@@ -60,6 +65,7 @@ public final class AsyncBatchDispatcher {
     private final ExecutorService executor;
     private final ActorRef<BDCommand> guardian;
     private final ActorSystem<?> system;
+    private final java.util.function.Function<PreparedBatch, CompletionStage<BDReply>> batchSender;
 
     private final Set<Integer> scheduledTables = new HashSet<>();
     private final Set<Integer> tablesInFlight = new HashSet<>();
@@ -79,6 +85,13 @@ public final class AsyncBatchDispatcher {
 
     public AsyncBatchDispatcher(ActorRef<BDCommand> guardian, ActorSystem<?> system, int creditWindow,
             int queueCapacity, boolean enforceTableOrder) {
+        this(guardian, system, creditWindow, queueCapacity, enforceTableOrder, null);
+    }
+
+    AsyncBatchDispatcher(ActorRef<BDCommand> guardian, ActorSystem<?> system, int creditWindow,
+            int queueCapacity, boolean enforceTableOrder,
+            java.util.function.Function<PreparedBatch, CompletionStage<BDReply>> batchSender) {
+        this.batchSender = batchSender;
         if (creditWindow <= 0)
             throw new IllegalArgumentException("creditWindow must be positive");
 
@@ -100,6 +113,8 @@ public final class AsyncBatchDispatcher {
     }
 
     private CompletionStage<BDReply> sendBatch(PreparedBatch batch) {
+        if (batchSender != null)
+            return batchSender.apply(batch);
         return DataLoader.sendTableBatch(guardian, system, batch.epoch(), batch.tableId(), batch.startRowId(),
                 batch.ownerBatches(), batch.round(), batch.individualBatchId(), batch.orientation());
     }
@@ -119,6 +134,21 @@ public final class AsyncBatchDispatcher {
             if (!accepted)
                 outstandingSlots.release();
         }
+    }
+
+    /** Single-producer phase barrier: call after submission stops, before starting the next phase. */
+    public void awaitIdle() throws Exception {
+        throwIfFailed();
+        if (producerFinished.get())
+            throw new IllegalStateException("Cannot await idle after dispatcher finish");
+        CompletableFuture<Void> idle = new CompletableFuture<>();
+        events.add(new IdleEvent(idle));
+        try {
+            CompletableFuture.anyOf(idle, drained).get();
+        } catch (ExecutionException exception) {
+            recordFailure(exception.getCause());
+        }
+        throwIfFailed();
     }
 
     public void finishAndWait() throws Exception {
@@ -155,8 +185,14 @@ public final class AsyncBatchDispatcher {
                     schedule(submittedEvent.batch());
                 else if (event instanceof CompletedEvent completedEvent)
                     availableCredits = handleCompletion(completedEvent, availableCredits);
+                else if (event instanceof IdleEvent idleEvent)
+                    idleWaiters.add(idleEvent.completion());
 
                 availableCredits = dispatchAvailable(availableCredits);
+                if (events.isEmpty() && ready.isEmpty() && waitingByTable.isEmpty() && inFlight.get() == 0) {
+                    while (!idleWaiters.isEmpty())
+                        idleWaiters.removeFirst().complete(null);
+                }
                 if (producerFinished.get() && events.isEmpty() && ready.isEmpty() && waitingByTable.isEmpty()
                         && inFlight.get() == 0) {
                     drained.complete(null);
