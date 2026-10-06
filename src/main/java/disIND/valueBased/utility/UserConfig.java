@@ -26,8 +26,8 @@ public final class UserConfig {
     public static boolean TYPE_COMPATIBILITY_ENABLED = true;
     public static final int DEFAULT_CHUNK_SIZE = 5_000_000;
     public static final String DEFAULT_DATASET_NAME = "tpch-1";
-    public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 500;
-    public static final int MAX_VALUE_OWNER_WITNESSES = 10;
+    public static final int DEFAULT_MAX_TRACKED_VIOLATIONS = 10;
+    public static final int MAX_VALUE_OWNER_WITNESSES = 5;
     public static final int DEFAULT_VO_BATCH_EVICTION_LIMIT = 20;
     public static final int DEFAULT_VO_WRITE_BATCH_MAX_ENTRIES = 5_000;
     public static final long DEFAULT_VO_WRITE_BATCH_MAX_BYTES = 512L * 1024L;
