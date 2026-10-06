@@ -38,7 +38,7 @@ application:
   dl_shard_manifest: /home/node/DIS-IND/data/tpch-1-shards/manifest.properties
   dl_reader_threads: 4
   dl_reader_capacity: 8
-  benchmark_operation: insert 
+  benchmark_operation: delete 
   benchmark_sample_dir: /home/node/DIS-IND/data/tpch-1-sample
 
 resources:
