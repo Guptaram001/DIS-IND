@@ -3,8 +3,8 @@ from pathlib import Path
 
 project_dir = Path(__file__).resolve().parent.parent
 
-input_file = project_dir / "data/imdb/IMDB.csv"
-output_dir = project_dir / "data/imdb"
+input_file = project_dir / "data/wikipedia/wikipedia"
+output_dir = project_dir / "data/wikipedia"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Percentages of the total file to generate
@@ -18,14 +18,14 @@ print(f"Total file size : {total_size_bytes / 1e6:,.2f} MB")
 print(f"Total rows      : {total_rows:,}")
 
 # Read the file once (or in chunks if it's large)
-df = pd.read_csv(input_file)
+df = pd.read_csv(input_file,sep=";")
 print(f"Loaded {len(df):,} rows")
 
 for pct in percentages:
     target_bytes = total_size_bytes * pct
     target_rows = int(len(df) * pct)
     output_file = output_dir / f"{input_file.stem}_{int(pct*100)}pct.csv"
-    df.iloc[:target_rows].to_csv(output_file, index=False)
+    df.iloc[:target_rows].to_csv(output_file, index=False,sep=";")
     actual_bytes = output_file.stat().st_size
     print(
         f"Created {output_file.name}: "
