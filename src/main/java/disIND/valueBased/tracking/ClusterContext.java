@@ -45,7 +45,7 @@ public final class ClusterContext implements ModeSpecificContext {
         clusters = new ValueOwnerClusterIndex(bucketId, columns, store);
         metrics = new PruneMetricsCollector(columns);
         results = new BitSet[columns];
-        boolean incremental = prune && options.changeDetection() && options.calculation() == IndCalculation.BATCH;
+        boolean incremental = prune && options.calculation() == IndCalculation.BATCH;
         newViolations = incremental ? new Int2ObjectOpenHashMap<>() : null;
         possibleRepairs = incremental ? new Int2ObjectOpenHashMap<>() : null;
         distinct = prune && options.wholeCounts() ? new int[columns] : null;
@@ -178,10 +178,8 @@ public final class ClusterContext implements ModeSpecificContext {
             throw new IllegalStateException("Final mode must not derive during ingestion");
         BitSet dirty = clusters.takeAffectedLhs();
         affectedLhsCount += dirty.cardinality();
-        if (!options.changeDetection()) {
+        if (!options.changeDetection())
             dirty.set(0, columns);
-            clusters.invalidateAll();
-        }
         if (transitive != null)
             for (int lhs = dirty.nextSetBit(0); lhs >= 0; lhs = dirty.nextSetBit(lhs + 1))
                 transitive.initializeValid(lhs, new BitSet());
@@ -302,8 +300,6 @@ public final class ClusterContext implements ModeSpecificContext {
             if (!finalStarted) {
                 finalStarted = true;
                 affectedLhsCount += clusters.takeAffectedLhs().cardinality();
-                if (!options.changeDetection())
-                    clusters.invalidateAll();
             }
             if (results[lhs] == null)
                 results[lhs] = derive(lhs, null);

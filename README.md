@@ -181,8 +181,14 @@ eligible LHS results, and sends only validity transitions to CMs. Final drain
 waits for all acknowledged sequences, then writes the maintained result once.
 There is no global synchronization/report after every input batch. Change
 detection limits work to LHSs in signatures that appeared or disappeared; when
-disabled, every LHS is considered and its intersection cache is invalidated at
-each batch boundary. Frequency-only changes do not change cluster signatures.
+disabled, every LHS is considered in every batch; the cached intersections are kept
+in both settings, because cluster maintenance keeps them valid (cleared when a
+signature containing the LHS disappears, narrowed when one appears), so only LHSs
+with a cleared cache are rebuilt. Prune's value-level change tracking (new violations and
+possible repairs per changed value) runs in `batch` mode independently of this
+setting, so untouched LHSs keep their previous result without an exact check even
+when change detection is disabled. Frequency-only changes do not change cluster
+signatures.
 
 Prune retains conservative LHS/RHS insertion/deletion validity skips in batch
 mode. Mixed batches only skip a pair when no change on either side can reverse
@@ -453,10 +459,11 @@ columns. Final mode consumes its affected set when final derivation begins.
 
 ### Signature-based Prune metrics
 
-`prune-metrics.tsv` includes four counters for Prune batch calculation with change
-detection enabled. They count distinct candidate pairs per derived bucket/LHS row
+`prune-metrics.tsv` includes four counters for Prune batch calculation, with or
+without cluster change detection. They count distinct candidate pairs per derived bucket/LHS row
 per batch, accumulated across workers and batches, not distinct final INDs or values.
-LHS rows skipped entirely by cluster change detection are not counted.
+LHS rows skipped entirely by cluster change detection are not counted; with change
+detection disabled, every LHS row is derived and counted.
 
 | Metric | Meaning |
 |---|---|
@@ -471,8 +478,10 @@ direct rejections + preserved results + possible repairs - overridden repairs.
 Remaining repairs proceed through the existing Prune filters and exact verification.
 These counters do not change `filter_pruned_total`, which still covers whole-count,
 partition-count, and CQF filtering. Legacy per-value skip counters are unchanged.
-Exact, Count, Witness, final-only calculation, and change-detection-off do not
-increment these new counters. Existing diagnostic files are not retroactively updated.
+Exact, Count, Witness, and final-only calculation do not increment these new
+counters. Existing diagnostic files are not retroactively updated; Prune runs with
+change detection disabled that were recorded before value-level change tracking was
+decoupled from change detection have these counters at zero.
 
 ## Optional parallel parsing of pre-sharded input
 

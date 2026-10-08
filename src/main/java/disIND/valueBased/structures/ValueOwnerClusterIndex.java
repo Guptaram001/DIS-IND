@@ -62,10 +62,6 @@ public final class ValueOwnerClusterIndex {
         return result;
     }
 
-    public void invalidateAll() {
-        java.util.Arrays.fill(commonRhs, null);
-    }
-
     public BitSet validRhsSnapshot(int lhs, BitSet eligible) {
         if (lhs < 0 || lhs >= totalColumns || eligible.length() > totalColumns)
             throw new IllegalArgumentException("Column outside dataset");
