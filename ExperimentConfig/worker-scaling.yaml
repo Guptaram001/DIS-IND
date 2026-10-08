@@ -35,7 +35,7 @@ application:
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64
-  dl_shard_manifest: /home/node/DIS-IND/data/btc-shards/manifest.properties
+  dl_shard_manifest: /home/node/DIS-IND/data/imdb-shards/manifest.properties
   dl_reader_threads: 4
   dl_reader_capacity: 8
   benchmark_operation: none 
