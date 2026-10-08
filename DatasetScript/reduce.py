@@ -3,7 +3,7 @@ from pathlib import Path
 
 project_dir = Path(__file__).resolve().parent.parent
 
-input_file = project_dir / "data/imdb/imbd/IMDB.csv"
+input_file = project_dir / "data/imdb/imdb/IMDB.csv"
 output_dir = project_dir / "data/imdb"
 output_dir.mkdir(parents=True, exist_ok=True)
 
