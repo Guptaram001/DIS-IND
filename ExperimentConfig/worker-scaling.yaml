@@ -15,7 +15,7 @@ scaling:
 
 dataset:
   name: imdb  # For TPCH-1 change this to tpch-1 and the input directory below
-  input_dir: /home/node/DIS-IND/data/imdb
+  input_dir: /home/node/DIS-IND/data/imdb/imdb
 
 application:
   data_orientation: value
@@ -30,8 +30,8 @@ application:
   membership_cache_bytes: 512  # MiB, despite the legacy key name; 0 disables clean retention
   cluster_cache_bytes: 128  # MiB; 0 disables clean retention
   prune_cqf_enabled: false
-  prune_whole_counts_enabled: false
-  prune_partition_counts_enabled: false
+  prune_whole_counts_enabled: true
+  prune_partition_counts_enabled: true
   prune_partition_hierarchy_enabled: false
   prune_transitive_enabled: false
   prune_count_partitions: 64

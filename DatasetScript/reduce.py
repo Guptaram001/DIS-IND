@@ -3,12 +3,12 @@ from pathlib import Path
 
 project_dir = Path(__file__).resolve().parent.parent
 
-input_file = project_dir / "data/wikipedia/wikipedia/WIKIPEDIA.csv"
-output_dir = project_dir / "data/wikipedia"
+input_file = project_dir / "data/imdb/imbd/IMDB.csv"
+output_dir = project_dir / "data/imdb"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Percentages of the total file to generate
-percentages = [0.10, 0.20, 0.40, 0.60, 0.80]
+percentages = [0.10, 0.20, 0.60]
 
 # Total file size and total row count
 total_size_bytes = input_file.stat().st_size
